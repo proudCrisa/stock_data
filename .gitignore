@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+
+# 本地缓存 DB（运行时生成，不入库）
+*.sqlite
+*.sqlite3
+*.db
+data/cache/
+
+# CodeGraph
+.codegraph/
