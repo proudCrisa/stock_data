@@ -14,9 +14,16 @@ from stockdata.jqdata_bootstrap import (
 
 
 class FakeJQData:
-    def __init__(self, *, spare: int = 100_000, status_day: str = "2026-07-22"):
+    def __init__(
+        self,
+        *,
+        spare: int = 100_000,
+        status_day: str = "2026-07-22",
+        status_error: Exception | None = None,
+    ):
         self.spare = spare
         self.status_day = status_day
+        self.status_error = status_error
         self.auth_calls: list[tuple[str, str]] = []
         self.universe_calls: list[str] = []
         self.status_calls: list[tuple[str, str]] = []
@@ -42,6 +49,8 @@ class FakeJQData:
         )
 
     def get_price(self, security: str, **kwargs: object) -> pd.DataFrame:
+        if self.status_error is not None:
+            raise self.status_error
         day = str(kwargs["start_date"])
         assert kwargs == {
             "start_date": day,
@@ -203,3 +212,25 @@ def test_neighboring_status_date_is_rejected() -> None:
             observed_at="2026-08-04T15:00:00+08:00",
             max_rows=20_000,
         )
+
+
+def test_inaccessible_status_date_is_redacted_before_universe_query() -> None:
+    sdk = FakeJQData(
+        status_error=RuntimeError("账号 private-account 权限不足，数据包含 private-secret")
+    )
+
+    with pytest.raises(JQDataBootstrapError) as captured:
+        build_bootstrap_artifact(
+            sdk,
+            panel={("000001.SZ", "2026-07-22")},
+            observed_at="2026-08-05T00:15:00+08:00",
+            max_rows=20_000,
+        )
+
+    assert str(captured.value) == (
+        "JQData account cannot access the requested status date"
+    )
+    assert "private-account" not in repr(captured.value)
+    assert "private-secret" not in repr(captured.value)
+    assert captured.value.__cause__ is None
+    assert sdk.universe_calls == []

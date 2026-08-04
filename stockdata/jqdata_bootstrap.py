@@ -168,7 +168,12 @@ def _status_rows(
             )
     except JQDataBootstrapError:
         raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc)
+        if all(token in message for token in ("账号", "权限", "数据")):
+            raise JQDataBootstrapError(
+                "JQData account cannot access the requested status date"
+            ) from None
         raise JQDataBootstrapError("JQData status query failed") from None
     if {str(row["symbol"]) for row in rows} != set(symbols):
         raise JQDataBootstrapError("JQData status rows do not cover the panel")
@@ -193,6 +198,7 @@ def build_bootstrap_artifact(
     universe: list[dict[str, object]] = []
     statuses: list[dict[str, object]] = []
     for day, symbols in sorted(by_day.items()):
+        day_statuses = _status_rows(sdk, symbols, day)
         day_universe = _universe_rows(sdk, day)
         if not set(symbols).issubset(
             {str(row["symbol"]) for row in day_universe}
@@ -201,7 +207,7 @@ def build_bootstrap_artifact(
         universe.extend(day_universe)
         if len(universe) > max_rows:
             raise JQDataBootstrapError("JQData row limit exceeded")
-        statuses.extend(_status_rows(sdk, symbols, day))
+        statuses.extend(day_statuses)
         if len(universe) + len(statuses) > max_rows:
             raise JQDataBootstrapError("JQData row limit exceeded")
 
