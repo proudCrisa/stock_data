@@ -139,39 +139,40 @@ def _universe_rows(sdk: object, day: str) -> list[dict[str, object]]:
 def _status_rows(
     sdk: object, symbols: list[str], day: str
 ) -> list[dict[str, object]]:
-    provider_symbols = [_provider_symbol(symbol) for symbol in symbols]
+    rows: list[dict[str, object]] = []
     try:
-        frame = sdk.get_price(
-            provider_symbols,
-            start_date=day,
-            end_date=day,
-            frequency="daily",
-            fields=["paused"],
-            skip_paused=False,
-            fq=None,
-            panel=False,
-        )
-        rows: dict[str, dict[str, object]] = {}
-        for _, source in frame.iterrows():
-            if _iso_date(source["time"]) != day:
-                raise JQDataBootstrapError("JQData returned a non-exact status date")
-            symbol = _local_symbol(source["code"])
-            paused = int(source["paused"])
-            if symbol not in symbols or symbol in rows or paused not in (0, 1):
+        for symbol in symbols:
+            frame = sdk.get_price(
+                _provider_symbol(symbol),
+                start_date=day,
+                end_date=day,
+                frequency="daily",
+                fields=["paused"],
+                skip_paused=False,
+                fq=None,
+            )
+            if len(frame) != 1 or "paused" not in frame.columns:
                 raise JQDataBootstrapError("JQData returned invalid status rows")
-            rows[symbol] = {
-                "effective_date": day,
-                "is_tradable": paused == 0,
-                "status": "active" if paused == 0 else "suspended",
-                "symbol": symbol,
-            }
+            if _iso_date(frame.index[0]) != day:
+                raise JQDataBootstrapError("JQData returned a non-exact status date")
+            paused = int(frame.iloc[0]["paused"])
+            if paused not in (0, 1):
+                raise JQDataBootstrapError("JQData returned invalid status rows")
+            rows.append(
+                {
+                    "effective_date": day,
+                    "is_tradable": paused == 0,
+                    "status": "active" if paused == 0 else "suspended",
+                    "symbol": symbol,
+                }
+            )
     except JQDataBootstrapError:
         raise
     except Exception:  # noqa: BLE001
         raise JQDataBootstrapError("JQData status query failed") from None
-    if set(rows) != set(symbols):
+    if {str(row["symbol"]) for row in rows} != set(symbols):
         raise JQDataBootstrapError("JQData status rows do not cover the panel")
-    return [rows[symbol] for symbol in sorted(rows)]
+    return sorted(rows, key=lambda row: str(row["symbol"]))
 
 
 def build_bootstrap_artifact(

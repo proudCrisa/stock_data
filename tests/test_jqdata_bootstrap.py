@@ -19,7 +19,7 @@ class FakeJQData:
         self.status_day = status_day
         self.auth_calls: list[tuple[str, str]] = []
         self.universe_calls: list[str] = []
-        self.status_calls: list[tuple[tuple[str, ...], str]] = []
+        self.status_calls: list[tuple[str, str]] = []
 
     def auth(self, account: str, secret: str) -> None:
         self.auth_calls.append((account, secret))
@@ -41,7 +41,7 @@ class FakeJQData:
             index=["000001.XSHE", "600000.XSHG"],
         )
 
-    def get_price(self, securities: list[str], **kwargs: object) -> pd.DataFrame:
+    def get_price(self, security: str, **kwargs: object) -> pd.DataFrame:
         day = str(kwargs["start_date"])
         assert kwargs == {
             "start_date": day,
@@ -50,15 +50,13 @@ class FakeJQData:
             "fields": ["paused"],
             "skip_paused": False,
             "fq": None,
-            "panel": False,
         }
-        self.status_calls.append((tuple(securities), day))
+        assert isinstance(security, str)
+        self.status_calls.append((security, day))
+        paused = 0 if security == "000001.XSHE" else 1
         return pd.DataFrame(
-            {
-                "time": [pd.Timestamp(self.status_day)] * len(securities),
-                "code": securities,
-                "paused": [0, 1][: len(securities)],
-            }
+            {"paused": [paused]},
+            index=pd.DatetimeIndex([self.status_day], name="time"),
         )
 
 
