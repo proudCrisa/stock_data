@@ -18,6 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 mcp = ["mcp>=1.2"]
 dev = ["pytest>=7.0"]
+jqdata = ["jqdatasdk>=1.9,<2"]
 
 [project.scripts]
 stockdata = "stockdata.server:main"

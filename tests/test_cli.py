@@ -5,12 +5,73 @@
 
 纯逻辑 build_params(argv) 与网络/IO 分离。
 """
+import json
+import sys
+import types
+
 import pytest
 
-from stockdata.cli import build_params
+from stockdata.cli import build_params, main
 
 
 class TestBuildParams:
+    def test_jqdata_bootstrap_has_no_credential_arguments(self):
+        params = build_params([
+            "jqdata-bootstrap",
+            "--panel-file", "panel.json",
+            "--max-rows", "20000",
+        ])
+        assert params == {
+            "kind": "jqdata_bootstrap",
+            "panel_file": "panel.json",
+            "max_rows": 20000,
+        }
+        assert "account" not in params
+        assert "secret" not in params
+
+    def test_jqdata_bootstrap_prompts_and_closes_session(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        panel_file = tmp_path / "panel.json"
+        panel_file.write_text(json.dumps(["000001.SZ@2026-07-22"]))
+        sdk = types.ModuleType("jqdatasdk")
+        sdk.closed = False
+        sdk.logout = lambda: setattr(sdk, "closed", True)
+        monkeypatch.setitem(sys.modules, "jqdatasdk", sdk)
+
+        values = iter(["runtime-account", "runtime-secret"])
+        monkeypatch.setattr("stockdata.cli.getpass.getpass", lambda _: next(values))
+        received = {}
+
+        def fake_authenticate(provider, account, secret):
+            received.update(provider=provider, account=account, secret=secret)
+
+        def fake_build(provider, *, panel, observed_at, max_rows):
+            assert provider is sdk
+            assert panel == {("000001.SZ", "2026-07-22")}
+            assert observed_at.endswith("+08:00")
+            assert max_rows == 20_000
+            return {"authoritative": False, "evidence_grade": "VENDOR_BOOTSTRAP_ONLY"}
+
+        monkeypatch.setattr("stockdata.jqdata_bootstrap.authenticate", fake_authenticate)
+        monkeypatch.setattr("stockdata.jqdata_bootstrap.build_bootstrap_artifact", fake_build)
+
+        assert main([
+            "jqdata-bootstrap",
+            "--panel-file", str(panel_file),
+            "--max-rows", "20000",
+        ]) == 0
+        captured = capsys.readouterr()
+        assert json.loads(captured.out)["authoritative"] is False
+        assert "runtime-account" not in captured.out + captured.err
+        assert "runtime-secret" not in captured.out + captured.err
+        assert received == {
+            "provider": sdk,
+            "account": "runtime-account",
+            "secret": "runtime-secret",
+        }
+        assert sdk.closed is True
+
     def test_rqgm_provider_export_params(self):
         assert build_params(
             ["rqgm-provider-export", "--bundle-file", "/tmp/bundle.json"]

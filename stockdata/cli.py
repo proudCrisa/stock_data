@@ -10,6 +10,7 @@ build_params 为纯逻辑（argv→params），main 负责真实 service 调用�
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import sys
@@ -93,6 +94,10 @@ def build_params(argv: list) -> dict:
     provider_export = sub.add_parser("rqgm-provider-export")
     provider_export.add_argument("--bundle-file", required=True)
 
+    jqdata_bootstrap = sub.add_parser("jqdata-bootstrap")
+    jqdata_bootstrap.add_argument("--panel-file", required=True)
+    jqdata_bootstrap.add_argument("--max-rows", required=True, type=int)
+
     args = parser.parse_args(argv)
     if args.kind == "history":
         params = {"kind": "query", "function": "history", "code": args.code,
@@ -171,6 +176,12 @@ def build_params(argv: list) -> dict:
             "kind": "rqgm_provider_export",
             "bundle_file": args.bundle_file,
         }
+    if args.kind == "jqdata-bootstrap":
+        return {
+            "kind": "jqdata_bootstrap",
+            "panel_file": args.panel_file,
+            "max_rows": args.max_rows,
+        }
     return {"kind": "quote_history",
             "codes": [c.strip() for c in args.codes.split(",") if c.strip()],
             "start_date": args.start, "end_date": args.end}
@@ -178,8 +189,8 @@ def build_params(argv: list) -> dict:
 
 def main(argv=None):
     from .cache import Cache
-    from .service import HistoryService
     from .mcp_handlers import handle_ffd_query, handle_ffd_quote_history
+    from .service import HistoryService
 
     params = build_params(sys.argv[1:] if argv is None else argv)
     db = Path(
@@ -217,6 +228,42 @@ def main(argv=None):
     if params["kind"] == "rqgm_provider_export":
         from .provider_export import export_verified_provider_receipt
         out = export_verified_provider_receipt(params["bundle_file"])
+        json.dump(out, sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return 0
+    if params["kind"] == "jqdata_bootstrap":
+        from .execution_readiness import load_panel
+        from .jqdata_bootstrap import (
+            authenticate,
+            build_bootstrap_artifact,
+            close_session,
+        )
+
+        try:
+            import jqdatasdk
+        except ImportError:
+            raise RuntimeError(
+                "JQData support is not installed; install stockdata[jqdata]"
+            ) from None
+        account = secret = ""
+        auth_attempted = False
+        try:
+            account = getpass.getpass("JQData account: ")
+            secret = getpass.getpass("JQData secret: ")
+            auth_attempted = True
+            authenticate(jqdatasdk, account, secret)
+            out = build_bootstrap_artifact(
+                jqdatasdk,
+                panel=load_panel(params["panel_file"]),
+                observed_at=datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(
+                    timespec="seconds"
+                ),
+                max_rows=params["max_rows"],
+            )
+        finally:
+            if auth_attempted:
+                close_session(jqdatasdk)
+            account = secret = ""
         json.dump(out, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
         return 0
