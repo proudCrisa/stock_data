@@ -12,6 +12,7 @@ dependencies = [
     "pandas>=1.5",
     "mootdx>=0.10",
     "baostock>=0.8",
+    "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]
@@ -24,6 +25,9 @@ stockdata-cli = "stockdata.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["stockdata*"]
+
+[tool.setuptools.package-data]
+stockdata = ["enrolled_trust_registry.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

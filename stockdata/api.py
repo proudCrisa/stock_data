@@ -38,18 +38,34 @@ def _today() -> str:
     return date.today().isoformat()
 
 
-def get_daily(code: str, start_date: str, end_date: str = "") -> dict:
+def get_daily(
+    code: str,
+    start_date: str,
+    end_date: str = "",
+    *,
+    finalized_only: bool = False,
+) -> dict:
     """历史日线（前复权），findesk 兼容列式 {data:{time,code,open,high,low,close,volume}}。"""
     end = end_date or _today()
-    rows = _service.get_history(code, start_date, end, today=_today())
+    rows = _service.get_history(
+        code, start_date, end, today=_today(), finalized_only=finalized_only
+    )
     return to_columnar({normalize(code): rows})
 
 
-def get_daily_df(code: str, start_date: str, end_date: str = ""):
+def get_daily_df(
+    code: str,
+    start_date: str,
+    end_date: str = "",
+    *,
+    finalized_only: bool = False,
+):
     """历史日线 → pandas DataFrame。"""
     import pandas as pd
     end = end_date or _today()
-    rows = _service.get_history(code, start_date, end, today=_today())
+    rows = _service.get_history(
+        code, start_date, end, today=_today(), finalized_only=finalized_only
+    )
     return pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
 
 

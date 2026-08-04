@@ -4,6 +4,9 @@
 - _parse_rows: baostock 行 → 内部 bar（纯函数，可无网络测试）
 - fetch_baostock: 登录 + 查询 + 解析（集成，需网络，标记 network）
 """
+import sys
+from types import SimpleNamespace
+
 import pytest
 
 from stockdata.fetch_baostock import _parse_rows
@@ -67,6 +70,49 @@ class TestParseRows:
         bar = _parse_rows(fields, rows)[0]
         assert bar["close"] == 10.8
         assert bar["open"] == 10.5
+
+
+def test_fetch_attaches_requested_adjustment_metadata(monkeypatch):
+    class Result:
+        error_code = "0"
+        fields = FIELDS.split(",")
+
+        def __init__(self):
+            self._rows = [["2024-01-02", "10", "11", "9", "10.5", "100"]]
+
+        def next(self):
+            return bool(self._rows)
+
+        def get_row_data(self):
+            return self._rows.pop(0)
+
+    captured = {}
+
+    def query(*args, **kwargs):
+        captured.update(kwargs)
+        return Result()
+
+    fake = SimpleNamespace(
+        login=lambda: SimpleNamespace(error_code="0", error_msg=""),
+        logout=lambda: None,
+        query_history_k_data_plus=query,
+    )
+    monkeypatch.setitem(sys.modules, "baostock", fake)
+    monkeypatch.setattr(
+        "stockdata.fetch_baostock.latest_finalized_date", lambda: "2024-01-02"
+    )
+
+    from stockdata.fetch_baostock import fetch_baostock
+
+    bar = fetch_baostock(
+        "600519.SH", "2024-01-01", "2024-01-03", adjustment_mode="raw"
+    )[0]
+    assert captured["adjustflag"] == "3"
+    assert bar["source"] == "baostock"
+    assert bar["adjustment_mode"] == "raw"
+    assert bar["adjustment_version"] == "baostock-adjustflag-3"
+    assert bar["retrieved_at"]
+    assert bar["is_final"] is True
 
 
 @pytest.mark.network

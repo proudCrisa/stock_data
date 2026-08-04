@@ -17,3 +17,7 @@ data/cache/
 
 # CodeGraph
 .codegraph/
+
+# Local desktop and encrypted backup artifacts
+.DS_Store
+stockdata-backup-*.zip

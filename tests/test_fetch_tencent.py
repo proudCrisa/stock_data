@@ -7,7 +7,7 @@
 """
 import pytest
 
-from stockdata.fetch_tencent import parse_tencent_bar
+from stockdata.fetch_tencent import fetch_tencent_daily, parse_tencent_bar
 
 
 # 真实格式样本：逐索引精确构造（腾讯字段布局真实）
@@ -57,6 +57,18 @@ class TestParseTencentBar:
 
     def test_empty_returns_none(self):
         assert parse_tencent_bar("", "600519.SH") is None
+
+
+def test_captured_daily_bar_preserves_raw_response_and_converts_volume(monkeypatch):
+    monkeypatch.setattr("stockdata.fetch_tencent._http_get", lambda url: _SAMPLE)
+
+    captured = fetch_tencent_daily("600519.SH", "2026-07-08", "2026-07-08")
+
+    assert captured[0]["volume"] == 2577600.0
+    assert captured[0]["source"] == "tencent"
+    assert captured[0]["adjustment_version"] == "tencent-qt-daily-v1"
+    assert captured.capture_receipt["response"]["raw"] == _SAMPLE
+    assert captured.capture_receipt["response"]["rows"][0][-1] == "2577600.0"
 
 
 @pytest.mark.network

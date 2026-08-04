@@ -7,11 +7,21 @@
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import urllib.request
 
+from .finalization import latest_finalized_date
 from .ticker import to_tencent
 
 _TENCENT = "https://qt.gtimg.cn/q={sym}"
+
+
+class CapturedTencentBars(list[dict]):
+    """Finalized Tencent daily bars with exact HTTP capture metadata."""
+
+    def __init__(self, bars: list[dict], capture_receipt: dict):
+        super().__init__(bars)
+        self.capture_receipt = capture_receipt
 
 
 def parse_tencent_bar(raw: str, code: str):
@@ -55,3 +65,47 @@ def fetch_today_bar(code: str):
         return parse_tencent_bar(_http_get(_TENCENT.format(sym=sym)), code)
     except Exception:
         return None
+
+
+def fetch_tencent_daily(code: str, start: str, end: str) -> CapturedTencentBars:
+    """Capture Tencent's finalized current-day raw bar for a bounded gap."""
+    sym = to_tencent(code)
+    url = _TENCENT.format(sym=sym)
+    raw = _http_get(url)
+    observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    parsed = parse_tencent_bar(raw, code)
+    bars = []
+    rows = []
+    if (
+        parsed is not None
+        and start <= parsed["date"] <= end
+        and parsed["date"] <= latest_finalized_date()
+    ):
+        bar = dict(parsed)
+        # qt.gtimg.cn field 6 is lots; execution evidence stores shares.
+        bar["volume"] = float(bar["volume"]) * 100.0
+        rows.append([
+            bar["date"], str(bar["open"]), str(bar["high"]), str(bar["low"]),
+            str(bar["close"]), str(bar["volume"]),
+        ])
+        bars.append(bar)
+    receipt = {
+        "observed_at": observed_at,
+        "source": "tencent",
+        "request": {"method": "qt", "url": url, "start_date": start, "end_date": end},
+        "response": {
+            "raw": raw,
+            "fields": "date,open,high,low,close,volume",
+            "rows": rows,
+        },
+    }
+    for bar in bars:
+        bar.update({
+            "source": "tencent",
+            "adjustment_mode": "raw",
+            "adjustment_version": "tencent-qt-daily-v1",
+            "retrieved_at": observed_at,
+            "is_final": True,
+            "_capture_receipt": receipt,
+        })
+    return CapturedTencentBars(bars, receipt)

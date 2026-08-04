@@ -30,7 +30,14 @@ def _default_db() -> Path:
                                str(Path.home() / ".stockdata" / "cache.sqlite")))
 
 
-_service = HistoryService(Cache(_default_db()))
+_service: HistoryService | None = None
+
+
+def _get_service() -> HistoryService:
+    global _service
+    if _service is None:
+        _service = HistoryService(Cache(_default_db()))
+    return _service
 
 
 def _today() -> str:
@@ -40,7 +47,7 @@ def _today() -> str:
 def get_daily(code: str, start_date: str, end_date: str = "") -> dict:
     """历史日线（前复权）。返回列式 {data:{time,code,open,high,low,close,volume}}。"""
     end = end_date or _today()
-    rows = _service.get_history(code, start_date, end, today=_today())
+    rows = _get_service().get_history(code, start_date, end, today=_today())
     return to_columnar({normalize(code): rows})
 
 
@@ -48,7 +55,7 @@ def get_daily_df(code: str, start_date: str, end_date: str = ""):
     """历史日线 → pandas DataFrame（date/open/high/low/close/volume）。"""
     import pandas as pd
     end = end_date or _today()
-    rows = _service.get_history(code, start_date, end, today=_today())
+    rows = _get_service().get_history(code, start_date, end, today=_today())
     return pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
 
 

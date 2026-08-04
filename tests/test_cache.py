@@ -4,6 +4,8 @@
 缺口语义: 相对已覆盖区间 [min,max] 的左右延伸段（往前/往后扩历史），
 停牌造成的中间空洞不视为缺口。
 """
+import sqlite3
+
 import pytest
 
 from stockdata.cache import Cache
@@ -108,3 +110,165 @@ class TestPersistenceOffline:
         c2 = Cache(p)
         rows = c2.get_range("600519.SH", "2024-01-01", "2024-01-31")
         assert len(rows) == 3
+
+    def test_migrates_legacy_schema_in_place(self, tmp_path):
+        path = tmp_path / "legacy.sqlite"
+        connection = sqlite3.connect(path)
+        connection.execute(
+            "CREATE TABLE daily (code TEXT NOT NULL,date TEXT NOT NULL,"
+            "open REAL,high REAL,low REAL,close REAL,volume REAL,source TEXT,"
+            "PRIMARY KEY (code,date))"
+        )
+        connection.execute(
+            "INSERT INTO daily VALUES (?,?,?,?,?,?,?,?)",
+            ("600519.SH", "2024-01-02", 1, 2, 0.5, 1.5, 100, None),
+        )
+        connection.commit()
+        connection.close()
+
+        migrated = Cache(path)
+        rows = migrated.get_range("600519.SH", "2024-01-01", "2024-01-31")
+        assert rows[0]["close"] == 1.5
+        assert rows[0]["source"] == "legacy_unknown"
+        assert rows[0]["adjustment_mode"] == "unknown"
+        assert rows[0]["adjustment_version"] == "legacy_unknown"
+        assert rows[0]["retrieved_at"]
+        assert rows[0]["is_final"] is True
+        retrieved_at = rows[0]["retrieved_at"]
+        migrated.close()
+
+        reopened = Cache(path)
+        rows = reopened.get_range("600519.SH", "2024-01-01", "2024-01-31")
+        assert len(rows) == 1
+        assert rows[0]["retrieved_at"] == retrieved_at
+        assert reopened.schema_version >= 2
+
+    def test_migrates_schema_without_source_column(self, tmp_path):
+        path = tmp_path / "oldest.sqlite"
+        connection = sqlite3.connect(path)
+        connection.execute(
+            "CREATE TABLE daily (code TEXT NOT NULL,date TEXT NOT NULL,"
+            "open REAL,high REAL,low REAL,close REAL,volume REAL,"
+            "PRIMARY KEY (code,date))"
+        )
+        connection.execute(
+            "INSERT INTO daily VALUES (?,?,?,?,?,?,?)",
+            ("600519.SH", "2024-01-02", 1, 2, 0.5, 1.5, 100),
+        )
+        connection.commit()
+        connection.close()
+
+        migrated = Cache(path)
+        row = migrated.get_range("600519.SH", "2024-01-02", "2024-01-02")[0]
+        assert row["source"] == "legacy_unknown"
+        assert row["close"] == 1.5
+
+
+class TestMetadataIsolation:
+    def test_source_filter_does_not_return_other_provider(self, cache):
+        cache.upsert(
+            "600519.SH", [BARS_JAN[0]], source="other",
+            adjustment_mode="qfq", adjustment_version="shared-qfq-v1",
+        )
+        assert cache.get_range(
+            "600519.SH", "2024-01-01", "2024-01-31",
+            source="baostock", adjustment_mode="qfq",
+            adjustment_version="shared-qfq-v1",
+        ) == []
+
+    def test_price_variants_coexist_without_overwriting_each_other(self, cache):
+        cache.upsert(
+            "600519.SH", [BARS_JAN[0]],
+            source="baostock", adjustment_mode="qfq",
+            adjustment_version="baostock-adjustflag-2",
+        )
+        raw_bar = {**BARS_JAN[0], "close": 9.9}
+        cache.upsert(
+            "600519.SH", [raw_bar], source="baostock",
+            adjustment_mode="raw", adjustment_version="baostock-adjustflag-3",
+        )
+        qfq = cache.get_range(
+            "600519.SH", "2024-01-01", "2024-01-31", source="baostock",
+            adjustment_mode="qfq", adjustment_version="baostock-adjustflag-2",
+        )
+        raw = cache.get_range(
+            "600519.SH", "2024-01-01", "2024-01-31", source="baostock",
+            adjustment_mode="raw", adjustment_version="baostock-adjustflag-3",
+        )
+        assert qfq[0]["close"] == 1.1
+        assert raw[0]["close"] == 9.9
+        with pytest.raises(ValueError, match="multiple price variants"):
+            cache.get_range("600519.SH", "2024-01-01", "2024-01-31")
+
+    def test_rejects_bar_metadata_conflicting_with_batch(self, cache):
+        bar = dict(BARS_JAN[0])
+        bar["adjustment_mode"] = "raw"
+        with pytest.raises(ValueError, match="adjustment_mode"):
+            cache.upsert("600519.SH", [bar], adjustment_mode="qfq")
+
+    def test_empty_retrieved_at_is_filled(self, cache):
+        bar = dict(BARS_JAN[0])
+        bar["retrieved_at"] = ""
+        cache.upsert("600519.SH", [bar])
+        row = cache.get_range("600519.SH", "2024-01-02", "2024-01-02")[0]
+        assert row["retrieved_at"]
+
+    def test_capture_receipts_are_append_only_and_hashed(self, cache):
+        receipt = {
+            "observed_at": "2026-07-27T10:00:00+00:00",
+            "source": "baostock",
+            "request": {"code": "sh.600519"},
+            "response": {"rows": [["2024-01-02", "1.1"]]},
+        }
+        cache.upsert(
+            "600519.SH", [{**BARS_JAN[0], "_capture_receipt": receipt}],
+            capture_receipts=[receipt],
+        )
+        row = cache._conn.execute(
+            "SELECT request_json,response_json,response_sha256 FROM collection_receipts"
+        ).fetchone()
+        assert row["request_json"] == '{"code":"sh.600519"}'
+        assert len(row["response_sha256"]) == 64
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            cache._conn.execute("DELETE FROM collection_receipts")
+
+    def test_migration_rebuilds_daily_primary_key_for_variants(self, tmp_path):
+        path = tmp_path / "v3.sqlite"
+        connection = sqlite3.connect(path)
+        connection.execute(
+            "CREATE TABLE daily (code TEXT NOT NULL,date TEXT NOT NULL,open REAL,"
+            "high REAL,low REAL,close REAL,volume REAL,source TEXT NOT NULL,"
+            "adjustment_mode TEXT NOT NULL,adjustment_version TEXT NOT NULL,"
+            "retrieved_at TEXT NOT NULL,is_final INTEGER NOT NULL,"
+            "PRIMARY KEY (code,date))"
+        )
+        connection.execute(
+            "INSERT INTO daily VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("600519.SH", "2024-01-02", 1, 2, 0.5, 1.5, 100, "baostock",
+             "qfq", "baostock-adjustflag-2", "2024-01-03T00:00:00+00:00", 1),
+        )
+        connection.commit()
+        connection.close()
+
+        cache = Cache(path)
+        cache.upsert(
+            "600519.SH", [{**BARS_JAN[0], "close": 9.9}],
+            adjustment_mode="raw", adjustment_version="baostock-adjustflag-3",
+        )
+        assert cache.schema_version == 4
+        assert cache._daily_primary_key() == (
+            "code", "date", "source", "adjustment_mode", "adjustment_version"
+        )
+        assert cache.get_range(
+            "600519.SH", "2024-01-02", "2024-01-02", source="baostock",
+            adjustment_mode="qfq",
+            adjustment_version="baostock-adjustflag-2",
+        )[0]["close"] == 1.5
+
+    def test_coverage_requires_full_identity_when_variants_exist(self, cache):
+        cache.upsert("600519.SH", [BARS_JAN[0]], adjustment_mode="qfq")
+        cache.upsert("600519.SH", [BARS_JAN[0]], adjustment_mode="raw")
+        with pytest.raises(ValueError, match="multiple price variants"):
+            cache.covered_range("600519.SH")
+        with pytest.raises(ValueError, match="provided together"):
+            cache.covered_range("600519.SH", adjustment_mode="qfq")
