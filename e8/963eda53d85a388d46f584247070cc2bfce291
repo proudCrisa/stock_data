@@ -1,0 +1,21 @@
+stockdata/jqdata_bootstrap.py
+  s_d9c3455ff4eabe::t_284ba4dc121485 173-175
+tests/test_jqdata_bootstrap.py
+  s_d9c3455ff4eabe::t_9c73877e23f5b0 237-259
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "e8963eda53d85a388d46f584247070cc2bfce291",
+  "prompts": {},
+  "sessions": {
+    "s_d9c3455ff4eabe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f60035e3-bf34-42bc-bfea-b96c781606da",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
