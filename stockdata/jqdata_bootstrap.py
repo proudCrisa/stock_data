@@ -170,7 +170,9 @@ def _status_rows(
         raise
     except Exception as exc:  # noqa: BLE001
         message = str(exc)
-        if all(token in message for token in ("账号", "权限", "数据")):
+        if all(token in message for token in ("账号", "权限", "数据")) or (
+            "权限仅能获取" in message and "时间参数" in message
+        ):
             raise JQDataBootstrapError(
                 "JQData account cannot access the requested status date"
             ) from None

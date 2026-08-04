@@ -234,3 +234,26 @@ def test_inaccessible_status_date_is_redacted_before_universe_query() -> None:
     assert "private-secret" not in repr(captured.value)
     assert captured.value.__cause__ is None
     assert sdk.universe_calls == []
+
+
+def test_trial_date_range_failure_is_classified_without_vendor_text() -> None:
+    sdk = FakeJQData(
+        status_error=RuntimeError(
+            "权限仅能获取2025-04-27至2026-05-04的数据，请调整时间参数后重试"
+        )
+    )
+
+    with pytest.raises(
+        JQDataBootstrapError,
+        match="account cannot access the requested status date",
+    ) as captured:
+        build_bootstrap_artifact(
+            sdk,
+            panel={("000001.SZ", "2026-07-22")},
+            observed_at="2026-08-05T00:15:00+08:00",
+            max_rows=20_000,
+        )
+
+    assert "2025-04-27" not in repr(captured.value)
+    assert "2026-05-04" not in repr(captured.value)
+    assert sdk.universe_calls == []
