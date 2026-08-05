@@ -1,0 +1,21 @@
+scripts/fetch_baostock_calendar.py
+  s_d9c3455ff4eabe::t_f75a4305db4eb4 1-40
+tests/test_research_calendar.py
+  s_d9c3455ff4eabe::t_46a8d974437608 1-68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "b4e40b442dee43e1f580e796c121c2ac20084249",
+  "prompts": {},
+  "sessions": {
+    "s_d9c3455ff4eabe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f60035e3-bf34-42bc-bfea-b96c781606da",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
