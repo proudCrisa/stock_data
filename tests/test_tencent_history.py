@@ -43,6 +43,25 @@ def test_fetch_history_filters_server_window_and_preserves_receipt():
     assert captured[0]["adjustment_mode"] == "raw"
     assert captured.capture_receipt["source"] == "tencent-fqkline-history-v1"
     assert captured.capture_receipt["response"]["pages"][0]["response"]["adjustment_key"] == "day"
+    assert captured.capture_receipt["response"]["pages"][0]["request"]["params"]["param"].startswith(
+        "sh600519,day,2025-01-01,2025-01-02,640,"
+    )
+
+
+def test_fetch_history_partitions_cross_year_requests():
+    calls = []
+
+    def fake_get(url, params, timeout):
+        calls.append(params["param"])
+        return _fake_get(url, params, timeout)
+
+    captured = fetch_tencent_history(
+        "600519.SH", "2024-12-31", "2025-01-02", http_get=fake_get
+    )
+    assert len(calls) == 2
+    assert "2024-12-31,2024-12-31,640," in calls[0]
+    assert "2025-01-01,2025-01-02,640," in calls[1]
+    assert [bar["date"] for bar in captured] == ["2024-12-31", "2025-01-02"]
 
 
 def test_adjustment_mode_selects_distinct_response_key():

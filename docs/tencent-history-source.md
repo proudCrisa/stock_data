@@ -4,10 +4,10 @@
 
 `https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get`
 
-The request is made once per requested calendar year with `symbol=sh600519` or
-`sz000001`. Tencent may return its latest 640 bars regardless of the requested
-window, so the parser applies a second local date filter and records the actual
-coverage in the artifact manifest.
+The request is partitioned by requested calendar year with `symbol=sh600519` or
+`sz000001`. Each response is capped at 640 bars and is bounded by that year's
+requested start/end dates. The parser still applies a second local date filter
+and records the actual coverage in the artifact manifest.
 
 The response keys are kept distinct:
 

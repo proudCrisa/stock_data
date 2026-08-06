@@ -94,15 +94,17 @@ def _iso_date(value: str, field: str) -> str:
 
 def _request_page(
     symbol: str,
-    year: int,
+    page_start: str,
+    page_end: str,
     adjustment_mode: str,
     timeout: float,
     http_get: Callable[[str, Mapping[str, str], float], tuple[str, str]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, object]]:
     adjustment_key = _ADJUSTMENT_KEYS[adjustment_mode]
+    year = page_end[:4]
     params = {
         "_var": f"kline_day{'' if adjustment_mode == 'raw' else adjustment_mode}{symbol}{year}",
-        "param": f"{symbol},day,{year}-01-01,{year + 1}-12-31,640,{'' if adjustment_mode == 'raw' else adjustment_mode}",
+        "param": f"{symbol},day,{page_start},{page_end},640,{'' if adjustment_mode == 'raw' else adjustment_mode}",
         "r": "0.8205512681390605",
     }
     if http_get is None:
@@ -188,8 +190,12 @@ def fetch_tencent_history(
     symbol = to_tencent(code).replace(".", "")
     pages: list[dict[str, object]] = []
     bars_by_date: dict[str, dict[str, object]] = {}
-    for year in range(date.fromisoformat(start_date).year, date.fromisoformat(end_date).year + 1):
-        payload, receipt = _request_page(symbol, year, adjustment_mode, timeout, http_get)
+    first_year = date.fromisoformat(start_date).year
+    last_year = date.fromisoformat(end_date).year
+    for year in range(first_year, last_year + 1):
+        page_start = max(start_date, f"{year}-01-01")
+        page_end = min(end_date, f"{year}-12-31")
+        payload, receipt = _request_page(symbol, page_start, page_end, adjustment_mode, timeout, http_get)
         pages.append(receipt)
         for bar in _parse_rows(payload, symbol, adjustment_mode):
             if start_date <= str(bar["date"]) <= end_date:
