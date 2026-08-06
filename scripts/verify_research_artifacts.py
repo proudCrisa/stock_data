@@ -4,11 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from stockdata.research_calendar import verify_calendar_artifact
 from stockdata.research_corporate_actions import verify_corporate_action_artifact
 from stockdata.research_universe import verify_universe_artifact
+from stockdata.fetch_tencent_history import verify_tencent_history_artifact
 
 
 def _artifacts(root: Path, kind: str, verifier):
@@ -32,6 +38,7 @@ def main() -> int:
         ("calendar", verify_calendar_artifact),
         ("corporate-actions", verify_corporate_action_artifact),
         ("index-universe", verify_universe_artifact),
+        ("tencent-history", verify_tencent_history_artifact),
     ):
         for manifest in _artifacts(root, kind, verifier):
             artifacts.append({"kind": kind, **manifest})
