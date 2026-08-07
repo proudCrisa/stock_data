@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 from collections.abc import Callable
@@ -29,6 +30,30 @@ def _base_command(spec: CaptureSpec) -> list[str]:
         "-m",
         "stockdata.cli",
     ]
+
+
+def _cohort_start(spec: CaptureSpec) -> str:
+    if not spec.database.exists():
+        return spec.effective_date
+    try:
+        with sqlite3.connect(spec.database) as connection:
+            row = connection.execute(
+                "SELECT spec_json FROM forward_capture_cohort WHERE singleton=1"
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return spec.effective_date
+    if row is None:
+        return spec.effective_date
+    cohort = json.loads(str(row[0]))
+    expected = {
+        "symbols": list(sorted(spec.symbols)),
+        "source": spec.source,
+        "adjustment_mode": "raw",
+        "adjustment_version": spec.adjustment_version,
+    }
+    if any(cohort.get(key) != value for key, value in expected.items()):
+        raise ForwardPanelCaptureError("forward capture cohort identity drift")
+    return str(cohort["start"])
 
 
 def commands_for_phase(spec: CaptureSpec, phase: str) -> tuple[tuple[str, ...], ...]:
@@ -57,6 +82,7 @@ def commands_for_phase(spec: CaptureSpec, phase: str) -> tuple[tuple[str, ...], 
         )
         return context, corporate_actions
     if phase == "post_close":
+        cohort_start = _cohort_start(spec)
         prices = tuple(
             base
             + [
@@ -66,7 +92,7 @@ def commands_for_phase(spec: CaptureSpec, phase: str) -> tuple[tuple[str, ...], 
                 "--codes",
                 ",".join(spec.symbols),
                 "--start",
-                spec.effective_date,
+                cohort_start,
                 "--end",
                 spec.effective_date,
                 "--source",
