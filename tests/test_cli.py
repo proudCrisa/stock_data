@@ -79,6 +79,40 @@ class TestBuildParams:
             "kind": "rqgm_provider_export",
             "bundle_file": "/tmp/bundle.json",
         }
+    def test_rqgm_provider_materialize_params(self):
+        components = (
+            "execution_prices",
+            "signal_prices",
+            "decision_context",
+            "trading_calendar",
+            "universe",
+            "instrument_status",
+            "corporate_actions",
+            "market_rules",
+            "availability_records",
+        )
+        args = [
+            "rqgm-provider-materialize",
+            "--output-dir",
+            "/tmp/closure",
+            "--database",
+            "/tmp/cache.sqlite",
+            "--panel-file",
+            "/tmp/panel.json",
+            "--source-receipt",
+            "/tmp/receipt.json",
+            "--execution-adjustment-file",
+            "/tmp/execution.json",
+            "--signal-adjustment-file",
+            "/tmp/signal.json",
+            "--source",
+            "baostock",
+        ]
+        for component in components:
+            args.extend(("--component-file", f"{component}=/tmp/{component}.json"))
+        assert build_params(args)["component_files"] == {
+            component: f"/tmp/{component}.json" for component in components
+        }
 
     def test_forward_corporate_actions_capture_params(self):
         assert build_params(

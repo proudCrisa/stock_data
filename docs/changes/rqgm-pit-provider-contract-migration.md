@@ -33,6 +33,18 @@ availability, authority, and dual-adjustment changes removes the new path withou
 the underlying database or source receipts. The export command never repairs or writes
 provider evidence.
 
+## Current Gate
+
+`rqgm-provider-materialize` creates a content-addressed input closure from the
+actual database, exact panel, source receipts, both adjustment identities, and
+all nine component files. It rejects research-only receipts, missing components,
+duplicate receipts, and an existing output directory.
+
+It does not attest a publisher, backfill availability, or turn retrospective
+collection into PIT evidence. Its report remains explicitly fail-closed with
+`provider_component_authority_not_attested` until independently enrolled and
+verified authorities exist.
+
 ## Verification
 
 - `python3 -m pytest` in `stock_data`: `256 passed, 3 deselected`.

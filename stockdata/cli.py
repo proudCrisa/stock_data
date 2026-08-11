@@ -94,6 +94,16 @@ def build_params(argv: list) -> dict:
     provider_export = sub.add_parser("rqgm-provider-export")
     provider_export.add_argument("--bundle-file", required=True)
 
+    provider_materialize = sub.add_parser("rqgm-provider-materialize")
+    provider_materialize.add_argument("--output-dir", required=True)
+    provider_materialize.add_argument("--database", required=True)
+    provider_materialize.add_argument("--panel-file", required=True)
+    provider_materialize.add_argument("--source-receipt", action="append", required=True)
+    provider_materialize.add_argument("--execution-adjustment-file", required=True)
+    provider_materialize.add_argument("--signal-adjustment-file", required=True)
+    provider_materialize.add_argument("--component-file", action="append", required=True)
+    provider_materialize.add_argument("--source", required=True)
+
     jqdata_bootstrap = sub.add_parser("jqdata-bootstrap")
     jqdata_bootstrap.add_argument("--panel-file", required=True)
     jqdata_bootstrap.add_argument("--max-rows", required=True, type=int)
@@ -176,6 +186,24 @@ def build_params(argv: list) -> dict:
             "kind": "rqgm_provider_export",
             "bundle_file": args.bundle_file,
         }
+    if args.kind == "rqgm-provider-materialize":
+        component_files = {}
+        for value in args.component_file:
+            component, separator, path = value.partition("=")
+            if not separator or not component or not path or component in component_files:
+                parser.error("--component-file must be COMPONENT=PATH and each component appears once")
+            component_files[component] = path
+        return {
+            "kind": "rqgm_provider_materialize",
+            "output_dir": args.output_dir,
+            "database": args.database,
+            "panel_file": args.panel_file,
+            "source_receipts": args.source_receipt,
+            "execution_adjustment_file": args.execution_adjustment_file,
+            "signal_adjustment_file": args.signal_adjustment_file,
+            "component_files": component_files,
+            "source": args.source,
+        }
     if args.kind == "jqdata-bootstrap":
         return {
             "kind": "jqdata_bootstrap",
@@ -228,6 +256,22 @@ def main(argv=None):
     if params["kind"] == "rqgm_provider_export":
         from .provider_export import export_verified_provider_receipt
         out = export_verified_provider_receipt(params["bundle_file"])
+        json.dump(out, sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return 0
+    if params["kind"] == "rqgm_provider_materialize":
+        from .provider_materializer import materialize_provider_bundle
+
+        out = materialize_provider_bundle(
+            output_dir=params["output_dir"],
+            database_file=params["database"],
+            panel_file=params["panel_file"],
+            source_receipt_files=params["source_receipts"],
+            execution_adjustment_file=params["execution_adjustment_file"],
+            signal_adjustment_file=params["signal_adjustment_file"],
+            component_files=params["component_files"],
+            source=params["source"],
+        )
         json.dump(out, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
         return 0

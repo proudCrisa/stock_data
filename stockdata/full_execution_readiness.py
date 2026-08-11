@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from datetime import date
 from pathlib import Path
 from typing import Iterable
@@ -70,7 +71,7 @@ def check_full_execution_readiness(
         context = check_forward_context_readiness(
             str(Path(database).expanduser().resolve()), frozen_panel
         )
-    except (OSError, ValueError):
+    except (OSError, ValueError, sqlite3.DatabaseError):
         context = {
             "ready": False,
             "blockers": [{"code": "context_database_unreadable", "count": 1}],
@@ -79,7 +80,7 @@ def check_full_execution_readiness(
         corporate_actions = check_forward_corporate_action_readiness(
             str(Path(database).expanduser().resolve()), frozen_panel
         )
-    except (OSError, ValueError):
+    except (OSError, ValueError, sqlite3.DatabaseError):
         corporate_actions = {
             "ready": False,
             "integrity_ready": False,
