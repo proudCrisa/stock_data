@@ -72,7 +72,7 @@ class TestOfflineFallback:
 
 
 class TestPrimaryFailFallback:
-    def test_fallback_used_when_primary_fails(self, cache):
+    def test_unqualified_fallback_is_not_mixed_into_qfq(self, cache):
         primary = RecordingPrimary([], fail=True)
         fb_calls = []
 
@@ -82,8 +82,8 @@ class TestPrimaryFailFallback:
 
         svc = HistoryService(cache, primary_fetch=primary, fallback_fetch=fallback)
         rows = svc.get_history("600519.SH", "2024-01-02", "2024-01-04", today="2024-01-10")
-        assert len(fb_calls) == 1        # 主源失败 → 用兜底
-        assert len(rows) == 3            # 兜底数据落缓存后返回
+        assert fb_calls == []
+        assert rows == []
 
 
 class TestTodayBar:
@@ -113,6 +113,80 @@ class TestTodayBar:
         svc = HistoryService(cache, primary_fetch=primary, today_fetch=lambda code: None)
         rows = svc.get_history("600519.SH", "2024-01-02", "2024-01-06", today="2024-01-06")
         assert len(rows) == 3   # 今日无成交占位 → None → 不追加
+
+    def test_finalized_only_excludes_today_bar(self, cache, monkeypatch):
+        monkeypatch.setattr(
+            "stockdata.service.latest_finalized_date", lambda: "2024-01-04"
+        )
+        cache.upsert("600519.SH", BARS_H1)
+        today_bar = {"date": "2024-01-05", "open": 1.3, "high": 1.6,
+                     "low": 1.2, "close": 1.5, "volume": 500}
+        primary = RecordingPrimary(BARS_H1)
+        svc = HistoryService(
+            cache,
+            primary_fetch=primary,
+            today_fetch=lambda code: today_bar,
+        )
+        rows = svc.get_history(
+            "600519.SH", "2024-01-02", "2024-01-05",
+            today="2024-01-05", finalized_only=True,
+        )
+        assert [row["date"] for row in rows] == [
+            "2024-01-02", "2024-01-03", "2024-01-04"
+        ]
+        assert primary.calls == []
+
+    def test_finalized_only_excludes_cached_today_even_if_mislabeled(
+        self, cache, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "stockdata.service.latest_finalized_date", lambda: "2024-01-04"
+        )
+        cache.upsert("600519.SH", BARS_H1 + [{
+            "date": "2024-01-05", "open": 1.3, "high": 1.6,
+            "low": 1.2, "close": 1.5, "volume": 500, "is_final": True,
+        }])
+        svc = HistoryService(cache, primary_fetch=RecordingPrimary(BARS_H1))
+        rows = svc.get_history(
+            "600519.SH", "2024-01-02", "2024-01-05",
+            today="2024-01-05", finalized_only=True,
+        )
+        assert rows[-1]["date"] == "2024-01-04"
+
+    def test_finalized_only_includes_today_after_close(self, cache, monkeypatch):
+        monkeypatch.setattr(
+            "stockdata.service.latest_finalized_date", lambda: "2024-01-05"
+        )
+        cache.upsert("600519.SH", BARS_H1 + [{
+            "date": "2024-01-05", "open": 1.3, "high": 1.6,
+            "low": 1.2, "close": 1.5, "volume": 500, "is_final": True,
+        }])
+        svc = HistoryService(cache, primary_fetch=RecordingPrimary(BARS_H1))
+
+        rows = svc.get_history(
+            "600519.SH", "2024-01-02", "2024-01-05",
+            today="2024-01-05", finalized_only=True,
+        )
+
+        assert rows[-1]["date"] == "2024-01-05"
+
+    def test_today_bar_has_complete_provenance(self, cache):
+        cache.upsert("600519.SH", BARS_H1)
+        today_bar = {"date": "2024-01-05", "open": 1.3, "high": 1.6,
+                     "low": 1.2, "close": 1.5, "volume": 500}
+        svc = HistoryService(
+            cache,
+            primary_fetch=RecordingPrimary(BARS_H1),
+            today_fetch=lambda code: today_bar,
+        )
+        row = svc.get_history(
+            "600519.SH", "2024-01-02", "2024-01-05", today="2024-01-05"
+        )[-1]
+        assert row["source"] == "tencent"
+        assert row["adjustment_mode"] == "intraday"
+        assert row["adjustment_version"] == "tencent-realtime-v1"
+        assert row["retrieved_at"]
+        assert row["is_final"] is False
 
 
 class TestNormalization:

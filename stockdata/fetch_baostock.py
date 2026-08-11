@@ -7,10 +7,23 @@ from __future__ import annotations
 
 import contextlib
 import os
+from datetime import datetime, timezone
+
+from .finalization import latest_finalized_date
 
 from .ticker import to_baostock
 
 _NUMERIC = ("open", "high", "low", "close", "volume")
+_ADJUST_FLAGS = {"hfq": "1", "qfq": "2", "raw": "3"}
+_ADJUST_MODES = {value: key for key, value in _ADJUST_FLAGS.items()}
+
+
+class CapturedBars(list[dict]):
+    """Parsed bars with the exact provider request/response capture metadata."""
+
+    def __init__(self, bars: list[dict], capture_receipt: dict):
+        super().__init__(bars)
+        self.capture_receipt = capture_receipt
 
 
 @contextlib.contextmanager
@@ -39,13 +52,29 @@ def _parse_rows(fields: str, rows: list) -> list[dict]:
     return out
 
 
-def fetch_baostock(code: str, start: str, end: str, adjustflag: str = "2") -> list[dict]:
+def fetch_baostock(
+    code: str,
+    start: str,
+    end: str,
+    adjustflag: str | None = None,
+    adjustment_mode: str = "qfq",
+) -> list[dict]:
     """拉取 [start,end] 前复权日线。需网络 + baostock 登录。
 
     返回内部 bar 列表（date 升序，date/open/high/low/close/volume）。
     失败抛异常，交由上层 service 决定兜底。
     """
     import baostock as bs
+
+    if adjustflag is None:
+        try:
+            adjustflag = _ADJUST_FLAGS[adjustment_mode]
+        except KeyError as exc:
+            raise ValueError(f"unsupported adjustment_mode: {adjustment_mode}") from exc
+    elif adjustflag not in _ADJUST_MODES:
+        raise ValueError(f"unsupported adjustflag: {adjustflag}")
+    else:
+        adjustment_mode = _ADJUST_MODES[adjustflag]
 
     bs_code = to_baostock(code)
     with _suppress_stdout():
@@ -68,4 +97,32 @@ def fetch_baostock(code: str, start: str, end: str, adjustflag: str = "2") -> li
                 rows.append(rs.get_row_data())
         finally:
             bs.logout()
-    return _parse_rows("date,open,high,low,close,volume", rows)
+    retrieved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    version = f"baostock-adjustflag-{adjustflag}"
+    fields = "date,open,high,low,close,volume"
+    bars = _parse_rows(fields, rows)
+    receipt = {
+        "observed_at": retrieved_at,
+        "source": "baostock",
+        "request": {
+            "method": "query_history_k_data_plus",
+            "code": bs_code,
+            "fields": fields,
+            "start_date": start,
+            "end_date": end,
+            "frequency": "d",
+            "adjustflag": adjustflag,
+        },
+        # Preserve raw provider strings before numeric normalization changes them.
+        "response": {"fields": fields, "rows": rows},
+    }
+    for bar in bars:
+        bar.update({
+            "source": "baostock",
+            "adjustment_mode": adjustment_mode,
+            "adjustment_version": version,
+            "retrieved_at": retrieved_at,
+            "is_final": bar["date"] <= latest_finalized_date(),
+            "_capture_receipt": receipt,
+        })
+    return CapturedBars(bars, receipt)
