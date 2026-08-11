@@ -104,6 +104,12 @@ def build_params(argv: list) -> dict:
     provider_materialize.add_argument("--component-file", action="append", required=True)
     provider_materialize.add_argument("--source", required=True)
 
+    registered_capture = sub.add_parser("registered-panel-capture")
+    registered_capture.add_argument("--registration-file", required=True)
+    registered_capture.add_argument("--database", required=True)
+    registered_capture.add_argument("--date", required=True)
+    registered_capture.add_argument("--phase", choices=("pre_open", "post_close"), required=True)
+
     jqdata_bootstrap = sub.add_parser("jqdata-bootstrap")
     jqdata_bootstrap.add_argument("--panel-file", required=True)
     jqdata_bootstrap.add_argument("--max-rows", required=True, type=int)
@@ -204,6 +210,14 @@ def build_params(argv: list) -> dict:
             "component_files": component_files,
             "source": args.source,
         }
+    if args.kind == "registered-panel-capture":
+        return {
+            "kind": "registered_panel_capture",
+            "registration_file": args.registration_file,
+            "database": args.database,
+            "effective_date": args.date,
+            "phase": args.phase,
+        }
     if args.kind == "jqdata-bootstrap":
         return {
             "kind": "jqdata_bootstrap",
@@ -271,6 +285,18 @@ def main(argv=None):
             signal_adjustment_file=params["signal_adjustment_file"],
             component_files=params["component_files"],
             source=params["source"],
+        )
+        json.dump(out, sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return 0
+    if params["kind"] == "registered_panel_capture":
+        from .registered_panel_capture import capture_registered_panel
+
+        out = capture_registered_panel(
+            params["registration_file"],
+            database=params["database"],
+            effective_date=params["effective_date"],
+            phase=params["phase"],
         )
         json.dump(out, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
