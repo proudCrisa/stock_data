@@ -1,0 +1,36 @@
+stockdata/cli.py
+  s_b86e20c0c6560a::t_b0d3e8f6be0fcb 97-106,189-206,262-274
+  s_b86e20c0c6560a::t_b6b518c8c567b2 275-277
+tests/test_cli.py
+  s_b86e20c0c6560a::t_a2c9d1a90a5a7d 83,94,111-115
+  s_b86e20c0c6560a::t_c90314018349a2 82
+  s_b86e20c0c6560a::t_907f05a18c5e45 84-93,95-110
+stockdata/provider_materializer.py
+  s_b86e20c0c6560a::t_b0d3e8f6be0fcb 1-10,16-191,196-205,209-212,215-222,224-225,227-310
+  s_b86e20c0c6560a::t_bc22b0a75f31d9 11-15,223,226
+  s_b86e20c0c6560a::t_538e94036d3d25 192-195,206-208,213-214
+tests/test_provider_materializer.py
+  s_b86e20c0c6560a::t_fa2bdc488e6fd3 11,118-136
+  s_b86e20c0c6560a::t_6a69c0bd0245cd 1-10,12-24,26-117
+  s_b86e20c0c6560a::t_0f1d222d695f80 25
+docs/changes/rqgm-pit-provider-contract-migration.md
+  s_b86e20c0c6560a::t_199ba9a4817bf7 36-47
+stockdata/full_execution_readiness.py
+  s_b86e20c0c6560a::t_e8159b47bd17b1 7,74,83
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a1851895e6944ffd896a2c5090d447f40a6e006d",
+  "prompts": {},
+  "sessions": {
+    "s_b86e20c0c6560a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7449-9f4b-7bc3-b343-c5b25486b9aa",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
