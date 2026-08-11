@@ -1,0 +1,26 @@
+stockdata/cli.py
+  s_b86e20c0c6560a::t_02778567ae04d6 107-112,213-220,292-299
+  s_b86e20c0c6560a::t_a9ad95f308b5c0 300-302
+  s_b86e20c0c6560a::t_cd616e15b9369e 303
+stockdata/registered_panel_capture.py
+  s_b86e20c0c6560a::t_02778567ae04d6 1-137
+tests/test_registered_panel_capture.py
+  s_b86e20c0c6560a::t_02778567ae04d6 1-7,9-10,12-92,113-130
+  s_b86e20c0c6560a::t_5a230b04ae357a 8,11,93-112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "79b6cfa233efa49d118d71248c90c97f544e8034",
+  "prompts": {},
+  "sessions": {
+    "s_b86e20c0c6560a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7449-9f4b-7bc3-b343-c5b25486b9aa",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
