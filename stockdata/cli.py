@@ -102,6 +102,7 @@ def build_params(argv: list) -> dict:
     provider_materialize.add_argument("--execution-adjustment-file", required=True)
     provider_materialize.add_argument("--signal-adjustment-file", required=True)
     provider_materialize.add_argument("--component-file", action="append", required=True)
+    provider_materialize.add_argument("--component-authority", action="append")
     provider_materialize.add_argument("--source", required=True)
 
     registered_capture = sub.add_parser("registered-panel-capture")
@@ -199,6 +200,12 @@ def build_params(argv: list) -> dict:
             if not separator or not component or not path or component in component_files:
                 parser.error("--component-file must be COMPONENT=PATH and each component appears once")
             component_files[component] = path
+        component_authority_files = {}
+        for value in args.component_authority or []:
+            component, separator, path = value.partition("=")
+            if not separator or not component or not path or component in component_authority_files:
+                parser.error("--component-authority COMPONENT=PATH must be unique")
+            component_authority_files[component] = path
         return {
             "kind": "rqgm_provider_materialize",
             "output_dir": args.output_dir,
@@ -208,6 +215,7 @@ def build_params(argv: list) -> dict:
             "execution_adjustment_file": args.execution_adjustment_file,
             "signal_adjustment_file": args.signal_adjustment_file,
             "component_files": component_files,
+            "component_authority_files": component_authority_files,
             "source": args.source,
         }
     if args.kind == "registered-panel-capture":
@@ -284,6 +292,7 @@ def main(argv=None):
             execution_adjustment_file=params["execution_adjustment_file"],
             signal_adjustment_file=params["signal_adjustment_file"],
             component_files=params["component_files"],
+            component_authority_files=params["component_authority_files"],
             source=params["source"],
         )
         json.dump(out, sys.stdout, ensure_ascii=False)

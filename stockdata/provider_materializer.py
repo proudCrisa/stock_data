@@ -16,6 +16,12 @@ from stockdata.adjustment_identity import (
 from stockdata.companion_snapshot import build_companion_snapshot
 from stockdata.execution_readiness import load_panel
 from stockdata.full_execution_readiness import check_full_execution_readiness
+from stockdata.authority import load_provider_trust_registry
+from stockdata.provider_authority_admission import (
+    AdmittedProviderAuthority,
+    SIGNED_COMPONENTS,
+    admit_signed_component_authority,
+)
 from stockdata.provider_export import EXPORT_SCHEMA, export_verified_provider_receipt
 from stockdata.rqgm_provider_contract import (
     CHECKOUT_SCHEMA,
@@ -106,6 +112,7 @@ def _blocked_report(
     panel: ProviderArtifactReference,
     panel_size: int,
     companion_sha256: str,
+    admitted_authorities: Mapping[str, AdmittedProviderAuthority] | None = None,
 ) -> dict[str, object]:
     reported_components = full_report.get("components")
     if not isinstance(reported_components, Mapping):
@@ -113,7 +120,13 @@ def _blocked_report(
 
     components: dict[str, dict[str, object]] = {}
     blockers: list[dict[str, object]] = []
+    admitted_authorities = admitted_authorities or {}
     for component in REQUIRED_COMPONENTS:
+        admitted = admitted_authorities.get(component)
+        if admitted is not None:
+            evidence = admitted.readiness_evidence()
+            components[component] = evidence
+            continue
         value = reported_components.get(component)
         if not isinstance(value, Mapping):
             raise ProviderMaterializationError(f"full readiness lacks {component}")
@@ -156,6 +169,7 @@ def materialize_provider_bundle(
     execution_adjustment_file: str | Path,
     signal_adjustment_file: str | Path,
     component_files: Mapping[str, str | Path],
+    component_authority_files: Mapping[str, str | Path] | None = None,
     source: str,
 ) -> dict[str, object]:
     """Create one immutable, independently verifiable, but fail-closed bundle.
@@ -169,6 +183,11 @@ def materialize_provider_bundle(
         raise ProviderMaterializationError("output_dir must not already exist")
     if set(component_files) != set(REQUIRED_COMPONENTS):
         raise ProviderMaterializationError("component_files must contain every required component exactly once")
+    authority_files = dict(component_authority_files or {})
+    if not set(authority_files).issubset(SIGNED_COMPONENTS):
+        raise ProviderMaterializationError(
+            "component_authority_files contain unsupported component"
+        )
     if not isinstance(source, str) or not source:
         raise ProviderMaterializationError("source must be non-empty")
     if not source_receipt_files:
@@ -210,6 +229,15 @@ def materialize_provider_bundle(
         component: _read_regular(path, f"component_files.{component}")
         for component, path in component_files.items()
     }
+    component_values = {
+        component: _json(raw, f"component_files[{component}]")
+        for component, raw in component_raws.items()
+    }
+    for component in SIGNED_COMPONENTS.intersection(authority_files):
+        if _canonical(component_values[component]) != component_raws[component]:
+            raise ProviderMaterializationError(
+                f"component_files[{component}] must be canonical JSON"
+            )
     if any(not raw for raw in component_raws.values()):
         raise ProviderMaterializationError("component files must not be empty")
 
@@ -230,6 +258,10 @@ def materialize_provider_bundle(
             _reference("stock-data-source-receipt", SOURCE_RECEIPT_SCHEMA, raw)
             for raw in receipt_raws
         )
+        source_receipt_values = {
+            reference.identifier: _json(raw, "source_receipt_files")
+            for reference, raw in zip(source_receipts, receipt_raws)
+        }
         components = {
             component: _reference(
                 f"stock-data-{component.replace('_', '-')}",
@@ -262,6 +294,38 @@ def materialize_provider_bundle(
             signal_adjustment_version=signal_verified.adjustment_version,
             panel=panel,
         )
+        admitted_authorities = {}
+        if authority_files:
+            registry = load_provider_trust_registry()
+            ordered_components = sorted(
+                authority_files,
+                key=lambda component: (component != "trading_calendar", component),
+            )
+            for component in ordered_components:
+                path = authority_files[component]
+                envelope = _json(
+                    _read_regular(path, f"component_authority_files[{component}]"),
+                    f"component_authority_files[{component}]",
+                )
+                admitted_authorities[component] = admit_signed_component_authority(
+                    component=component,
+                    artifact_value=component_values[component],
+                    authority_envelope=envelope,
+                    expected_panel=panel_entries,
+                    bound_source_receipts=source_receipt_values,
+                    registry=registry,
+                    decision_cutoff_by_panel=(
+                        admitted_authorities["trading_calendar"].decision_cutoff_by_panel
+                        if component != "trading_calendar"
+                        and "trading_calendar" in admitted_authorities
+                        else None
+                    ),
+                )
+            calendar = admitted_authorities.get("trading_calendar")
+            if calendar is None:
+                raise ProviderMaterializationError(
+                    "signed component admission requires trading_calendar authority"
+                )
         companion = build_companion_snapshot(
             coverage_start=min(day for _, day in panel),
             coverage_end=max(day for _, day in panel),
@@ -281,6 +345,7 @@ def materialize_provider_bundle(
             panel=exact_panel,
             panel_size=len(panel),
             companion_sha256=companion.snapshot_sha256,
+            admitted_authorities=admitted_authorities,
         )
         report_raw = _canonical(report)
         readiness = _reference("stock-data-readiness-report", READINESS_REPORT_SCHEMA, report_raw)
