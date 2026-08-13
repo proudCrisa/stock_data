@@ -1,0 +1,68 @@
+stockdata/provider_authority_publisher.py
+  s_b86e20c0c6560a::t_aa9df24d08606c 137-138,174-178
+  s_b86e20c0c6560a::t_ed44fb058d6a8e 1-136,139-173,179-371
+tests/test_provider_authority_workflows.py
+  s_6929d47671fd93::t_3b8bfee6f32a5a 34,69-72,76-77,88,141-144,146,148,155,170-172
+  s_8d8f9a00f26266::t_380e97f162bdd9 115,133-135,137-138
+  s_e561f4305d4830::t_159ddf3f7abcdb 50-67,80-87,101,111-114,116-132,136,139-140,147,149-154,169,173-175,179-181
+  s_b86e20c0c6560a::t_63d5a57ba9d2cd 1-14,27-33,73-75,78-79,158-168
+  s_b86e20c0c6560a::t_58a71043ca2b50 15-17,24-26
+  s_e561f4305d4830::t_38e6538fe32c1b 102-104,108-110
+  s_6929d47671fd93::t_14396d4b675e1f 145
+  s_e561f4305d4830::t_8df9faf5be91ec 176-178
+.github/workflows/provider-registry-custodian.yml
+  s_b86e20c0c6560a::t_51f2e5bc1ecc06 1-5,8-9,12-13,16-17,20-41,64-68,70,75-86
+  s_6929d47671fd93::t_3b8bfee6f32a5a 7,11,15,19,42-63,69,73-74
+tests/test_provider_authority_publisher.py
+  s_b86e20c0c6560a::t_ab032325d735f1 1-71,73-76,78-359
+  s_b86e20c0c6560a::t_aa9df24d08606c 72,77
+  s_6929d47671fd93::t_3b8bfee6f32a5a 360-418
+.github/provider-authority-requirements.txt
+  s_b86e20c0c6560a::t_a27d63b0babfd1 1
+.github/workflows/provider-component-authority.yml
+  s_b86e20c0c6560a::t_51f2e5bc1ecc06 1-15,17-19,21-23,26-27,30-39,42-47,50-56,58-71,76-79,93-94,96-98,100-101,103-114,116,119-120,129-131,137,139-148
+  s_8d8f9a00f26266::t_380e97f162bdd9 121,138
+  s_e561f4305d4830::t_159ddf3f7abcdb 25,29,88-89
+  s_6929d47671fd93::t_3b8bfee6f32a5a 57
+  s_8d8f9a00f26266::t_a0dbba92f8f89e 16,20,24,28,40-41,48-49,72-75,80-87,90-92,95,99,102,115,117-118,122-128,132-136
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "39652cdd6f224dd62fc064d7f156b61a1870491e",
+  "prompts": {},
+  "sessions": {
+    "s_6929d47671fd93": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff8b1-6c5e-7640-98ab-5bfd038d109e",
+        "model": "deepseek-v4-pro"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_8d8f9a00f26266": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff8b7-8239-7673-b157-f7ad2397253f",
+        "model": "deepseek-v4-pro"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_b86e20c0c6560a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7449-9f4b-7bc3-b343-c5b25486b9aa",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_e561f4305d4830": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff8b3-273c-7f20-970f-3386d7ea6e5c",
+        "model": "deepseek-v4-pro"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
