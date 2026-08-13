@@ -49,6 +49,10 @@ on:
         description: SHA-256 publisher key ID of the signing key
         required: true
         type: string
+      decision_cutoffs:
+        description: Whitespace-separated PANEL=TIMESTAMP decision cutoff entries
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -58,8 +62,6 @@ jobs:
     environment: stockdata-provider-component-publisher
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    env:
-      STOCKDATA_PROVIDER_PRIVATE_KEY_B64: ${{ secrets.STOCKDATA_PROVIDER_PRIVATE_KEY_B64 }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
@@ -115,10 +117,19 @@ jobs:
           EFFECTIVE_AT: ${{ inputs.effective_at }}
           AVAILABLE_AT: ${{ inputs.available_at }}
           PUBLISHER_KEY_ID: ${{ inputs.publisher_key_id }}
+          DECISION_CUTOFFS: ${{ inputs.decision_cutoffs }}
           SIGNER_PRIVATE_KEY_ENV: STOCKDATA_PROVIDER_PRIVATE_KEY_B64
+          STOCKDATA_PROVIDER_PRIVATE_KEY_B64: ${{ secrets.STOCKDATA_PROVIDER_PRIVATE_KEY_B64 }}
         run: |
           set -euo pipefail
           [[ "$PUBLISHER_KEY_ID" =~ ^[0-9a-f]{64}$ ]]
+          decision_cutoff_entries=()
+          read -r -a decision_cutoff_entries <<< "$DECISION_CUTOFFS"
+          [[ "${#decision_cutoff_entries[@]}" -gt 0 ]]
+          decision_cutoff_args=()
+          for cutoff in "${decision_cutoff_entries[@]}"; do
+            decision_cutoff_args+=(--decision-cutoff "$cutoff")
+          done
           source_receipt_args=()
           for receipt_file in "$RUNNER_TEMP"/source-receipt-*.json; do
             [[ -f "$receipt_file" ]]
@@ -131,6 +142,7 @@ jobs:
             --registry-sha256 "$REGISTRY_SHA256" \
             --artifact "$RUNNER_TEMP/component.json" \
             "${source_receipt_args[@]}" \
+            "${decision_cutoff_args[@]}" \
             --signer-private-key-env "$SIGNER_PRIVATE_KEY_ENV" \
             --output "$RUNNER_TEMP/${COMPONENT}-authority-envelope.json" \
             --effective-at "$EFFECTIVE_AT" \

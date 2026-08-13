@@ -78,13 +78,8 @@ def test_component_publisher_uses_real_publish_envelope_interface() -> None:
     assert job["environment"] == "stockdata-provider-component-publisher"
     assert workflow["permissions"] == {"contents": "read"}
 
-    # The job-level environment must carry the provider signing secret and
-    # nothing else.
-    assert job["env"] == {
-        "STOCKDATA_PROVIDER_PRIVATE_KEY_B64": (
-            "${{ secrets.STOCKDATA_PROVIDER_PRIVATE_KEY_B64 }}"
-        )
-    }
+    # The provider signing secret must not be exposed at the job level.
+    assert "env" not in job
 
     inputs = _dispatch_inputs(workflow)
     assert set(inputs) == {
@@ -98,6 +93,7 @@ def test_component_publisher_uses_real_publish_envelope_interface() -> None:
         "effective_at",
         "available_at",
         "publisher_key_id",
+        "decision_cutoffs",
     }
     assert inputs["component"]["required"] is True
     assert inputs["component"]["type"] == "choice"
@@ -128,14 +124,37 @@ def test_component_publisher_uses_real_publish_envelope_interface() -> None:
     assert '"${source_receipt_args[@]}"' in text
 
     # The signing key is addressed by environment variable and supplied as
-    # STOCKDATA_PROVIDER_PRIVATE_KEY_B64 in the step environment.
+    # STOCKDATA_PROVIDER_PRIVATE_KEY_B64 only in the signing step environment.
+    signing_steps = [
+        step
+        for step in job["steps"]
+        if step.get("name") == "Sign and production-verify component authority"
+    ]
+    assert len(signing_steps) == 1
+    signing_step = signing_steps[0]
+    assert signing_step["env"]["STOCKDATA_PROVIDER_PRIVATE_KEY_B64"] == (
+        "${{ secrets.STOCKDATA_PROVIDER_PRIVATE_KEY_B64 }}"
+    )
+    for step in job["steps"]:
+        if step is signing_step:
+            continue
+        assert "STOCKDATA_PROVIDER_PRIVATE_KEY_B64" not in step.get("env", {})
+
     assert "SIGNER_PRIVATE_KEY_ENV: STOCKDATA_PROVIDER_PRIVATE_KEY_B64" in text
     assert "PUBLISHER_KEY_ID: ${{ inputs.publisher_key_id }}" in text
     assert "--publisher-key-id \"$PUBLISHER_KEY_ID\"" in text
     assert "[[ \"$PUBLISHER_KEY_ID\" =~ ^[0-9a-f]{64}$ ]]" in text
     assert '--signer-private-key-env "$SIGNER_PRIVATE_KEY_ENV"' in text
-    assert "decision_cutoffs" not in text
-    assert "--decision-cutoff" not in text
+
+    # The required decision cutoff input must be parsed into repeated
+    # --decision-cutoff arguments and expanded into publish-envelope.
+    assert "DECISION_CUTOFFS: ${{ inputs.decision_cutoffs }}" in text
+    assert "decision_cutoff_entries=()" in text
+    assert "read -r -a decision_cutoff_entries <<< \"$DECISION_CUTOFFS\"" in text
+    assert "[[ \"${#decision_cutoff_entries[@]}\" -gt 0 ]]" in text
+    assert "decision_cutoff_args=()" in text
+    assert "decision_cutoff_args+=(--decision-cutoff \"$cutoff\")" in text
+    assert '"${decision_cutoff_args[@]}"' in text
 
     for required_flag in (
         "--source-receipt",
