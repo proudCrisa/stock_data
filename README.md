@@ -64,6 +64,27 @@ sd.cross_check("600519.SH", "2026-06-01", "2026-07-08")  # 多源交叉验证
 
 缓存 DB 默认 `~/.stockdata/cache.sqlite`，可用环境变量 `STOCKDATA_DB` 覆盖。
 
+### 4. 多价格身份（同花顺离线宇宙）
+
+缓存按 `(source, adjustment_mode, adjustment_version)` 区分价格版本。除默认 baostock
+前复权身份外，本地还内置同花顺前复权身份（`tonghuashun/qfq/ths-qfq-v1`，473 只 A 股，
+含科创板，跟随最新交易日）：
+
+```python
+import stockdata as sd
+
+svc = sd.make_tonghuashun_service()   # 只读本地缓存，不做网络回补
+rows = svc.get_history("000063.SZ", "2026-01-01", "2026-08-14", today="2026-08-15")
+```
+
+非 baostock 身份默认 `fetch_missing=False`，避免把其他源数据误标为该身份（复权混源）；
+显式传 `fetch_missing=True` 时身份一致性由调用方负责。同花顺身份不支持 ETF
+（ETF 走 baostock 身份）。缓存完整性审计：
+
+```bash
+.venv/bin/python scripts/audit_cache_completeness.py [end_date] [source] [adjustment_mode]
+```
+
 ## 架构
 
 ```

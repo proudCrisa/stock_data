@@ -9,6 +9,8 @@
   get_daily_df(code, start, end)     历史日线 → pandas DataFrame
   get_realtime(code)                 实时价（腾讯今日盘中 bar）
   cross_check(code, start, end)      多源交叉验证（共识 + 一致性 + 离群源 + 实时对照）
+  make_service(...)                  按价格身份实例化 HistoryService
+  make_tonghuashun_service(db_path)  同花顺前复权身份只读服务（473 只离线宇宙）
 
 代码格式：接受 600519 / 600519.SH / sh600519 等，内部自动归一化。
 """
@@ -42,6 +44,44 @@ def _get_service() -> HistoryService:
 
 def _today() -> str:
     return date.today().isoformat()
+
+
+def make_service(*, source: str = "baostock", adjustment_mode: str = "qfq",
+                 adjustment_version: str = "baostock-adjustflag-2",
+                 db_path=None, fetch_missing: bool | None = None) -> HistoryService:
+    """按价格身份实例化 HistoryService。
+
+    默认与模块级函数一致（baostock 前复权，缺口自动网络回补）。
+    非 baostock 身份默认 fetch_missing=False：只读本地缓存、不做网络回补，
+    避免把其他源的数据误标为该身份（复权混源）。显式传 fetch_missing=True
+    时身份一致性由调用方负责。
+    """
+    if fetch_missing is None:
+        fetch_missing = source == "baostock"
+    kwargs = {}
+    if not fetch_missing:
+        kwargs["primary_fetch"] = lambda code, start, end: []
+    return HistoryService(
+        Cache(db_path or _default_db()),
+        source=source,
+        adjustment_mode=adjustment_mode,
+        adjustment_version=adjustment_version,
+        **kwargs,
+    )
+
+
+def make_tonghuashun_service(db_path=None) -> HistoryService:
+    """同花顺前复权身份（tonghuashun/qfq/ths-qfq-v1）只读服务。
+
+    读本地 473 只 A 股离线缓存；缺口不自动回补
+    （同花顺数据经 datasource 管道批量入库后供本服务读取）。
+    """
+    return make_service(
+        source="tonghuashun",
+        adjustment_mode="qfq",
+        adjustment_version="ths-qfq-v1",
+        db_path=db_path,
+    )
 
 
 def get_daily(code: str, start_date: str, end_date: str = "") -> dict:

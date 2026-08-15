@@ -4,13 +4,23 @@
 腾讯实时；收盘价/OHLC 多源一致，与实时价 100% 吻合。开箱即用，无需 API key。
 
     from stockdata import get_daily, get_daily_df, get_realtime, cross_check
+    from stockdata import make_service, make_tonghuashun_service
 
     data = get_daily("600519.SH", "2024-01-01", "2024-06-30")
     df   = get_daily_df("600519.SH", "2024-01-01", "2024-06-30")
     q    = get_realtime("600519.SH")
     xv   = cross_check("600519.SH", "2026-06-01", "2026-07-08")
+    svc  = make_tonghuashun_service()   # 同花顺身份只读服务
 """
-from .stockdata import get_daily, get_daily_df, get_realtime, cross_check
+from .stockdata import (
+    cross_check,
+    get_daily,
+    get_daily_df,
+    get_realtime,
+    make_service,
+    make_tonghuashun_service,
+)
 
 __version__ = "1.0.0"
-__all__ = ["get_daily", "get_daily_df", "get_realtime", "cross_check"]
+__all__ = ["get_daily", "get_daily_df", "get_realtime", "cross_check",
+           "make_service", "make_tonghuashun_service"]
