@@ -1,0 +1,19 @@
+config/panel-baostock.txt
+  s_579ff645196cac::t_648f8285830818 1-91
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "ef448c7c3012a9ed8bcb44776ec0ec4ea63c9d6b",
+  "prompts": {},
+  "sessions": {
+    "s_579ff645196cac": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a02848-c8fb-7372-8b55-f0b6a5862db6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
