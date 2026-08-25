@@ -1,0 +1,20 @@
+stockdata/stockdata.py
+  s_4a6ab3eb92ac21::t_78e4ec5c5e1fdc 22,57-60,64-70
+  s_4a6ab3eb92ac21::t_317fe10b969855 125
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "0ea52de9b87338810857fcac64c17faab4ee575d",
+  "prompts": {},
+  "sessions": {
+    "s_4a6ab3eb92ac21": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a000a7-b4e1-78c3-8490-efded09e7880",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
