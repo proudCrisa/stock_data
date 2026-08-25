@@ -54,21 +54,12 @@ def test_tonghuashun_reads_cache_without_fetch(tmp_path, monkeypatch):
     svc.cache.close()
 
 
-def test_fetch_missing_override_enables_backfill(tmp_path, monkeypatch):
-    import stockdata.service as service_mod
+def test_fetch_missing_override_rejected_for_non_baostock(tmp_path):
+    # 非 baostock 身份 + fetch_missing=True 是复权混源路径
+    # （默认 fetcher 是 baostock 取数，会误标身份），必须被拒绝。
+    import pytest
 
-    calls = []
-
-    def fake_primary(code, start, end):
-        calls.append((code, start, end))
-        return [{"date": "2024-01-02", "open": 1.0, "high": 1.0,
-                 "low": 1.0, "close": 1.0, "volume": 1.0}]
-
-    monkeypatch.setattr(service_mod, "_default_primary", fake_primary)
-    svc = make_service(source="tonghuashun", adjustment_mode="qfq",
-                       adjustment_version="ths-qfq-v1",
-                       db_path=tmp_path / "x.sqlite", fetch_missing=True)
-    rows = svc.get_history("000063.SZ", "2024-01-02", "2024-01-02", today="2024-01-03")
-    assert calls == [("000063.SZ", "2024-01-02", "2024-01-02")]
-    assert [r["date"] for r in rows] == ["2024-01-02"]
-    svc.cache.close()
+    with pytest.raises(ValueError, match="复权混源"):
+        make_service(source="tonghuashun", adjustment_mode="qfq",
+                     adjustment_version="ths-qfq-v1",
+                     db_path=tmp_path / "x.sqlite", fetch_missing=True)

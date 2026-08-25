@@ -24,9 +24,23 @@ class HistoryService:
                  fallback_adjustment_mode: str | None = None,
                  fallback_adjustment_version: str | None = None):
         self.cache = cache
-        self._primary = primary_fetch if primary_fetch is not None else _default_primary
+        if primary_fetch is not None:
+            self._primary = primary_fetch
+        elif source == "baostock":
+            self._primary = _default_primary
+        else:
+            # 非 baostock 身份默认只读：默认 fetcher 是 baostock 取数，
+            # 若放任回补会把 baostock 数据误标成其他身份（复权混源）。
+            self._primary = _empty_fetch
         self._fallback = fallback_fetch
-        self._today = today_fetch if today_fetch is not None else _default_today
+        if today_fetch is not None:
+            self._today = today_fetch
+        elif source == "baostock":
+            self._today = _default_today
+        else:
+            # 非 baostock 身份默认不合并腾讯实时 bar：
+            # 「只读本地缓存」契约下返回序列不应混入异源行。
+            self._today = _none_today
         self.source = source
         self.adjustment_mode = adjustment_mode
         self.adjustment_version = adjustment_version
@@ -149,6 +163,14 @@ def _merge_today(rows, bar, start, end):
 
 
 # ── 生产默认 fetcher（延迟 import，避免测试引网络依赖）──
+
+def _empty_fetch(code, start, end):
+    return []
+
+
+def _none_today(code):
+    return None
+
 
 def _default_primary(code, start, end):
     from .fetch_baostock import fetch_baostock

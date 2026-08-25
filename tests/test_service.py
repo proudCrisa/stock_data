@@ -196,3 +196,33 @@ class TestNormalization:
         svc = HistoryService(cache, primary_fetch=primary)
         rows = svc.get_history("sh600519", "2024-01-02", "2024-01-04", today="2024-01-10")
         assert len(rows) == 3   # sh600519 归一化到 600519.SH 命中缓存
+
+
+class TestNonBaostockReadOnly:
+    def test_non_baostock_source_does_not_fetch_by_default(self, cache):
+        # 非 baostock 身份未显式传 fetcher 时必须只读：
+        # 默认 fetcher 是 baostock 取数，放任回补会把 baostock 数据误标成该身份。
+        svc = HistoryService(
+            cache, source="wind", adjustment_mode="qfq",
+            adjustment_version="wind-fwd-v1",
+        )
+        rows = svc.get_history("600519.SH", "2024-01-02", "2024-01-04",
+                               today="2024-01-10")
+        assert rows == []  # 无缓存且无回补，不引入混源数据
+        assert cache.get_range("600519.SH", "2024-01-01", "2024-12-31",
+                               source="wind", adjustment_mode="qfq",
+                               adjustment_version="wind-fwd-v1") == []
+
+    def test_non_baostock_source_does_not_merge_today_bar(self, cache):
+        # 非 baostock 身份默认也不合并腾讯今日 bar：
+        # 「只读本地缓存」契约下返回序列不应混入异源行。
+        cache.upsert("600519.SH", BARS_H1, source="wind", adjustment_mode="qfq",
+                     adjustment_version="wind-fwd-v1")
+        svc = HistoryService(
+            cache, source="wind", adjustment_mode="qfq",
+            adjustment_version="wind-fwd-v1",
+        )
+        rows = svc.get_history("600519.SH", "2024-01-02", "2024-01-04",
+                               today="2024-01-04")
+        assert [r["date"] for r in rows] == ["2024-01-02", "2024-01-03", "2024-01-04"]
+        assert all(r["source"] == "wind" for r in rows)

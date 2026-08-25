@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 from .cache import Cache
 from .service import HistoryService
@@ -53,12 +54,20 @@ def make_service(*, source: str = "baostock", adjustment_mode: str = "qfq",
 
     默认与模块级函数一致（baostock 前复权，缺口自动网络回补）。
     非 baostock 身份默认 fetch_missing=False：只读本地缓存、不做网络回补，
-    避免把其他源的数据误标为该身份（复权混源）。显式传 fetch_missing=True
-    时身份一致性由调用方负责。
+    避免把其他源的数据误标为该身份（复权混源）。非 baostock 身份不允许
+    fetch_missing=True：默认 fetcher 是 baostock 取数，会把 baostock 数据
+    误标成该身份；确需回补请直接构造 HistoryService 并显式传入与该身份
+    口径一致的 primary_fetcher（身份一致性由调用方负责）。
     """
     if fetch_missing is None:
         fetch_missing = source == "baostock"
-    kwargs = {}
+    if fetch_missing and source != "baostock":
+        raise ValueError(
+            "非 baostock 身份不允许 fetch_missing=True（默认 fetcher 是 "
+            "baostock 取数，会复权混源）；请构造 HistoryService 并显式传 "
+            "primary_fetch"
+        )
+    kwargs: dict[str, Any] = {}
     if not fetch_missing:
         kwargs["primary_fetch"] = lambda code, start, end: []
     return HistoryService(
@@ -113,7 +122,7 @@ def cross_check(code: str, start_date: str, end_date: str = "", tol: float = 0.0
     """
     code = normalize(code)
     end = end_date or _today()
-    series = {}
+    series: dict[str, object] = {}
     try:
         from .fetch_baostock import fetch_baostock
         series["baostock"] = {b["date"]: b["close"]
