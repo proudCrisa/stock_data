@@ -7,7 +7,7 @@ import json
 import sqlite3
 from datetime import date
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, cast
 
 from .execution_readiness import check_execution_readiness
 from .forward_context import check_forward_context_readiness
@@ -27,6 +27,7 @@ def check_full_execution_readiness(
     adjustment_version: str,
     signal_adjustment_mode: str | None = None,
     signal_adjustment_version: str | None = None,
+    signal_source: str | None = None,
     panel: Iterable[tuple[str, str]],
 ) -> dict[str, object]:
     """Require every evidence class; unavailable collectors stay explicit blockers."""
@@ -44,6 +45,7 @@ def check_full_execution_readiness(
         )
     signal_mode = signal_adjustment_mode or adjustment_mode
     signal_version = signal_adjustment_version or adjustment_version
+    signal_price_source = signal_source or source
     execution_price = check_execution_readiness(
         database,
         source=source,
@@ -56,17 +58,20 @@ def check_full_execution_readiness(
             **execution_price,
             "ready": False,
             "blockers": [
-                *execution_price.get("blockers", []),
+                *cast(
+                    list[dict[str, object]], execution_price.get("blockers", [])
+                ),
                 {"code": "execution_prices_require_raw_adjustment", "count": 1},
             ],
         }
     signal_price = check_execution_readiness(
         database,
-        source=source,
+        source=signal_price_source,
         adjustment_mode=signal_mode,
         adjustment_version=signal_version,
         panel=frozen_panel,
     )
+    context: dict[str, object]
     try:
         context = check_forward_context_readiness(
             str(Path(database).expanduser().resolve()), frozen_panel
@@ -76,6 +81,7 @@ def check_full_execution_readiness(
             "ready": False,
             "blockers": [{"code": "context_database_unreadable", "count": 1}],
         }
+    corporate_actions: dict[str, object]
     try:
         corporate_actions = check_forward_corporate_action_readiness(
             str(Path(database).expanduser().resolve()), frozen_panel
@@ -88,23 +94,23 @@ def check_full_execution_readiness(
                 {"code": "corporate_action_database_unreadable", "count": 1}
             ],
         }
-    universe = {
+    universe: dict[str, object] = {
         **context,
         "ready": False,
         "blockers": [
-            *context.get("blockers", []),
+            *cast(list[dict[str, object]], context.get("blockers", [])),
             {"code": "forward_universe_publisher_key_not_enrolled", "count": 1},
         ],
     }
-    instrument_status = {
+    instrument_status: dict[str, object] = {
         **context,
         "ready": False,
         "blockers": [
-            *context.get("blockers", []),
+            *cast(list[dict[str, object]], context.get("blockers", [])),
             {"code": "instrument_status_is_activity_proxy", "count": 1},
         ],
     }
-    unavailable = {
+    unavailable: dict[str, dict[str, object]] = {
         "trading_calendar": {
             "ready": False,
             "blockers": [
@@ -127,7 +133,7 @@ def check_full_execution_readiness(
             ],
         },
     }
-    components = {
+    components: dict[str, dict[str, object]] = {
         "execution_prices": execution_price,
         "signal_prices": signal_price,
         "decision_context": context,
@@ -138,9 +144,9 @@ def check_full_execution_readiness(
     }
     if set(components) != set(REQUIRED_COMPONENTS):
         raise AssertionError("full readiness component set drifted")
-    blockers = []
+    blockers: list[dict[str, object]] = []
     for component, report in components.items():
-        for blocker in report.get("blockers", []):
+        for blocker in cast(list[dict[str, object]], report.get("blockers", [])):
             blockers.append({**blocker, "component": component})
     return {
         "schema_version": SCHEMA_VERSION,

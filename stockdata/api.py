@@ -79,7 +79,7 @@ def cross_check(code: str, start_date: str, end_date: str = "", tol: float = 0.0
     """多源(baostock 前复权 + 通达信) 交叉验证 + 腾讯实时对照。返回 {date: DayConsensus}。"""
     code = normalize(code)
     end = end_date or _today()
-    series = {}
+    series: dict[str, object] = {}
     try:
         from .fetch_baostock import fetch_baostock
         series["baostock"] = {b["date"]: b["close"]

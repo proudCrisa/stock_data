@@ -2,7 +2,6 @@
 
 build_params 纯逻辑直测;main 的 service 调用 monkeypatch api.get_realtime。
 """
-import io
 import json
 import pytest
 

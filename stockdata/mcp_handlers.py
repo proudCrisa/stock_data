@@ -7,6 +7,8 @@ handle_ffd_quote_history —— 对应 findesk ffd_quote_history(codes, ...)
 """
 from __future__ import annotations
 
+from typing import cast
+
 from .columnar import to_columnar
 from .service import HistoryService
 
@@ -19,7 +21,7 @@ def handle_ffd_query(params: dict, service: HistoryService, today: str) -> dict:
     code = params.get("code")
     if not code:
         raise ValueError("缺少 code")
-    start = params.get("start_date")
+    start = cast(str, params.get("start_date"))
     end = params.get("end_date") or today
     rows = service.get_history(code, start, end, today=today)
     return to_columnar({code: rows})
@@ -32,7 +34,7 @@ def handle_ffd_quote_history(params: dict, service: HistoryService, today: str) 
         raise ValueError("缺少 codes")
     if isinstance(codes, str):
         codes = [codes]
-    start = params.get("start_date")
+    start = cast(str, params.get("start_date"))
     end = params.get("end_date") or today
     rows_by_code = {c: service.get_history(c, start, end, today=today) for c in codes}
     return to_columnar(rows_by_code)

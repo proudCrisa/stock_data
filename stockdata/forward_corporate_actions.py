@@ -11,7 +11,7 @@ import json
 import os
 import sqlite3
 from datetime import date, datetime, time
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Protocol, cast
 from zoneinfo import ZoneInfo
 
 from .cache import Cache
@@ -65,6 +65,12 @@ class CapturedCorporateActions(dict[str, list[dict[str, object]]]):
         self.capture_receipt = receipt
 
 
+class _BaoStockQueryResult(Protocol):
+    def next(self) -> bool: ...
+
+    def get_row_data(self) -> Iterable[object]: ...
+
+
 def _canonical_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
@@ -106,12 +112,13 @@ def _ensure_schema(cache: Cache) -> None:
 
 
 def _query_rows(result: object, label: str) -> tuple[list[str], list[list[str]]]:
+    query_result = cast(_BaoStockQueryResult, result)
     if str(getattr(result, "error_code", "")) != "0":
         raise RuntimeError(f"BaoStock {label} failed: {getattr(result, 'error_msg', '')}")
     fields = [str(item) for item in getattr(result, "fields", [])]
     rows: list[list[str]] = []
-    while result.next():
-        rows.append([str(item) for item in result.get_row_data()])
+    while query_result.next():
+        rows.append([str(item) for item in query_result.get_row_data()])
     return fields, rows
 
 
@@ -147,7 +154,7 @@ def fetch_baostock_corporate_actions(
     finally:
         with open(os.devnull, "w") as devnull, contextlib.redirect_stdout(devnull):
             bs.logout()
-    receipt = {
+    receipt: dict[str, object] = {
         "observed_at": observed_at,
         "source": SOURCE,
         "request": {"symbols": list(symbols), "observation_date": observation_date, "years": list(years)},
@@ -233,6 +240,9 @@ def capture_forward_corporate_actions(
     if not (_PREOPEN_START <= local.time() < _DECISION_CUTOFF):
         raise ValueError("corporate-action capture requires the pre-open evidence window")
 
+    cache._require_collector_writer(
+        step_id="pre_open_corporate_actions", session=observation_date
+    )
     symbols, cohort_sha256 = _cohort(cache)
     with cache._conn:
         _ensure_schema(cache)

@@ -7,7 +7,6 @@ prices and every response is preserved in an append-only capture receipt.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import hashlib
 import json
@@ -16,7 +15,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping, cast
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -55,7 +54,8 @@ def _sha256(value: bytes) -> str:
 
 
 def _receipt_summary(receipt: Mapping[str, object]) -> dict[str, object]:
-    pages = receipt.get("response", {}).get("pages", [])
+    receipt_response = cast(Mapping[str, object], receipt.get("response", {}))
+    pages = cast(Iterable[object], receipt_response.get("pages", []))
     summaries = []
     for page in pages:
         if not isinstance(page, Mapping):
@@ -78,7 +78,7 @@ def _receipt_summary(receipt: Mapping[str, object]) -> dict[str, object]:
         "observed_at": receipt.get("observed_at"),
         "request": receipt.get("request"),
         "response": {
-            key: receipt.get("response", {}).get(key)
+            key: receipt_response.get(key)
             for key in ("bar_count", "coverage_start", "coverage_end")
         }
         | {"pages": summaries},
@@ -129,7 +129,7 @@ def _request_page(
     rows = data[symbol].get(adjustment_key)
     if not isinstance(rows, list):
         raise TencentHistoryError(f"Tencent response has no {adjustment_key} rows")
-    receipt = {
+    receipt: dict[str, object] = {
         "source": TENCENT_HISTORY_SOURCE,
         "observed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "request": {"method": "GET", "url": requested_url, "params": dict(params)},
@@ -332,7 +332,10 @@ def reconcile_tencent_baostock(
         differences = {}
         for field in fields:
             tolerance = volume_tolerance if field == "volume" else price_tolerance
-            delta = abs(float(left[day][field]) - float(right[day][field]))
+            delta = abs(
+                float(cast(Any, left[day][field]))
+                - float(cast(Any, right[day][field]))
+            )
             if delta > tolerance:
                 differences[field] = {"tencent": left[day][field], "baostock": right[day][field], "absolute_delta": delta}
         if differences:

@@ -6,7 +6,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import json
-from typing import Any
 
 from stockdata.authority import (
     load_provider_trust_registry,
@@ -16,7 +15,7 @@ from stockdata.adjustment_identity import (
     EXECUTION_ADJUSTMENT_SCHEMA,
     SIGNAL_ADJUSTMENT_SCHEMA,
 )
-from stockdata.component_availability import AVAILABILITY_RECORDS_SCHEMA
+from stockdata.component_availability import VERIFIED_AVAILABILITY_RECORDS_SCHEMA
 
 
 PROVIDER_CONTRACT_SCHEMA = "stockdata-rqgm-provider-contract/1"
@@ -54,7 +53,7 @@ COMPONENT_SCHEMAS = {
     component: f"stockdata-{component.replace('_', '-')}/1"
     for component in REQUIRED_COMPONENTS
 }
-COMPONENT_SCHEMAS["availability_records"] = AVAILABILITY_RECORDS_SCHEMA
+COMPONENT_SCHEMAS["availability_records"] = VERIFIED_AVAILABILITY_RECORDS_SCHEMA
 
 _REFERENCE_CONTRACTS = {
     "checkout": ("stock-data-checkout", CHECKOUT_SCHEMA),
@@ -74,6 +73,8 @@ _REFERENCE_CONTRACTS = {
         COMPANION_SNAPSHOT_SCHEMA,
     ),
 }
+
+_BOUND_REVERIFICATION_TOKEN = object()
 
 
 def _canonical_json(value: object) -> str:
@@ -294,9 +295,57 @@ def _component_reference(
     return reference
 
 
+def _semantic_authority_timing(
+    evidence: Mapping[str, object], component: str
+) -> None:
+    for field in (
+        "available_at_by_panel",
+        "effective_at_by_panel",
+        "decision_cutoff_by_panel",
+    ):
+        value = evidence.get(field)
+        if (
+            not isinstance(value, Mapping)
+            or not value
+            or any(
+                not isinstance(entry, str) or not isinstance(at, str)
+                for entry, at in value.items()
+            )
+        ):
+            raise ValueError(f"{component} lacks semantic {field} declarations")
+    if component != "market_rules":
+        return
+    selection = evidence.get("execution_rule_selection")
+    if not isinstance(selection, Mapping) or set(selection) != {
+        "rulebook_artifact_sha256",
+        "instrument_status_artifact_sha256",
+        "decision_cutoff_by_panel",
+        "selected_policy_id_by_panel",
+    }:
+        raise ValueError("market_rules lacks exact execution-rule selection")
+    _sha256(selection["rulebook_artifact_sha256"], "market_rules rulebook identity")
+    _sha256(
+        selection["instrument_status_artifact_sha256"],
+        "market_rules instrument-status identity",
+    )
+    for field in ("decision_cutoff_by_panel", "selected_policy_id_by_panel"):
+        value = selection[field]
+        if (
+            not isinstance(value, Mapping)
+            or not value
+            or any(
+                not isinstance(entry, str) or not isinstance(item, str)
+                for entry, item in value.items()
+            )
+        ):
+            raise ValueError(f"market_rules {field} is malformed")
+
+
 def verify_readiness_report(
     report: object,
     contract: RQGMProviderContract,
+    *,
+    _reverification_token: object | None = None,
 ) -> bool:
     """Verify report structure and identity; return its fail-closed readiness state."""
 
@@ -382,10 +431,7 @@ def verify_readiness_report(
                     raise ValueError(
                         f"{component}.{field} disagrees with verified authority"
                     )
-        if component == "availability_records":
-            raise ValueError(
-                "availability_records requires verified companion calendar cutoffs"
-            )
+            _semantic_authority_timing(evidence, component)
     aggregate_ready = report.get("ready")
     aggregate_blockers = report.get("blockers")
     if not isinstance(aggregate_ready, bool) or not isinstance(aggregate_blockers, list):
@@ -400,6 +446,13 @@ def verify_readiness_report(
     }
     if not aggregate_ready and not blocked_components.issubset(reported_blocked):
         raise ValueError("aggregate blockers omit blocked components")
+    availability_ready = components["availability_records"].get("ready") is True
+    if availability_ready and _reverification_token is not _BOUND_REVERIFICATION_TOKEN:
+        raise ValueError(
+            "availability_records requires verified companion calendar cutoffs"
+        )
+    if aggregate_ready and _reverification_token is not _BOUND_REVERIFICATION_TOKEN:
+        raise ValueError("ready report requires verified companion component bytes")
     return aggregate_ready
 
 

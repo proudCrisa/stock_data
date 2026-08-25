@@ -115,7 +115,7 @@ def _structural_status(connection: sqlite3.Connection) -> tuple[dict[str, object
         if name not in triggers
         or _normalized_sql(triggers[name]) != _normalized_sql(expected_sql)
     )
-    missing_columns = []
+    missing_columns: list[str] = []
     if "daily" in tables:
         missing_columns.extend(
             f"daily.{name}" for name in sorted(DAILY_COLUMNS - _columns(connection, "daily"))
@@ -197,7 +197,7 @@ def check_execution_readiness(
 
     try:
         schema, blockers = _structural_status(connection)
-        result = {
+        result: dict[str, object] = {
             "database": str(database),
             "schema_version": schema["version"],
             "ready": False,
@@ -227,10 +227,11 @@ def check_execution_readiness(
         receipt_count = int(
             connection.execute("SELECT COUNT(*) FROM collection_receipts").fetchone()[0]
         )
-        result["counts"] = {
+        result_counts: dict[str, int] = {
             key: int(counts[key] or 0) for key in counts.keys()
         }
-        result["counts"]["receipts"] = receipt_count
+        result_counts["receipts"] = receipt_count
+        result["counts"] = result_counts
         result["coverage"] = [
             dict(row)
             for row in connection.execute(
@@ -339,7 +340,7 @@ def check_execution_readiness(
             item = _blocker(code, values)
             if item:
                 blockers.append(item)
-        result["counts"]["selected_rows"] = len(selected_rows)
+        result_counts["selected_rows"] = len(selected_rows)
         result["blockers"] = blockers
         result["ready"] = not blockers
         return result

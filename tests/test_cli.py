@@ -79,6 +79,20 @@ class TestBuildParams:
             "kind": "rqgm_provider_export",
             "bundle_file": "/tmp/bundle.json",
         }
+
+    def test_rqgm_provider_export_rejects_unpublished_manifest(
+        self, tmp_path, capsys
+    ):
+        from test_provider_export import _bundle
+
+        bundle_file, _ = _bundle(tmp_path)
+        unpublished = tmp_path / ".bundle-interrupted.json"
+        bundle_file.rename(unpublished)
+
+        with pytest.raises(ValueError, match=r"bundle\.json|published|basename"):
+            main(["rqgm-provider-export", "--bundle-file", str(unpublished)])
+        assert capsys.readouterr().out == ""
+
     def test_rqgm_provider_materialize_params(self):
         components = (
             "execution_prices",
@@ -97,6 +111,10 @@ class TestBuildParams:
             "/tmp/closure",
             "--database",
             "/tmp/cache.sqlite",
+            "--registration-file",
+            "/tmp/registration.json",
+            "--snapshot-staging-directory",
+            "/tmp/snapshots",
             "--panel-file",
             "/tmp/panel.json",
             "--source-receipt",
@@ -110,9 +128,79 @@ class TestBuildParams:
         ]
         for component in components:
             args.extend(("--component-file", f"{component}=/tmp/{component}.json"))
-        assert build_params(args)["component_files"] == {
+        params = build_params(args)
+        assert params["registration_file"] == "/tmp/registration.json"
+        assert params["snapshot_staging_directory"] == "/tmp/snapshots"
+        assert params["component_files"] == {
             component: f"/tmp/{component}.json" for component in components
         }
+
+    @pytest.mark.parametrize(
+        ("missing_flag", "missing_value"),
+        [
+            ("--registration-file", "/tmp/registration.json"),
+            ("--snapshot-staging-directory", "/tmp/snapshots"),
+        ],
+    )
+    def test_rqgm_provider_materialize_requires_continuity_arguments(
+        self, missing_flag, missing_value
+    ):
+        args = [
+            "rqgm-provider-materialize",
+            "--output-dir", "/tmp/closure",
+            "--database", "/tmp/cache.sqlite",
+            "--registration-file", "/tmp/registration.json",
+            "--snapshot-staging-directory", "/tmp/snapshots",
+            "--panel-file", "/tmp/panel.json",
+            "--source-receipt", "/tmp/receipt.json",
+            "--execution-adjustment-file", "/tmp/execution.json",
+            "--signal-adjustment-file", "/tmp/signal.json",
+            "--source", "fixture",
+            "--component-file", "execution_prices=/tmp/execution-prices.json",
+        ]
+        index = args.index(missing_flag)
+        assert args[index + 1] == missing_value
+        del args[index : index + 2]
+
+        with pytest.raises(SystemExit):
+            build_params(args)
+
+    def test_rqgm_provider_materialize_dispatches_continuity_arguments(
+        self, monkeypatch, capsys
+    ):
+        from stockdata.rqgm_provider_contract import REQUIRED_COMPONENTS
+
+        received = {}
+
+        def materialize(**kwargs):
+            received.update(kwargs)
+            return {"bundle_file": "/tmp/closure/bundle.json", "receipt": {}}
+
+        monkeypatch.setattr(
+            "stockdata.provider_materializer.materialize_provider_bundle", materialize
+        )
+        args = [
+            "rqgm-provider-materialize",
+            "--output-dir", "/tmp/closure",
+            "--database", "/tmp/cache.sqlite",
+            "--registration-file", "/tmp/registration.json",
+            "--snapshot-staging-directory", "/tmp/snapshots",
+            "--panel-file", "/tmp/panel.json",
+            "--source-receipt", "/tmp/receipt.json",
+            "--execution-adjustment-file", "/tmp/execution.json",
+            "--signal-adjustment-file", "/tmp/signal.json",
+            "--source", "fixture",
+        ]
+        for component in REQUIRED_COMPONENTS:
+            args.extend(("--component-file", f"{component}=/tmp/{component}.json"))
+
+        assert main(args) == 0
+
+        assert received["registration_file"] == "/tmp/registration.json"
+        assert received["snapshot_staging_directory"] == "/tmp/snapshots"
+        assert json.loads(capsys.readouterr().out)["bundle_file"] == (
+            "/tmp/closure/bundle.json"
+        )
 
     def test_forward_corporate_actions_capture_params(self):
         assert build_params(

@@ -3,8 +3,6 @@
 输入多源 {source: {date: close}}，输出每交易日共识收盘价 + 一致性标记 + 离群源，
 并与实时价比对最新日。可靠来自多源交叉，而非信任单一源。
 """
-import pytest
-
 from stockdata.consensus import cross_validate
 
 

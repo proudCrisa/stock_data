@@ -78,7 +78,7 @@ def _rows(
                 raise ResearchCorporateActionError(
                     f"{symbol} action {index} must be a non-empty mapping"
                 )
-            payload = {"symbol": symbol, "data": dict(action)}
+            payload: dict[str, object] = {"symbol": symbol, "data": dict(action)}
             identity = _canonical(payload)
             if identity in seen:
                 raise ResearchCorporateActionError(f"duplicate action for {symbol}")

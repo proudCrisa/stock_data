@@ -7,7 +7,7 @@ import json
 import sqlite3
 from datetime import date, datetime, time, timezone
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Iterable, Mapping, Protocol, Sequence, cast
 from zoneinfo import ZoneInfo
 
 from .availability import price_availability_error
@@ -17,6 +17,12 @@ from .ticker import normalize, to_baostock
 
 
 _RULEBOOK_ID = "cn-a-share-daily-execution/2015-08-01..2026-v1"
+
+
+class _BaoStockQueryResult(Protocol):
+    def next(self) -> bool: ...
+
+    def get_row_data(self) -> Iterable[str]: ...
 
 
 def _receipt_covers_bar(response_json: str, row: sqlite3.Row) -> bool:
@@ -196,12 +202,13 @@ def _historical_universe_rows(
 
 
 def _query_rows(result: object, label: str) -> list[dict[str, str]]:
+    query_result = cast(_BaoStockQueryResult, result)
     if getattr(result, "error_code", None) != "0":
         raise RuntimeError(f"BaoStock {label} failed: {getattr(result, 'error_msg', '')}")
     fields = list(getattr(result, "fields"))
     rows: list[dict[str, str]] = []
-    while result.next():
-        rows.append(dict(zip(fields, result.get_row_data())))
+    while query_result.next():
+        rows.append(dict(zip(fields, query_result.get_row_data())))
     return rows
 
 
@@ -397,7 +404,7 @@ def export_rqgm_execution_snapshot(
             },
         },
     ]
-    artifacts = {
+    artifacts: dict[str, Sequence[Mapping[str, object]]] = {
         "execution_prices": execution_prices,
         "signal_prices": signal_prices,
         "corporate_actions": corporate_actions,
@@ -412,7 +419,9 @@ def export_rqgm_execution_snapshot(
         "signal_prices": "baostock.query_history_k_data_plus:adjustflag=3:signal-close",
         "corporate_actions": "baostock.query_dividend_data:report",
         "instrument_status": "baostock.query_history_k_data_plus:tradestatus,isST+query_stock_basic",
-        "universe": str(universe_manifest["payload"]["issuer"]),
+        "universe": str(
+            cast(Mapping[str, object], universe_manifest["payload"])["issuer"]
+        ),
         "market_rules": _RULEBOOK_ID,
     }
     return create_execution_snapshot(
@@ -422,7 +431,11 @@ def export_rqgm_execution_snapshot(
         artifacts=artifacts,
         authorities=authorities,
         signal_price_basis="raw",
-        selection_policy_id=str(universe_manifest["payload"]["selection_policy_id"]),
+        selection_policy_id=str(
+            cast(Mapping[str, object], universe_manifest["payload"])[
+                "selection_policy_id"
+            ]
+        ),
         rulebook_id=_RULEBOOK_ID,
         universe_attestation=universe_manifest,
     )

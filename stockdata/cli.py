@@ -97,6 +97,10 @@ def build_params(argv: list) -> dict:
     provider_materialize = sub.add_parser("rqgm-provider-materialize")
     provider_materialize.add_argument("--output-dir", required=True)
     provider_materialize.add_argument("--database", required=True)
+    provider_materialize.add_argument("--registration-file", required=True)
+    provider_materialize.add_argument(
+        "--snapshot-staging-directory", required=True
+    )
     provider_materialize.add_argument("--panel-file", required=True)
     provider_materialize.add_argument("--source-receipt", action="append", required=True)
     provider_materialize.add_argument("--execution-adjustment-file", required=True)
@@ -104,6 +108,20 @@ def build_params(argv: list) -> dict:
     provider_materialize.add_argument("--component-file", action="append", required=True)
     provider_materialize.add_argument("--component-authority", action="append")
     provider_materialize.add_argument("--source", required=True)
+
+    future_prepare = sub.add_parser("future-panel-prepare")
+    future_prepare.add_argument("--database", required=True)
+    future_prepare.add_argument("--panel-file", required=True)
+
+    future_registration = sub.add_parser("future-panel-register")
+    future_registration.add_argument("--output", required=True)
+    future_registration.add_argument("--database", required=True)
+    future_registration.add_argument("--panel-file", required=True)
+    future_registration.add_argument("--source-receipt", action="append", required=True)
+    future_registration.add_argument("--calendar-file", required=True)
+    future_registration.add_argument("--calendar-authority", required=True)
+    future_registration.add_argument("--market-rules-file", required=True)
+    future_registration.add_argument("--market-rules-authority", required=True)
 
     registered_capture = sub.add_parser("registered-panel-capture")
     registered_capture.add_argument("--registration-file", required=True)
@@ -210,6 +228,8 @@ def build_params(argv: list) -> dict:
             "kind": "rqgm_provider_materialize",
             "output_dir": args.output_dir,
             "database": args.database,
+            "registration_file": args.registration_file,
+            "snapshot_staging_directory": args.snapshot_staging_directory,
             "panel_file": args.panel_file,
             "source_receipts": args.source_receipt,
             "execution_adjustment_file": args.execution_adjustment_file,
@@ -217,6 +237,24 @@ def build_params(argv: list) -> dict:
             "component_files": component_files,
             "component_authority_files": component_authority_files,
             "source": args.source,
+        }
+    if args.kind == "future-panel-prepare":
+        return {
+            "kind": "future_panel_prepare",
+            "database_file": args.database,
+            "panel_file": args.panel_file,
+        }
+    if args.kind == "future-panel-register":
+        return {
+            "kind": "future_panel_register",
+            "output_file": args.output,
+            "database_file": args.database,
+            "panel_file": args.panel_file,
+            "source_receipt_files": args.source_receipt,
+            "calendar_file": args.calendar_file,
+            "calendar_authority_file": args.calendar_authority,
+            "market_rules_file": args.market_rules_file,
+            "market_rules_authority_file": args.market_rules_authority,
         }
     if args.kind == "registered-panel-capture":
         return {
@@ -237,16 +275,153 @@ def build_params(argv: list) -> dict:
             "start_date": args.start, "end_date": args.end}
 
 
-def main(argv=None):
+def _collector_child_writer_token(
+    params: dict, database: Path, argv: list[str]
+) -> object | None:
+    """Open child-only authority before a collector writer can construct Cache."""
+
+    from .collector_continuity import (
+        classify_collector_child_environment,
+        database_has_collector_genesis,
+        open_collector_child_writer_authority,
+    )
+
+    is_child = classify_collector_child_environment()
+    if is_child:
+        # This branch must precede every SQLite marker or Cache operation.
+        return open_collector_child_writer_authority(
+            argv=(os.path.realpath(sys.executable), "-m", "stockdata.cli", *argv)
+        )
+    if params["kind"] not in {
+        "forward_capture",
+        "forward_context_capture",
+        "forward_corporate_actions_capture",
+    }:
+        return None
+    if not database_has_collector_genesis(database):
+        return None
+    return open_collector_child_writer_authority(
+        argv=(os.path.realpath(sys.executable), "-m", "stockdata.cli", *argv)
+    )
+
+
+def _run_cache_command(params: dict, database: Path, writer_token: object | None) -> dict:
     from .cache import Cache
     from .mcp_handlers import handle_ffd_query, handle_ffd_quote_history
     from .service import HistoryService
 
-    params = build_params(sys.argv[1:] if argv is None else argv)
+    cache = Cache(database, writer_token=writer_token)
+    svc = HistoryService(cache)
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    if params["kind"] == "forward_corporate_actions_capture":
+        from .forward_corporate_actions import capture_forward_corporate_actions
+
+        return capture_forward_corporate_actions(cache, params["observation_date"])
+    if params["kind"] == "forward_context_capture":
+        from .forward_context import capture_forward_context
+
+        return capture_forward_context(cache, params["effective_date"])
+    if params["kind"] == "forward_capture":
+        from .forward_capture import capture_forward_evidence
+
+        if params["codes_file"]:
+            codes = [
+                line.strip() for line in Path(params["codes_file"]).read_text().splitlines()
+                if line.strip() and not line.lstrip().startswith("#")
+            ]
+        else:
+            codes = [c.strip() for c in params["codes"].split(",") if c.strip()]
+        return capture_forward_evidence(
+            cache,
+            codes,
+            params["start_date"],
+            params["end_date"] or None,
+            source=params["source"],
+            adjustment_version=params["adjustment_version"],
+        )
+    if params["kind"] == "query":
+        if params.get("finalized_only"):
+            from .columnar import to_columnar
+            from .ticker import normalize
+
+            end = params["end_date"] or today
+            rows = svc.get_history(
+                params["code"], params["start_date"], end, today=today,
+                finalized_only=True,
+            )
+            return to_columnar({normalize(params["code"]): rows})
+        return handle_ffd_query(params, svc, today=today)
+    if params["kind"] == "realtime":
+        from . import api
+
+        return api.get_realtime(params["code"])
+    if params["kind"] == "update":
+        from .sync import default_final_date, sync_symbols
+
+        if params["codes_file"]:
+            codes = [
+                line.strip() for line in Path(params["codes_file"]).read_text().splitlines()
+                if line.strip() and not line.lstrip().startswith("#")
+            ]
+        else:
+            codes = [c.strip() for c in params["codes"].split(",") if c.strip()]
+        return sync_symbols(
+            cache,
+            codes,
+            params["start_date"],
+            params["end_date"] or default_final_date(),
+            adjustment_mode=params["adjustment_mode"],
+        )
+    if params["kind"] == "snapshot_create":
+        from .snapshot import create_snapshot
+
+        return create_snapshot(
+            cache,
+            params["output"],
+            params["as_of"],
+            codes=params["codes"] or None,
+            source=params["source"],
+            adjustment_mode=params["adjustment_mode"],
+            adjustment_version=params["adjustment_version"],
+        )
+    if params["kind"] == "snapshot_verify":
+        from .snapshot import verify_snapshot
+
+        return verify_snapshot(params["snapshot_dir"])
+    return handle_ffd_quote_history(params, svc, today=today)
+
+
+def main(argv=None):
+
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    params = build_params(raw_argv)
     db = Path(
         params.get("database")
         or os.environ.get("STOCKDATA_DB", str(Path.home() / ".stockdata" / "cache.sqlite"))
     )
+    from .collector_continuity import (
+        CollectorContinuityError,
+        classify_collector_child_environment,
+    )
+
+    if classify_collector_child_environment():
+        if params["kind"] not in {
+            "forward_capture",
+            "forward_context_capture",
+            "forward_corporate_actions_capture",
+        }:
+            raise CollectorContinuityError("collector child environment does not authorize this command")
+        writer_token = _collector_child_writer_token(params, db, raw_argv)
+        try:
+            out = _run_cache_command(params, db, writer_token)
+            json.dump(out, sys.stdout, ensure_ascii=False)
+            sys.stdout.write("\n")
+            return 0
+        finally:
+            if writer_token is not None:
+                from .collector_continuity import close_collector_writer_authority
+
+                close_collector_writer_authority(writer_token)
     if params["kind"] == "execution_readiness":
         from .execution_readiness import check_execution_readiness, load_panel
         panel = load_panel(params["panel_file"]) if params["panel_file"] else None
@@ -287,6 +462,8 @@ def main(argv=None):
         out = materialize_provider_bundle(
             output_dir=params["output_dir"],
             database_file=params["database"],
+            registration_file=params["registration_file"],
+            snapshot_staging_directory=params["snapshot_staging_directory"],
             panel_file=params["panel_file"],
             source_receipt_files=params["source_receipts"],
             execution_adjustment_file=params["execution_adjustment_file"],
@@ -294,6 +471,32 @@ def main(argv=None):
             component_files=params["component_files"],
             component_authority_files=params["component_authority_files"],
             source=params["source"],
+        )
+        json.dump(out, sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return 0
+    if params["kind"] == "future_panel_prepare":
+        from .future_panel_registration import prepare_future_collector_database
+
+        out = prepare_future_collector_database(
+            database_file=params["database_file"],
+            panel_file=params["panel_file"],
+        )
+        json.dump(out, sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return 0
+    if params["kind"] == "future_panel_register":
+        from .future_panel_registration import register_future_panel
+
+        out = register_future_panel(
+            output_file=params["output_file"],
+            database_file=params["database_file"],
+            panel_file=params["panel_file"],
+            source_receipt_files=params["source_receipt_files"],
+            calendar_file=params["calendar_file"],
+            calendar_authority_file=params["calendar_authority_file"],
+            market_rules_file=params["market_rules_file"],
+            market_rules_authority_file=params["market_rules_authority_file"],
         )
         json.dump(out, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
@@ -346,83 +549,17 @@ def main(argv=None):
         json.dump(out, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
         return 0
-    cache = Cache(db)
-    svc = HistoryService(cache)
-    today = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    writer_token = _collector_child_writer_token(params, db, raw_argv)
+    try:
+        out = _run_cache_command(params, db, writer_token)
+        json.dump(out, sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return 0
+    finally:
+        if writer_token is not None:
+            from .collector_continuity import close_collector_writer_authority
 
-    if params["kind"] == "forward_corporate_actions_capture":
-        from .forward_corporate_actions import capture_forward_corporate_actions
-        out = capture_forward_corporate_actions(cache, params["observation_date"])
-    elif params["kind"] == "forward_context_capture":
-        from .forward_context import capture_forward_context
-        out = capture_forward_context(cache, params["effective_date"])
-    elif params["kind"] == "forward_capture":
-        from .forward_capture import capture_forward_evidence
-        if params["codes_file"]:
-            codes = [
-                line.strip() for line in Path(params["codes_file"]).read_text().splitlines()
-                if line.strip() and not line.lstrip().startswith("#")
-            ]
-        else:
-            codes = [c.strip() for c in params["codes"].split(",") if c.strip()]
-        out = capture_forward_evidence(
-            cache,
-            codes,
-            params["start_date"],
-            params["end_date"] or None,
-            source=params["source"],
-            adjustment_version=params["adjustment_version"],
-        )
-    elif params["kind"] == "query":
-        if params.get("finalized_only"):
-            from .columnar import to_columnar
-            from .ticker import normalize
-            end = params["end_date"] or today
-            rows = svc.get_history(
-                params["code"], params["start_date"], end, today=today,
-                finalized_only=True,
-            )
-            out = to_columnar({normalize(params["code"]): rows})
-        else:
-            out = handle_ffd_query(params, svc, today=today)
-    elif params["kind"] == "realtime":
-        from . import api
-        out = api.get_realtime(params["code"])
-    elif params["kind"] == "update":
-        from .sync import default_final_date, sync_symbols
-        if params["codes_file"]:
-            codes = [
-                line.strip() for line in Path(params["codes_file"]).read_text().splitlines()
-                if line.strip() and not line.lstrip().startswith("#")
-            ]
-        else:
-            codes = [c.strip() for c in params["codes"].split(",") if c.strip()]
-        out = sync_symbols(
-            cache,
-            codes,
-            params["start_date"],
-            params["end_date"] or default_final_date(),
-            adjustment_mode=params["adjustment_mode"],
-        )
-    elif params["kind"] == "snapshot_create":
-        from .snapshot import create_snapshot
-        out = create_snapshot(
-            cache,
-            params["output"],
-            params["as_of"],
-            codes=params["codes"] or None,
-            source=params["source"],
-            adjustment_mode=params["adjustment_mode"],
-            adjustment_version=params["adjustment_version"],
-        )
-    elif params["kind"] == "snapshot_verify":
-        from .snapshot import verify_snapshot
-        out = verify_snapshot(params["snapshot_dir"])
-    else:
-        out = handle_ffd_quote_history(params, svc, today=today)
-    json.dump(out, sys.stdout, ensure_ascii=False)
-    sys.stdout.write("\n")
-    return 0
+            close_collector_writer_authority(writer_token)
 
 
 if __name__ == "__main__":

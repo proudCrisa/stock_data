@@ -7,7 +7,7 @@ import json
 import math
 import sqlite3
 from datetime import date, datetime, time
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable, cast
 from zoneinfo import ZoneInfo
 
 import requests
@@ -134,7 +134,7 @@ def _board(symbol: str) -> str:
 
 def _number(value: object) -> float:
     try:
-        result = float(value)
+        result = float(cast(Any, value))
     except (TypeError, ValueError) as exc:
         raise ValueError(f"invalid numeric market field: {value!r}") from exc
     if not math.isfinite(result):
@@ -174,7 +174,7 @@ def fetch_sina_market_rows(*, timeout: float = 15.0) -> CapturedMarketRows:
             f"Sina market count drift: expected {advertised_count}, received {len(rows)}"
         )
     observed_at = datetime.now(_SHANGHAI).isoformat(timespec="seconds")
-    receipt = {
+    receipt: dict[str, object] = {
         "observed_at": observed_at,
         "source": SOURCE,
         "request": {
@@ -297,6 +297,10 @@ def capture_forward_context(
     if day.weekday() >= 5:
         raise ValueError("forward context capture requires a weekday session candidate")
     phase = _phase(local)
+    cache._require_collector_writer(
+        step_id=("pre_open_context" if phase == "pre_open" else "post_close_context"),
+        session=effective_date,
+    )
     symbols, cohort_sha256 = _cohort(cache)
     with cache._conn:
         _ensure_schema(cache)

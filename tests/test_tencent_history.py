@@ -4,7 +4,6 @@ import pytest
 
 from scripts.verify_research_artifacts import main as verify_research_main
 from stockdata.fetch_tencent_history import (
-    CapturedTencentHistory,
     TencentHistoryError,
     fetch_tencent_history,
     reconcile_tencent_baostock,

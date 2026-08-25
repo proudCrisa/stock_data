@@ -80,6 +80,9 @@ def capture_forward_evidence(
     if not symbols:
         raise ValueError("at least one code is required")
     end = end or latest_finalized_date()
+    cache._require_collector_writer(
+        step_id="post_close_prices", session=end
+    )
 
     identities = {
         tuple(row)
@@ -100,7 +103,7 @@ def capture_forward_evidence(
     if earliest is not None and str(earliest) < start:
         raise ValueError("forward evidence database predates the cohort start")
 
-    cohort = {
+    cohort: dict[str, object] = {
         "symbols": list(symbols),
         "start": start,
         "source": source,

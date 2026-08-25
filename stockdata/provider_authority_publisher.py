@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import argparse
 import base64
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import json
 import os
 from pathlib import Path
+from typing import Protocol, cast
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
@@ -23,14 +24,15 @@ from .authority import (
     AUTHORITY_COMPONENT_ROLES,
     AUTHORITY_ENVELOPE_SCHEMA,
     EnrolledTrustRegistry,
-    SIGNER_ENROLLMENT_SCHEMA,
     TRUST_REGISTRY_SCHEMA,
     load_enrolled_trust_registry,
 )
 from .provider_authority_admission import (
     AdmittedProviderAuthority,
+    PreregisteredGenericMarketRulebook,
     SOURCE_RECEIPT_SCHEMA,
     admit_signed_component_authority,
+    preregister_generic_market_rulebook,
 )
 from .rqgm_provider_contract import COMPONENT_SCHEMAS, ProviderArtifactReference
 
@@ -38,7 +40,17 @@ from .rqgm_provider_contract import COMPONENT_SCHEMAS, ProviderArtifactReference
 @dataclass(frozen=True)
 class PublishedEnvelope:
     envelope: Mapping[str, object]
-    admitted: AdmittedProviderAuthority
+    admitted: AdmittedProviderAuthority | None = None
+    preregistered: PreregisteredGenericMarketRulebook | None = None
+
+    def __post_init__(self) -> None:
+        if (self.admitted is None) == (self.preregistered is None):
+            raise ValueError("published authority must have exactly one verification result")
+
+
+class _RegistrySigner(Protocol):
+    component_roles: Collection[str]
+    trust_root_id: str
 
 
 def _reject_duplicate_keys(pairs: Sequence[tuple[str, object]]) -> dict[str, object]:
@@ -149,17 +161,17 @@ def _registry_signer(
     registry: EnrolledTrustRegistry,
     publisher_key_id: str,
     component: str,
-) -> object:
+) -> _RegistrySigner:
     signers = getattr(registry, "_signers", {})
     signer = signers.get(publisher_key_id)
     if signer is None:
         raise ValueError("authority publisher refers to an unknown signer")
-    roles = getattr(signer, "component_roles", frozenset())
+    roles: Collection[str] = getattr(signer, "component_roles", frozenset())
     if not roles:
         raise ValueError("authority publisher signer has no component roles")
     if component not in roles:
         raise ValueError("authority publisher signer role does not match component")
-    return signer
+    return cast(_RegistrySigner, signer)
 
 
 def build_canonical_registry(
@@ -275,6 +287,19 @@ def publish_authority_envelope(
         "payload": payload,
         "signature_base64": _base64(signer_key.sign(_canonical(payload))),
     }
+    if component == "market_rules":
+        if decision_cutoff_by_panel is None:
+            raise ValueError("generic market-rule publication requires calendar cutoffs")
+        preregistered = preregister_generic_market_rulebook(
+            artifact_value=artifact,
+            authority_envelope=envelope,
+            expected_panel=artifact["panel"],
+            bound_source_receipts=receipts,
+            registry=registry,
+            decision_cutoff_by_panel=decision_cutoff_by_panel,
+        )
+        _write_canonical_json(output_file, envelope)
+        return PublishedEnvelope(envelope=envelope, preregistered=preregistered)
     admitted = admit_signed_component_authority(
         component=component,
         artifact_value=artifact,

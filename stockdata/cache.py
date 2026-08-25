@@ -103,21 +103,64 @@ def _shift(day: str, days: int) -> str:
 
 
 class Cache:
-    def __init__(self, db_path):
+    def __init__(self, db_path, *, writer_token: object | None = None):
         self.path = Path(db_path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._collector_marked = False
+        self._collector_writer_token = writer_token
+        if self.path.exists():
+            from .collector_continuity import is_collector_database
+
+            self._collector_marked = is_collector_database(self.path)
+        if self._collector_marked:
+            self._require_collector_writer()
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.path))
         self._conn.row_factory = sqlite3.Row
         try:
-            with self._conn:
-                self._conn.execute(_SCHEMA)
-                self._migrate()
+            if self._collector_marked:
+                from .collector_continuity import verify_collector_authority_schema
+
+                self._conn.execute("PRAGMA foreign_keys=ON")
+                verify_collector_authority_schema(self._conn)
+            else:
+                with self._conn:
+                    self._conn.execute(_SCHEMA)
+                    self._migrate()
         except Exception:
             self._conn.close()
             raise
 
+    @classmethod
+    def open_authorized_collector(
+        cls, db_path: str | Path, *, writer_token: object
+    ) -> "Cache":
+        """Open an already-prepared collector without schema creation or migration."""
+
+        return cls(db_path, writer_token=writer_token)
+
+    @property
+    def is_collector_database(self) -> bool:
+        return self._collector_marked
+
+    def _require_collector_writer(
+        self, *, step_id: str | None = None, session: str | None = None
+    ) -> None:
+        if not self._collector_marked:
+            return
+        from .collector_continuity import require_collector_writer
+
+        require_collector_writer(
+            self._collector_writer_token,
+            database_path=self.path,
+            step_id=step_id,
+            session=session,
+        )
+
     def _migrate(self) -> None:
         """Upgrade legacy caches without losing their existing daily rows."""
+        if self._collector_marked:
+            raise RuntimeError("collector cache migration is forbidden")
         current_version = int(
             self._conn.execute("PRAGMA user_version").fetchone()[0]
         )
@@ -200,6 +243,7 @@ class Cache:
         capture_receipts: list[dict] | None = None,
     ) -> int:
         """Write one price variant, replacing only matching-identity daily bars."""
+        self._require_collector_writer()
         if adjustment_version is None:
             if source != "baostock" or adjustment_mode not in _BAOSTOCK_VERSIONS:
                 raise ValueError("adjustment_version is required for this provenance")
@@ -269,6 +313,7 @@ class Cache:
         return len(rows)
 
     def _record_capture_receipt(self, receipt: dict) -> int:
+        self._require_collector_writer()
         required = {"observed_at", "source", "request", "response"}
         if not isinstance(receipt, dict) or set(receipt) != required:
             raise ValueError("receipt must contain observed_at, source, request, response")
@@ -450,6 +495,7 @@ class Cache:
         end: str,
     ) -> None:
         """Record a successfully attempted range, including non-trading days."""
+        self._require_collector_writer()
         retrieved_at = _utc_now()
         self._conn.execute(
             "INSERT INTO sync_coverage "
@@ -468,3 +514,11 @@ class Cache:
 
     def close(self):
         self._conn.close()
+
+
+def open_authorized_collector_cache(
+    db_path: str | Path, *, writer_token: object
+) -> Cache:
+    """Factory for a token-authorized collector cache with no migration path."""
+
+    return Cache.open_authorized_collector(db_path, writer_token=writer_token)

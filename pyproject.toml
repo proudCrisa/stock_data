@@ -17,7 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.2"]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "PyYAML>=6.0", "ruff>=0.6"]
 jqdata = ["jqdatasdk>=1.9,<2"]
 
 [project.scripts]
@@ -37,3 +37,8 @@ addopts = "-q -m 'not network'"
 markers = [
     "network: 需要真实网络/数据源（默认跳过，用 -m network 单独跑）",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/compare_tencent_baostock.py" = ["E402"]
+"scripts/fetch_tencent_history.py" = ["E402"]
+"scripts/verify_research_artifacts.py" = ["E402"]

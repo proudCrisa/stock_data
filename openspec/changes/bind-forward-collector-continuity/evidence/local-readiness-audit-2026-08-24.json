@@ -1,0 +1,411 @@
+{
+  "audit_environment": {
+    "discovery_method": "parsed_schema_and_content over regular JSON files; no filename-based authority inference",
+    "filesystem_writes": "DENIED",
+    "network": "DENIED",
+    "private_material_exposed": false
+  },
+  "authority_credit": false,
+  "blockers": [
+    {
+      "category": "production_trust_root_signer",
+      "evidence": "The pinned production registry has zero trust roots and zero signer enrollments, so none of the five required authority roles has independently enrolled signer coverage.",
+      "status": "BLOCKED"
+    },
+    {
+      "category": "signed_authority",
+      "evidence": "No production authority envelope, component source receipt, execution-grade trading calendar, or market-rules artifact was discovered. The sole research calendar candidate has execution_grade=false.",
+      "status": "BLOCKED"
+    },
+    {
+      "category": "prospective_future_panel",
+      "evidence": "All three local rqgm-forward-evidence databases lack collector genesis, database UUID, continuity ledger, and ledger-bound rqgm-forward-panel-registration/4. Historical registration/1 evidence cannot be upgraded.",
+      "status": "BLOCKED"
+    },
+    {
+      "category": "immutable_judge",
+      "evidence": "RQGM task 11.2 remains EVIDENCE_BLOCKED: no current closed non-trading shadow ledger and no two bound external Judge verdicts are present.",
+      "status": "BLOCKED"
+    },
+    {
+      "category": "economic_evidence",
+      "evidence": "RQGM task 14.3 remains DATA_BLOCKED: no canonical raw ledger bundle, independent reproduction, or external Judge verdict is available.",
+      "status": "BLOCKED"
+    },
+    {
+      "category": "release_authorization",
+      "evidence": "The RQGM production posture remains RETAIN_INCUMBENT with risk_only advice and directional exposure increase disallowed; successor release prerequisites are not satisfied.",
+      "status": "BLOCKED"
+    }
+  ],
+  "change": "bind-forward-collector-continuity",
+  "checked_at": "2026-08-24",
+  "collector_databases": [
+    {
+      "database_uuid": null,
+      "fingerprint_unchanged": true,
+      "genesis_present": false,
+      "ledger_path": "/Users/cdzhangxueli/.stockdata/rqgm-forward-evidence.sqlite.collector-ledger.jsonl",
+      "ledger_present": false,
+      "path": "/Users/cdzhangxueli/.stockdata/rqgm-forward-evidence.sqlite",
+      "post_audit_fingerprint": {
+        "mtime_ns": 1786695759322448583,
+        "sha256": "d366822fef95645fbfbad00f3b253112f46b35ad254a56ae8f3917be0eedcd3e",
+        "size_bytes": 64294912,
+        "st_dev": 16777232,
+        "st_ino": 73207624
+      },
+      "pre_audit_fingerprint": {
+        "mtime_ns": 1786695759322448583,
+        "sha256": "d366822fef95645fbfbad00f3b253112f46b35ad254a56ae8f3917be0eedcd3e",
+        "size_bytes": 64294912,
+        "st_dev": 16777232,
+        "st_ino": 73207624
+      },
+      "registration_v4_eligible": false
+    },
+    {
+      "database_uuid": null,
+      "fingerprint_unchanged": true,
+      "genesis_present": false,
+      "ledger_path": "/Users/cdzhangxueli/.stockdata/rqgm-forward-evidence-smoke.sqlite.collector-ledger.jsonl",
+      "ledger_present": false,
+      "path": "/Users/cdzhangxueli/.stockdata/rqgm-forward-evidence-smoke.sqlite",
+      "post_audit_fingerprint": {
+        "mtime_ns": 1785140952469446286,
+        "sha256": "9211654b5b5566170269a5d7500892c52d0767fcd5accf905db9be67d30ff7a3",
+        "size_bytes": 28672,
+        "st_dev": 16777232,
+        "st_ino": 73176848
+      },
+      "pre_audit_fingerprint": {
+        "mtime_ns": 1785140952469446286,
+        "sha256": "9211654b5b5566170269a5d7500892c52d0767fcd5accf905db9be67d30ff7a3",
+        "size_bytes": 28672,
+        "st_dev": 16777232,
+        "st_ino": 73176848
+      },
+      "registration_v4_eligible": false
+    },
+    {
+      "database_uuid": null,
+      "fingerprint_unchanged": true,
+      "genesis_present": false,
+      "ledger_path": "/Users/cdzhangxueli/.stockdata/rqgm-forward-evidence-tencent-smoke.sqlite.collector-ledger.jsonl",
+      "ledger_present": false,
+      "path": "/Users/cdzhangxueli/.stockdata/rqgm-forward-evidence-tencent-smoke.sqlite",
+      "post_audit_fingerprint": {
+        "mtime_ns": 1785141545677786529,
+        "sha256": "c06764162be04682d757d40ce9f554c38affc65bfa7c9a6fd7d8460f1b6f887f",
+        "size_bytes": 28672,
+        "st_dev": 16777232,
+        "st_ino": 73207361
+      },
+      "pre_audit_fingerprint": {
+        "mtime_ns": 1785141545677786529,
+        "sha256": "c06764162be04682d757d40ce9f554c38affc65bfa7c9a6fd7d8460f1b6f887f",
+        "size_bytes": 28672,
+        "st_dev": 16777232,
+        "st_ino": 73207361
+      },
+      "registration_v4_eligible": false
+    }
+  ],
+  "continuity_gate": {
+    "can_admit_signed_authority": false,
+    "can_change_component_boolean": false,
+    "can_make_aggregate_ready": false,
+    "can_populate_component": false,
+    "can_reject_materialization_or_export": true,
+    "can_satisfy_availability": false,
+    "role": "NEGATIVE_PROVENANCE_GATE_ONLY"
+  },
+  "decision": "DATA_BLOCKED",
+  "evidence_grade_granted": null,
+  "local_inventory": {
+    "fingerprint_changes": [],
+    "invalid_empty_json_files": 2,
+    "inventory_hash_contract": "sha256 of UTF-8 sorted relative_path, TAB, content_sha256, LF records for every regular *.json under the discovery root",
+    "inventory_sha256_after": "e5ad5a192ad01d5036889616637c40d3f3c8fcd46a1d5d5fe4007d1aac1db301",
+    "inventory_sha256_before": "e5ad5a192ad01d5036889616637c40d3f3c8fcd46a1d5d5fe4007d1aac1db301",
+    "json_files_examined": 10230,
+    "json_files_parsed": 10228,
+    "research_calendar_candidate": {
+      "authority_status": "research_vendor_only",
+      "execution_grade": false,
+      "path": "/Users/cdzhangxueli/.stockdata/research/calendar/2026-08-05-322df1b63d5e6932b452dea8f4c1d43dbc1cad8fdf4a1065c7516790be4d9855/manifest.json",
+      "schema_version": "stockdata-research-trading-calendar/1",
+      "sha256": "82bb2670485075bb2609a6fc0516874f202f4f3e24737d6dcf489dc7ac1b0ac8"
+    },
+    "roots": [
+      "/Users/cdzhangxueli/.stockdata"
+    ]
+  },
+  "production_readiness_recompute": {
+    "checked_parameters": {
+      "execution_adjustment": {
+        "mode": "raw",
+        "version": "tencent-qt-daily-v1"
+      },
+      "signal_adjustment": {
+        "mode": "raw",
+        "version": "tencent-qt-daily-v1"
+      },
+      "source": "tencent"
+    },
+    "fingerprints": {
+      "after": {
+        "database": {
+          "mtime_ns": 1786695759322448583,
+          "sha256": "d366822fef95645fbfbad00f3b253112f46b35ad254a56ae8f3917be0eedcd3e",
+          "size_bytes": 64294912
+        },
+        "journal_exists": false,
+        "shm_exists": false,
+        "wal_exists": false
+      },
+      "before": {
+        "database": {
+          "mtime_ns": 1786695759322448583,
+          "sha256": "d366822fef95645fbfbad00f3b253112f46b35ad254a56ae8f3917be0eedcd3e",
+          "size_bytes": 64294912
+        },
+        "journal_exists": false,
+        "shm_exists": false,
+        "wal_exists": false
+      },
+      "unchanged": true
+    },
+    "input_database": "/Users/cdzhangxueli/.stockdata/rqgm-forward-evidence.sqlite",
+    "panel_sha256": "75b63a8022f28444212bbb8b52c938f5aad81fb13454e76475fa9b54562d4e74",
+    "panel_size": 36,
+    "registration_path": "/Users/cdzhangxueli/workspaces/super-trader-rqgm/artifacts/forward-panel-registration-2026-08-12.json",
+    "registration_schema": "rqgm-forward-panel-registration/1",
+    "report": {
+      "blocker_codes": [
+        "complete_component_availability_records_not_bound",
+        "corporate_action_publisher_key_not_enrolled",
+        "corporate_action_revisions_not_supported",
+        "dividend_observation_not_full_corporate_action_ledger",
+        "forward_universe_publisher_key_not_enrolled",
+        "instrument_status_is_activity_proxy",
+        "missing_corporate_action_coverage",
+        "missing_decision_context_rows",
+        "missing_finalized_context_rows",
+        "missing_panel_rows",
+        "official_rulebook_bundle_not_enrolled",
+        "signed_session_calendar_not_enrolled",
+        "signed_trading_calendar_not_enrolled"
+      ],
+      "component_summaries": {
+        "availability_records": {
+          "blockers": [
+            {
+              "code": "complete_component_availability_records_not_bound",
+              "count": 1
+            }
+          ],
+          "ready": false
+        },
+        "corporate_actions": {
+          "blockers": [
+            {
+              "code": "corporate_action_publisher_key_not_enrolled",
+              "count": 1
+            },
+            {
+              "code": "corporate_action_revisions_not_supported",
+              "count": 1
+            },
+            {
+              "code": "dividend_observation_not_full_corporate_action_ledger",
+              "count": 1
+            },
+            {
+              "code": "missing_corporate_action_coverage",
+              "count": 24
+            }
+          ],
+          "ready": false
+        },
+        "decision_context": {
+          "blockers": [
+            {
+              "code": "missing_decision_context_rows",
+              "count": 24
+            },
+            {
+              "code": "missing_finalized_context_rows",
+              "count": 12
+            },
+            {
+              "code": "signed_session_calendar_not_enrolled",
+              "count": 1
+            }
+          ],
+          "ready": false
+        },
+        "execution_prices": {
+          "blockers": [
+            {
+              "code": "missing_panel_rows",
+              "count": 24
+            }
+          ],
+          "ready": false,
+          "selected_rows": 12
+        },
+        "instrument_status": {
+          "blockers": [
+            {
+              "code": "instrument_status_is_activity_proxy",
+              "count": 1
+            },
+            {
+              "code": "missing_decision_context_rows",
+              "count": 24
+            },
+            {
+              "code": "missing_finalized_context_rows",
+              "count": 12
+            },
+            {
+              "code": "signed_session_calendar_not_enrolled",
+              "count": 1
+            }
+          ],
+          "ready": false
+        },
+        "market_rules": {
+          "blockers": [
+            {
+              "code": "official_rulebook_bundle_not_enrolled",
+              "count": 1
+            }
+          ],
+          "ready": false
+        },
+        "signal_prices": {
+          "blockers": [
+            {
+              "code": "missing_panel_rows",
+              "count": 24
+            }
+          ],
+          "ready": false,
+          "selected_rows": 12
+        },
+        "trading_calendar": {
+          "blockers": [
+            {
+              "code": "signed_trading_calendar_not_enrolled",
+              "count": 1
+            }
+          ],
+          "ready": false
+        },
+        "universe": {
+          "blockers": [
+            {
+              "code": "forward_universe_publisher_key_not_enrolled",
+              "count": 1
+            },
+            {
+              "code": "missing_decision_context_rows",
+              "count": 24
+            },
+            {
+              "code": "missing_finalized_context_rows",
+              "count": 12
+            },
+            {
+              "code": "signed_session_calendar_not_enrolled",
+              "count": 1
+            }
+          ],
+          "ready": false
+        }
+      },
+      "ready": false,
+      "schema_version": "stockdata-full-execution-readiness/1"
+    },
+    "sessions": [
+      "2026-08-13",
+      "2026-08-14",
+      "2026-08-17"
+    ],
+    "symbols": [
+      "000001.SZ",
+      "000333.SZ",
+      "000725.SZ",
+      "000858.SZ",
+      "002415.SZ",
+      "300750.SZ",
+      "600030.SH",
+      "600036.SH",
+      "600276.SH",
+      "600519.SH",
+      "601166.SH",
+      "601318.SH"
+    ]
+  },
+  "production_registry": {
+    "path": "/Users/cdzhangxueli/workspaces/stock_data/stockdata/enrolled_trust_registry.json",
+    "pin_verified": true,
+    "pinned_sha256": "69b94b1d01cb8dd299db799fac657b78ce77a548d35753ab9dca1c9bf94aeec6",
+    "schema_version": "stockdata-enrolled-trust-registry/1",
+    "signer_enrollment_count": 0,
+    "trust_root_count": 0
+  },
+  "prohibited_claims": [
+    "TASK_8_6_COMPLETE",
+    "TASK_11_2_COMPLETE",
+    "TASK_14_3_COMPLETE",
+    "RELEASE_COMPLETE",
+    "ALPHA_DEMONSTRATED",
+    "PROFITABILITY_DEMONSTRATED",
+    "RELEASED_ELITE"
+  ],
+  "rqgm_readiness_bindings": [
+    {
+      "path": "/Users/cdzhangxueli/workspaces/super-trader-rqgm/artifacts/execution-replay-readiness.json",
+      "read_only": true,
+      "schema_version": "rqgm-execution-replay-readiness/1",
+      "sha256": "d5140f9fcfefd4d6d87b6bfc6bfee64987666faa64280424a276ae9e04069923",
+      "status": "DATA_BLOCKED",
+      "task": "8.6"
+    },
+    {
+      "path": "/Users/cdzhangxueli/workspaces/super-trader-rqgm/artifacts/remaining-task-readiness.json",
+      "read_only": true,
+      "schema_version": "rqgm-remaining-task-readiness/3",
+      "sha256": "3b91fca1824ac238f50454d02e27494eb0b4bab7de3b6ab8c7a66793afa65882"
+    },
+    {
+      "path": "/Users/cdzhangxueli/workspaces/super-trader-rqgm/artifacts/economic-reproduction-readiness.json",
+      "read_only": true,
+      "schema_version": "rqgm-economic-reproduction-readiness/1",
+      "sha256": "c69cafa50af91e49e44f540a4065c8ba4f3673bb64b68360f07a1b1446110f9e",
+      "status": "DATA_BLOCKED",
+      "task": "14.3"
+    },
+    {
+      "path": "/Users/cdzhangxueli/workspaces/super-trader-rqgm/artifacts/independent-p0-p1-review.json",
+      "read_only": true,
+      "schema_version": "rqgm-independent-p0-p1-review/1",
+      "sha256": "3d81a94a69c18cd7e5b9d0d3595e547584c5fe3c6fcd6d068994fb9ce7a5d118",
+      "task": "14.4"
+    }
+  ],
+  "schema_version": "stockdata-forward-collector-local-readiness-audit/1",
+  "target_schema_counts": {
+    "rqgm-forward-panel-registration/4": 0,
+    "stockdata-authority-envelope/1": 0,
+    "stockdata-forward-collector-continuity-closure/1": 0,
+    "stockdata-market-rules/1": 0,
+    "stockdata-provider-component-source-receipt/1": 0,
+    "stockdata-rqgm-provider-bundle/2": 0,
+    "stockdata-trading-calendar/1": 0
+  },
+  "task": "5.6"
+}

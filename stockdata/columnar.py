@@ -13,7 +13,7 @@ def to_columnar(rows_by_code: dict) -> dict:
 
     bar 为内部形态 {date,open,high,low,close,volume}；date 映射为列式的 time。
     """
-    cols = {k: [] for k in _FIELDS}
+    cols: dict[str, list[object]] = {k: [] for k in _FIELDS}
     for code, rows in rows_by_code.items():
         for b in rows:
             cols["time"].append(b["date"])

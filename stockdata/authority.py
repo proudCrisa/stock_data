@@ -63,6 +63,45 @@ class EnrolledTrustRegistry:
             raise ValueError("trust registry must be created by the pinned loader")
 
 
+def require_enrolled_role_coverage(
+    registry: EnrolledTrustRegistry,
+    *,
+    roles: Sequence[str],
+    valid_from: datetime,
+    valid_until: datetime,
+) -> Mapping[str, str]:
+    """Return enrolled publishers that cover every role for the full interval."""
+
+    if registry._verification_token is not _VERIFIED_REGISTRY_TOKEN:
+        raise ValueError("registry must be created by the pinned loader")
+    if (
+        valid_from.tzinfo is None
+        or valid_from.utcoffset() is None
+        or valid_until.tzinfo is None
+        or valid_until.utcoffset() is None
+        or valid_from > valid_until
+    ):
+        raise ValueError("role coverage interval must be ordered and timezone-aware")
+    requested = tuple(sorted(set(roles)))
+    if not requested or not set(requested).issubset(AUTHORITY_COMPONENT_ROLES):
+        raise ValueError("role coverage contains an unsupported authority role")
+
+    coverage: dict[str, str] = {}
+    for role in requested:
+        candidates = sorted(
+            signer.publisher_key_id
+            for signer in registry._signers.values()
+            if role in signer.component_roles
+            and signer.publisher_key_id != signer.trust_root_id
+            and signer.valid_from <= valid_from
+            and valid_until <= signer.valid_until
+        )
+        if not candidates:
+            raise ValueError(f"no independently enrolled signer covers {role}")
+        coverage[role] = candidates[0]
+    return MappingProxyType(coverage)
+
+
 @dataclass(frozen=True)
 class VerifiedAuthority:
     publisher_key_id: str

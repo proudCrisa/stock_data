@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from datetime import date
-import hashlib
+from collections.abc import Mapping, Sequence
 import json
 from pathlib import Path
 
-from stockdata.forward_panel_capture import CaptureSpec, capture_phase
+from stockdata.collector_continuity import (
+    CollectorContinuityError,
+    execute_registered_collector_phase,
+)
+from stockdata.forward_panel_capture import capture_phase  # noqa: F401 - audit sentinel
+from stockdata.future_panel_registration import (
+    REGISTRATION_SCHEMA,
+    reverify_registration_prerequisites,  # noqa: F401 - retained compatibility surface
+)
 
 
-_REGISTRATION_SCHEMA = "rqgm-forward-panel-registration/1"
 _EXPECTED_KEYS = {
     "schema_version",
     "registered_at",
@@ -21,15 +26,39 @@ _EXPECTED_KEYS = {
     "source",
     "adjustment_mode",
     "adjustment_version",
+    "database_path",
     "panel_sha256",
     "workspace_count",
     "outcome_feedback_used",
     "status",
+    "prerequisite_files",
+    "prerequisites",
+    "prerequisites_sha256",
 }
-
-
 class RegisteredPanelCaptureError(ValueError):
     """Raised when a capture request does not exactly match its registration."""
+
+
+def _reject_duplicate_keys(pairs: Sequence[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise RegisteredPanelCaptureError("registration_file has duplicate keys")
+        result[key] = value
+    return result
+
+
+def _canonical(value: object) -> bytes:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("ascii")
+    except (TypeError, ValueError) as exc:
+        raise RegisteredPanelCaptureError("registration_file is not canonical JSON") from exc
 
 
 def _read_registration(path: str | Path) -> Mapping[str, object]:
@@ -38,84 +67,20 @@ def _read_registration(path: str | Path) -> Mapping[str, object]:
         raise RegisteredPanelCaptureError("registration_file must name a regular file")
     try:
         raw = candidate.read_bytes()
-        value = json.loads(raw.decode("utf-8"))
+        value = json.loads(
+            raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys
+        )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RegisteredPanelCaptureError("registration_file must contain JSON") from exc
-    if not isinstance(value, Mapping) or set(value) != _EXPECTED_KEYS:
+    if not isinstance(value, Mapping):
+        raise RegisteredPanelCaptureError("registration_file schema is incomplete")
+    if raw != _canonical(dict(value)):
+        raise RegisteredPanelCaptureError("registration_file must use canonical JSON bytes")
+    if value.get("schema_version") != REGISTRATION_SCHEMA:
+        raise RegisteredPanelCaptureError("registration has an unsupported schema")
+    if set(value) != _EXPECTED_KEYS:
         raise RegisteredPanelCaptureError("registration_file schema is incomplete")
     return value
-
-
-def _texts(value: object, field: str, count: int) -> tuple[str, ...]:
-    if not isinstance(value, list) or len(value) != count:
-        raise RegisteredPanelCaptureError(f"registration {field} has the wrong size")
-    result = tuple(value)
-    if any(not isinstance(item, str) or not item or item.strip() != item for item in result):
-        raise RegisteredPanelCaptureError(f"registration {field} is invalid")
-    if len(set(result)) != len(result):
-        raise RegisteredPanelCaptureError(f"registration {field} has duplicates")
-    return result
-
-
-def _panel_sha256(symbols: tuple[str, ...], sessions: tuple[str, ...]) -> str:
-    cells = sorted(f"{symbol}@{day}" for symbol in symbols for day in sessions)
-    return hashlib.sha256(
-        json.dumps(cells, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode(
-            "ascii"
-        )
-    ).hexdigest()
-
-
-def capture_spec_from_registration(
-    registration_file: str | Path,
-    *,
-    database: str | Path,
-    effective_date: str,
-) -> CaptureSpec:
-    """Return a capture spec only for an exact, pending registered session."""
-
-    registration = _read_registration(registration_file)
-    if registration["schema_version"] != _REGISTRATION_SCHEMA:
-        raise RegisteredPanelCaptureError("registration has an unsupported schema")
-    if registration["outcome_feedback_used"] is not False:
-        raise RegisteredPanelCaptureError("registration must be outcome blind")
-    if registration["status"] != "AWAITING_FULL_SNAPSHOT_READINESS":
-        raise RegisteredPanelCaptureError("registration is not pending capture")
-    if registration["adjustment_mode"] != "raw":
-        raise RegisteredPanelCaptureError("registered capture requires raw adjustment")
-    if not isinstance(registration["source"], str) or not registration["source"]:
-        raise RegisteredPanelCaptureError("registration source is invalid")
-    if (
-        not isinstance(registration["adjustment_version"], str)
-        or not registration["adjustment_version"]
-    ):
-        raise RegisteredPanelCaptureError("registration adjustment version is invalid")
-    if registration["workspace_count"] != 36:
-        raise RegisteredPanelCaptureError("registration workspace count is invalid")
-
-    symbols = _texts(registration["symbols"], "symbols", 12)
-    sessions = _texts(registration["sessions"], "sessions", 3)
-    if sessions != tuple(sorted(sessions)):
-        raise RegisteredPanelCaptureError("registration sessions are not sorted")
-    try:
-        session_dates = tuple(date.fromisoformat(item).isoformat() for item in sessions)
-        requested_date = date.fromisoformat(effective_date).isoformat()
-    except ValueError as exc:
-        raise RegisteredPanelCaptureError("registration or requested date is invalid") from exc
-    if any(date.fromisoformat(item).weekday() >= 5 for item in session_dates):
-        raise RegisteredPanelCaptureError("registration contains a non-trading weekday")
-    if requested_date not in session_dates:
-        raise RegisteredPanelCaptureError("requested date is not registered")
-    if registration["panel_sha256"] != _panel_sha256(symbols, sessions):
-        raise RegisteredPanelCaptureError("registration panel identity drifted")
-
-    return CaptureSpec(
-        database=Path(database).expanduser(),
-        effective_date=requested_date,
-        symbols=symbols,
-        source=registration["source"],
-        adjustment_version=registration["adjustment_version"],
-    )
 
 
 def capture_registered_panel(
@@ -129,9 +94,28 @@ def capture_registered_panel(
 
     if phase not in {"pre_open", "post_close"}:
         raise RegisteredPanelCaptureError("phase must be pre_open or post_close")
-    return capture_phase(
-        capture_spec_from_registration(
-            registration_file, database=database, effective_date=effective_date
-        ),
-        phase,
-    )
+    _read_registration(registration_file)
+    try:
+        outcomes = execute_registered_collector_phase(
+            registration_file,
+            database=database,
+            effective_date=effective_date,
+            phase=phase,
+        )
+    except CollectorContinuityError as exc:
+        raise RegisteredPanelCaptureError(str(exc)) from exc
+    return [
+        {
+            "step_id": outcome.step_id,
+            "step_ordinal": outcome.step_ordinal,
+            "attempt_id": outcome.attempt_id,
+            "terminal_event_sha256": outcome.terminal_event_sha256,
+            "terminal_event_type": outcome.terminal_event_type,
+            "classification": outcome.classification,
+            "retryable": outcome.retryable,
+            "process_result_known": outcome.process_result_known,
+            "returncode": outcome.returncode,
+            "raw_class": outcome.raw_class,
+        }
+        for outcome in outcomes
+    ]

@@ -5,6 +5,7 @@ import contextlib
 import io
 from collections.abc import Iterable
 from datetime import date, datetime
+from typing import Any, cast
 
 EVIDENCE_GRADE = "VENDOR_BOOTSTRAP_ONLY"
 MAX_RUN_ROWS = 100_000
@@ -30,11 +31,12 @@ def close_session(sdk: object) -> None:
 
 def authenticate(sdk: object, account: str, secret: str) -> None:
     """Authenticate without allowing SDK output or exceptions to expose credentials."""
+    client = cast(Any, sdk)
     try:
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
             io.StringIO()
         ):
-            sdk.auth(account, secret)
+            client.auth(account, secret)
     except Exception:  # noqa: BLE001
         close_session(sdk)
         account = secret = ""
@@ -101,8 +103,9 @@ def _validate_inputs(
 
 
 def _check_quota(sdk: object, max_rows: int) -> None:
+    client = cast(Any, sdk)
     try:
-        quota = sdk.get_query_count()
+        quota = client.get_query_count()
         spare = int(quota["spare"])
     except Exception:  # noqa: BLE001
         raise JQDataBootstrapError("JQData quota check failed") from None
@@ -111,9 +114,10 @@ def _check_quota(sdk: object, max_rows: int) -> None:
 
 
 def _universe_rows(sdk: object, day: str) -> list[dict[str, object]]:
+    client = cast(Any, sdk)
     try:
-        frame = sdk.get_all_securities(types=["stock"], date=day)
-        rows = []
+        frame = client.get_all_securities(types=["stock"], date=day)
+        rows: list[dict[str, object]] = []
         for provider_symbol, source in frame.iterrows():
             if str(source["type"]) != "stock":
                 raise JQDataBootstrapError("JQData returned a non-stock universe row")
@@ -139,10 +143,11 @@ def _universe_rows(sdk: object, day: str) -> list[dict[str, object]]:
 def _status_rows(
     sdk: object, symbols: list[str], day: str
 ) -> list[dict[str, object]]:
+    client = cast(Any, sdk)
     rows: list[dict[str, object]] = []
     try:
         for symbol in symbols:
-            frame = sdk.get_price(
+            frame = client.get_price(
                 _provider_symbol(symbol),
                 start_date=day,
                 end_date=day,
