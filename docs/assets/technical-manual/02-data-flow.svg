@@ -1,0 +1,110 @@
+<svg class="diagram" viewBox="0 0 1000 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="数据流向图">
+    <defs>
+      <pattern id="dots2" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="0.9" fill="rgba(45,49,66,0.10)"/></pattern>
+      <marker id="arrow2" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+      <marker id="arrow2-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+    </defs>
+    <rect width="100%" height="100%" fill="#f5f5f5"/>
+    <rect width="100%" height="100%" fill="url(#dots2)" opacity="0.55"/>
+
+    <!-- arrows -->
+    <path d="M 200,240 H 228 Q 236,240 236,232 V 144 Q 236,136 244,136 H 272" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow2)"/>
+    <path d="M 200,296 H 228 Q 236,296 236,304 V 368 Q 236,376 244,376 H 272" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow2)"/>
+    <line x1="440" y1="136" x2="520" y2="136" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow2)"/>
+    <path d="M 440,392 H 480 Q 488,392 488,384 V 180 Q 488,172 496,172 H 520" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow2)"/>
+    <path d="M 440,360 H 472 Q 480,360 480,368 V 368 Q 480,368 488,368 H 520" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow2)"/>
+    <line x1="712" y1="132" x2="792" y2="132" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow2)"/>
+    <path d="M 712,160 H 744 Q 752,160 752,168 V 332 Q 752,340 760,340 H 792" fill="none" stroke="#eb6c36" stroke-width="1.4" marker-end="url(#arrow2-accent)"/>
+    <path d="M 712,372 H 744 Q 752,372 752,368 V 368 Q 752,364 760,364 H 792" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow2)"/>
+
+    <!-- arrow labels -->
+    <rect x="448" y="120" width="52" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="474" y="129" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">UPSERT</text>
+    <rect x="444" y="256" width="56" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="472" y="265" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">RAW 价格</text>
+    <rect x="440" y="344" width="72" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="476" y="353" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">APPEND-ONLY</text>
+    <rect x="720" y="112" width="40" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="740" y="121" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">查询</text>
+    <rect x="718" y="232" width="56" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="746" y="241" fill="#eb6c36" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">DB 重建</text>
+    <rect x="718" y="356" width="56" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="746" y="365" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">回执绑定</text>
+
+    <!-- N1: sources -->
+    <rect x="40" y="212" width="160" height="104" rx="6" fill="#f5f5f5"/>
+    <rect x="40" y="212" width="160" height="104" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+    <rect x="48" y="220" width="28" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.22)" stroke-width="0.8"/>
+    <text x="62" y="229" fill="#7a8399" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">EXT</text>
+    <text x="120" y="256" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">数据源</text>
+    <text x="120" y="272" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">baostock · 腾讯</text>
+    <text x="120" y="288" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">同花顺 · Wind</text>
+
+    <!-- N2: etl -->
+    <rect x="272" y="100" width="168" height="72" rx="6" fill="#f5f5f5"/>
+    <rect x="272" y="100" width="168" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <rect x="280" y="108" width="28" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+    <text x="294" y="117" fill="#2d3142" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">ETL</text>
+    <text x="356" y="132" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">历史回填 / 增量</text>
+    <text x="356" y="148" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">sync · fetch_* · ingest_wind</text>
+
+    <!-- N3: forward collector -->
+    <rect x="272" y="340" width="168" height="72" rx="6" fill="#f5f5f5"/>
+    <rect x="272" y="340" width="168" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <rect x="280" y="348" width="32" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+    <text x="296" y="357" fill="#2d3142" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">FWD</text>
+    <text x="356" y="372" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">前瞻采集器</text>
+    <text x="356" y="388" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">pre_open / post_close</text>
+
+    <!-- N4: daily -->
+    <rect x="520" y="92" width="192" height="80" rx="6" fill="#f5f5f5"/>
+    <rect x="520" y="92" width="192" height="80" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+    <rect x="528" y="100" width="28" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.50)" stroke-width="0.8"/>
+    <text x="542" y="109" fill="#4f5d75" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">TBL</text>
+    <text x="616" y="128" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">daily + coverage</text>
+    <text x="616" y="144" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">身份三元组 · is_final</text>
+    <text x="616" y="160" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">停牌空洞豁免</text>
+
+    <!-- N5: receipts -->
+    <rect x="520" y="332" width="192" height="80" rx="6" fill="#f5f5f5"/>
+    <rect x="520" y="332" width="192" height="80" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+    <rect x="528" y="340" width="28" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.50)" stroke-width="0.8"/>
+    <text x="542" y="349" fill="#4f5d75" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">TBL</text>
+    <text x="616" y="368" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">collection_receipts</text>
+    <text x="616" y="384" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">request/response + sha256</text>
+    <text x="616" y="400" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">trigger 强制 append-only</text>
+
+    <!-- N6: read path -->
+    <rect x="792" y="92" width="168" height="80" rx="6" fill="#f5f5f5"/>
+    <rect x="792" y="92" width="168" height="80" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <rect x="800" y="100" width="28" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+    <text x="814" y="109" fill="#2d3142" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">SVC</text>
+    <text x="876" y="128" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">读路径 service</text>
+    <text x="876" y="144" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">CLI · MCP · API</text>
+    <text x="876" y="160" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">本地消费</text>
+
+    <!-- N7: materialize + export (focal) -->
+    <rect x="792" y="300" width="168" height="112" rx="6" fill="#f5f5f5"/>
+    <rect x="792" y="300" width="168" height="112" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+    <rect x="800" y="308" width="40" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="0.8"/>
+    <text x="820" y="317" fill="#eb6c36" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">RQGM</text>
+    <text x="952" y="408" fill="rgba(235,108,54,0.10)" font-size="32" font-weight="600" font-family="'Geist Mono',monospace" text-anchor="end">01</text>
+    <text x="876" y="340" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif" text-anchor="middle">物化 + 导出复验</text>
+    <text x="876" y="356" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">materialize → bundle</text>
+    <text x="876" y="372" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">export 字节级复验</text>
+    <text x="876" y="392" fill="#eb6c36" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">fail-closed 证据链</text>
+
+    <!-- legend -->
+    <line x1="40" y1="472" x2="960" y2="472" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <text x="40" y="488" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.18em">LEGEND</text>
+    <rect x="40" y="504" width="14" height="10" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+    <text x="60" y="512" fill="#4f5d75" font-size="8.5" font-family="'Geist',sans-serif">fail-closed 焦点</text>
+    <rect x="172" y="504" width="14" height="10" rx="2" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+    <text x="192" y="512" fill="#4f5d75" font-size="8.5" font-family="'Geist',sans-serif">存储表</text>
+    <line x1="268" y1="510" x2="296" y2="510" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow2)"/>
+    <text x="304" y="512" fill="#4f5d75" font-size="8.5" font-family="'Geist',sans-serif">读写调用</text>
+    <line x1="388" y1="510" x2="416" y2="510" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow2)"/>
+    <text x="424" y="512" fill="#4f5d75" font-size="8.5" font-family="'Geist',sans-serif">append-only 写</text>
+    <line x1="532" y1="510" x2="560" y2="510" stroke="#eb6c36" stroke-width="1.4" marker-end="url(#arrow2-accent)"/>
+    <text x="568" y="512" fill="#4f5d75" font-size="8.5" font-family="'Geist',sans-serif">证据主路径</text>
+  </svg>

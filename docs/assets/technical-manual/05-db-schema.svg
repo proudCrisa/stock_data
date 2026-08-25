@@ -1,0 +1,218 @@
+<svg class="diagram" viewBox="0 0 1080 680" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="数据库物理模型图">
+    <defs>
+      <marker id="arrow5" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+      <marker id="arrow5-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+    </defs>
+    <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+    <!-- FORWARD schema group -->
+    <rect x="800" y="48" width="252" height="440" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.20)" stroke-width="0.8" stroke-dasharray="4,4"/>
+    <text x="812" y="64" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.14em">FORWARD · 前瞻采集</text>
+
+    <!-- FK connectors -->
+    <!-- daily.receipt_id -> receipts.receipt_id (focal append-only) -->
+    <path d="M 300,288 H 352 Q 360,288 360,280 V 128 Q 360,120 368,120 H 420" fill="none" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow5-accent)"/>
+    <!-- forward_context.receipt_id -> receipts.receipt_id -->
+    <path d="M 820,388 H 752 Q 744,388 744,380 V 128 Q 744,120 736,120 H 700" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#arrow5)"/>
+    <!-- coverage -> daily (logical) -->
+    <line x1="170" y1="400" x2="170" y2="328" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow5)"/>
+
+    <!-- FK labels -->
+    <rect x="300" y="244" width="88" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="344" y="253" fill="#eb6c36" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">APPEND-ONLY</text>
+    <rect x="716" y="240" width="56" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="744" y="249" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">RECEIPT</text>
+    <rect x="120" y="352" width="100" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="170" y="361" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.06em">COVERS（逻辑）</text>
+
+    <!-- ===== table: cache.daily ===== -->
+    <rect x="40" y="80" width="260" height="248" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <rect x="40" y="80" width="260" height="28" rx="6" fill="rgba(45,49,66,0.04)" stroke="none"/>
+    <rect x="40" y="100" width="260" height="8" fill="rgba(45,49,66,0.04)"/>
+    <line x1="40" y1="108" x2="300" y2="108" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <text x="52" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif">cache.daily</text>
+    <rect x="248" y="88" width="40" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+    <text x="268" y="97" fill="#2d3142" opacity="0.8" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">TABLE</text>
+
+    <rect x="40" y="108" width="260" height="24" fill="rgba(45,49,66,0.02)"/>
+    <text x="52" y="124" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">code</text>
+    <rect x="200" y="116" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="210" y="125" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">PK</text>
+    <text x="288" y="124" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <text x="52" y="148" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">date</text>
+    <rect x="200" y="140" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="210" y="149" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">PK</text>
+    <text x="288" y="148" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <rect x="40" y="156" width="260" height="24" fill="rgba(45,49,66,0.02)"/>
+    <text x="52" y="172" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">source</text>
+    <rect x="200" y="164" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="210" y="173" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">PK</text>
+    <text x="288" y="172" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <text x="52" y="196" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">adjustment_mode</text>
+    <rect x="200" y="188" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="210" y="197" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">PK</text>
+    <text x="288" y="196" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <rect x="40" y="204" width="260" height="24" fill="rgba(45,49,66,0.02)"/>
+    <text x="52" y="220" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">adjustment_version</text>
+    <rect x="200" y="212" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="210" y="221" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">PK</text>
+    <text x="288" y="220" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <text x="52" y="244" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">is_final</text>
+    <rect x="200" y="236" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="210" y="245" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">NN</text>
+    <text x="288" y="244" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">integer</text>
+
+    <rect x="40" y="252" width="260" height="24" fill="rgba(45,49,66,0.02)"/>
+    <text x="52" y="268" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">receipt_id</text>
+    <rect x="200" y="260" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="210" y="269" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">FK</text>
+    <text x="288" y="268" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">integer</text>
+
+    <text x="52" y="292" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace">+ 6 more columns（OHLC·volume·retrieved_at）</text>
+    <line x1="40" y1="300" x2="300" y2="300" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+    <text x="52" y="314" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.14em">NOTE</text>
+    <text x="52" y="324" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace">finalized 行 trigger 禁语义改写</text>
+
+    <!-- ===== table: cache.sync_coverage ===== -->
+    <rect x="40" y="400" width="260" height="172" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <rect x="40" y="400" width="260" height="28" rx="6" fill="rgba(45,49,66,0.04)" stroke="none"/>
+    <rect x="40" y="420" width="260" height="8" fill="rgba(45,49,66,0.04)"/>
+    <line x1="40" y1="428" x2="300" y2="428" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <text x="52" y="418" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif">cache.sync_coverage</text>
+    <rect x="248" y="408" width="40" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+    <text x="268" y="417" fill="#2d3142" opacity="0.8" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">TABLE</text>
+
+    <rect x="40" y="428" width="260" height="24" fill="rgba(45,49,66,0.02)"/>
+    <text x="52" y="444" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">code</text>
+    <rect x="200" y="436" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="210" y="445" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">PK</text>
+    <text x="288" y="444" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <text x="52" y="468" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">source</text>
+    <rect x="200" y="460" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="210" y="469" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">PK</text>
+    <text x="288" y="468" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <rect x="40" y="476" width="260" height="24" fill="rgba(45,49,66,0.02)"/>
+    <text x="52" y="492" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">start_date</text>
+    <rect x="200" y="484" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="210" y="493" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">NN</text>
+    <text x="288" y="492" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <text x="52" y="516" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">end_date</text>
+    <rect x="200" y="508" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="210" y="517" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">NN</text>
+    <text x="288" y="516" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <text x="52" y="540" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace">+ 3 more（mode·version·retrieved_at）</text>
+    <line x1="40" y1="548" x2="300" y2="548" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+    <text x="52" y="562" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace">单区间 · MIN/MAX 合并</text>
+
+    <!-- ===== table: cache.collection_receipts (focal header) ===== -->
+    <rect x="420" y="80" width="280" height="212" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <rect x="420" y="80" width="280" height="28" rx="6" fill="rgba(235,108,54,0.08)" stroke="none"/>
+    <rect x="420" y="100" width="280" height="8" fill="rgba(235,108,54,0.08)"/>
+    <line x1="420" y1="108" x2="700" y2="108" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <text x="432" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif">cache.collection_receipts</text>
+    <rect x="648" y="88" width="40" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+    <text x="668" y="97" fill="#2d3142" opacity="0.8" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">TABLE</text>
+
+    <rect x="420" y="108" width="280" height="24" fill="rgba(45,49,66,0.02)"/>
+    <text x="432" y="124" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">receipt_id</text>
+    <rect x="560" y="116" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="570" y="125" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">PK</text>
+    <text x="688" y="124" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">integer</text>
+
+    <text x="432" y="148" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">observed_at</text>
+    <rect x="560" y="140" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="570" y="149" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">NN</text>
+    <text x="688" y="148" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <rect x="420" y="156" width="280" height="24" fill="rgba(45,49,66,0.02)"/>
+    <text x="432" y="172" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">source</text>
+    <rect x="560" y="164" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="570" y="173" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">NN</text>
+    <text x="688" y="172" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <text x="432" y="196" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">request_json</text>
+    <rect x="560" y="188" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="570" y="197" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">NN</text>
+    <text x="688" y="196" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <rect x="420" y="204" width="280" height="24" fill="rgba(45,49,66,0.02)"/>
+    <text x="432" y="220" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">response_json</text>
+    <rect x="560" y="212" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="570" y="221" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">NN</text>
+    <text x="688" y="220" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <text x="432" y="244" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">response_sha256</text>
+    <rect x="560" y="236" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="570" y="245" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">NN</text>
+    <text x="688" y="244" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <line x1="420" y1="252" x2="700" y2="252" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+    <text x="432" y="266" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.14em">TRIGGERS</text>
+    <text x="432" y="282" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace">no_update · no_delete（append-only 强制）</text>
+
+    <!-- ===== table: cache.forward_collector_genesis ===== -->
+    <rect x="820" y="80" width="212" height="148" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <rect x="820" y="80" width="212" height="28" rx="6" fill="rgba(45,49,66,0.04)" stroke="none"/>
+    <rect x="820" y="100" width="212" height="8" fill="rgba(45,49,66,0.04)"/>
+    <line x1="820" y1="108" x2="1032" y2="108" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <text x="832" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif">cache.fwd_collector_genesis</text>
+    <rect x="980" y="88" width="40" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+    <text x="1000" y="97" fill="#2d3142" opacity="0.8" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">TABLE</text>
+
+    <rect x="820" y="108" width="212" height="24" fill="rgba(45,49,66,0.02)"/>
+    <text x="832" y="124" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">db_uuid</text>
+    <rect x="920" y="116" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="930" y="125" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">PK</text>
+    <text x="1020" y="124" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <text x="832" y="148" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">cohort_sha256</text>
+    <rect x="920" y="140" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="930" y="149" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">NN</text>
+    <text x="1020" y="148" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <rect x="820" y="156" width="212" height="24" fill="rgba(45,49,66,0.02)"/>
+    <text x="832" y="172" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">schema_fingerprint</text>
+    <rect x="920" y="164" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="930" y="173" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">NN</text>
+    <text x="1020" y="172" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <text x="832" y="196" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace">+ 2 more（file identity·created_at）</text>
+    <line x1="820" y1="204" x2="1032" y2="204" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+    <text x="832" y="218" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace">同路径替换/回滚即断裂</text>
+
+    <!-- ===== table: cache.forward_context_observations ===== -->
+    <rect x="820" y="300" width="212" height="172" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <rect x="820" y="300" width="212" height="28" rx="6" fill="rgba(45,49,66,0.04)" stroke="none"/>
+    <rect x="820" y="320" width="212" height="8" fill="rgba(45,49,66,0.04)"/>
+    <line x1="820" y1="328" x2="1032" y2="328" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <text x="832" y="318" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist',sans-serif">cache.fwd_context_obs</text>
+    <rect x="980" y="308" width="40" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+    <text x="1000" y="317" fill="#2d3142" opacity="0.8" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing="0.08em">TABLE</text>
+
+    <rect x="820" y="328" width="212" height="24" fill="rgba(45,49,66,0.02)"/>
+    <text x="832" y="344" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">symbol</text>
+    <rect x="920" y="336" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="930" y="345" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">NN</text>
+    <text x="1020" y="344" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <text x="832" y="368" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">effective_date</text>
+    <rect x="920" y="360" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="930" y="369" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">NN</text>
+    <text x="1020" y="368" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <rect x="820" y="376" width="212" height="24" fill="rgba(45,49,66,0.02)"/>
+    <text x="832" y="392" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">receipt_id</text>
+    <rect x="920" y="384" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/><text x="930" y="393" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">FK</text>
+    <text x="1020" y="392" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">integer</text>
+
+    <text x="832" y="416" fill="#2d3142" font-size="12" font-family="'Geist',sans-serif">decision_available_at</text>
+    <text x="1020" y="416" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="end">text</text>
+
+    <text x="832" y="440" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace">×3 同类表（context·universe·status）</text>
+    <line x1="820" y1="448" x2="1032" y2="448" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+    <text x="832" y="462" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace">+ forward_corporate_actions / coverage</text>
+
+    <!-- legend -->
+    <line x1="40" y1="608" x2="1040" y2="608" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <text x="40" y="624" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing="0.18em">LEGEND</text>
+    <rect x="40" y="640" width="20" height="12" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <text x="68" y="648" fill="#4f5d75" font-size="8.5" font-family="'Geist',sans-serif">Table</text>
+    <rect x="140" y="640" width="20" height="12" rx="2" fill="rgba(235,108,54,0.08)" stroke="#2d3142" stroke-width="1"/>
+    <text x="168" y="648" fill="#4f5d75" font-size="8.5" font-family="'Geist',sans-serif">焦点表头（append-only）</text>
+    <rect x="320" y="640" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/>
+    <text x="330" y="649" fill="#2d3142" opacity="0.75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">PK</text>
+    <text x="348" y="648" fill="#4f5d75" font-size="8.5" font-family="'Geist',sans-serif">约束芯片</text>
+    <line x1="456" y1="646" x2="476" y2="646" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow5-accent)"/>
+    <text x="484" y="648" fill="#4f5d75" font-size="8.5" font-family="'Geist',sans-serif">append-only FK（列对列）</text>
+    <line x1="640" y1="646" x2="660" y2="646" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow5)"/>
+    <text x="668" y="648" fill="#4f5d75" font-size="8.5" font-family="'Geist',sans-serif">逻辑覆盖关系</text>
+    <rect x="792" y="640" width="20" height="12" rx="2" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.35)" stroke-width="0.8" stroke-dasharray="3,3"/>
+    <text x="820" y="648" fill="#4f5d75" font-size="8.5" font-family="'Geist',sans-serif">Schema 分组</text>
+  </svg>
