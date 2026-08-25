@@ -529,8 +529,13 @@ def verify_component_availability_records(
             calendar_phases=calendar_phases,
             bound_receipts=bound_receipt_set,
         )
-        ready = True
-        blockers = ()
+        # Exact closure is bidirectional: every bound source receipt must be
+        # consumed by at least one component record. An unused ("orphan")
+        # receipt can carry arbitrary or post-hoc bindings and must never
+        # ride along inside a ready bundle.
+        unconsumed = bound_receipt_set - used_receipts
+        ready = not unconsumed
+        blockers = ("source_receipt_not_consumed",) if unconsumed else ()
     max_available_at = max(available_times, key=lambda item: item[0])[1]
     return VerifiedComponentAvailability(
         ready=ready,

@@ -129,6 +129,7 @@ def _verify(
     artifact: object,
     component_records: object,
     signed_calendar_phases: object | None = None,
+    bound_source_receipt_ids: list[str] | None = None,
 ):
     phases = (
         _signed_calendar_phases()
@@ -144,7 +145,9 @@ def _verify(
             panel_entry: phases[panel_entry]["decision_cutoff_at"]
             for panel_entry in panel
         },
-        bound_source_receipt_ids=[RECEIPT_ID],
+        bound_source_receipt_ids=(
+            [RECEIPT_ID] if bound_source_receipt_ids is None else bound_source_receipt_ids
+        ),
         component_records=component_records,
         expected_signed_calendar_phases=phases,
     )
@@ -158,6 +161,20 @@ def test_verified_schema_closes_over_all_eight_component_records() -> None:
     assert verified.ready is True
     assert verified.blockers == ()
     assert verified.record_count == len(EVIDENCE_COMPONENTS)
+
+
+def test_unconsumed_bound_receipt_blocks_readiness() -> None:
+    component_records = _component_records()
+    orphan = hashlib.sha256(b"orphan-receipt").hexdigest()
+
+    verified = _verify(
+        _artifact(component_records),
+        component_records,
+        bound_source_receipt_ids=sorted([RECEIPT_ID, orphan]),
+    )
+
+    assert verified.ready is False
+    assert verified.blockers == ("source_receipt_not_consumed",)
 
 
 def test_legacy_schema_is_compatible_but_blocked() -> None:

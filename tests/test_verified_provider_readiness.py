@@ -903,6 +903,130 @@ def test_complete_nine_component_fixture_materializes_and_reexports_ready(
     assert second_export == first_export == materialized["receipt"]
 
 
+def test_orphan_source_receipt_never_reaches_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _fixture(tmp_path, complete_calendar=True)
+    orphan = {
+        "bindings": [
+            {
+                "component": "universe",
+                "panel_entry": PANEL[0],
+                "record_sha256": hashlib.sha256(b"nonexistent-record").hexdigest(),
+            }
+        ],
+        "observed_at": "2026-01-01T00:00:00+00:00",
+        "response_sha256": hashlib.sha256(b"orphan-response").hexdigest(),
+        "schema_version": "stockdata-provider-component-source-receipt/1",
+        "source": "unused-extra",
+    }
+    orphan_file = _write(fixture.root / "receipt-orphan.json", orphan)
+    _patch_test_trust(monkeypatch, fixture.registry)
+    snapshot_staging = fixture.root / "orphan-snapshot-staging"
+    snapshot_staging.mkdir(mode=0o700)
+
+    materialized = materialize_provider_bundle(
+        output_dir=fixture.root / "orphan-bundle",
+        database_file=fixture.database,
+        registration_file=fixture.registration_file,
+        snapshot_staging_directory=snapshot_staging,
+        panel_file=fixture.panel_file,
+        source_receipt_files=(*fixture.receipt_files, orphan_file),
+        execution_adjustment_file=fixture.execution_adjustment_file,
+        signal_adjustment_file=fixture.signal_adjustment_file,
+        component_files=fixture.component_files,
+        component_authority_files=fixture.authority_files,
+        source="tencent",
+    )
+    exported = export_verified_provider_receipt(Path(materialized["bundle_file"]))
+
+    availability = materialized["receipt"]["readiness_report"]["components"][
+        "availability_records"
+    ]
+    assert materialized["receipt"]["ready"] is False
+    assert exported["ready"] is False
+    assert availability["ready"] is False
+    assert {"code": "source_receipt_not_consumed", "count": 1} in availability[
+        "blockers"
+    ]
+
+
+def test_forged_ready_bundle_with_orphan_receipt_is_rejected_on_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _fixture(tmp_path, complete_calendar=True)
+    materialized = _materialize(fixture, monkeypatch, name="ready-bundle-for-forgery")
+    assert materialized["receipt"]["ready"] is True
+    bundle_file = Path(materialized["bundle_file"])
+    bundle = json.loads(bundle_file.read_text())
+
+    orphan = {
+        "bindings": [
+            {
+                "component": "universe",
+                "panel_entry": PANEL[0],
+                "record_sha256": hashlib.sha256(b"nonexistent-record").hexdigest(),
+            }
+        ],
+        "observed_at": "2026-01-01T00:00:00+00:00",
+        "response_sha256": hashlib.sha256(b"orphan-response").hexdigest(),
+        "schema_version": "stockdata-provider-component-source-receipt/1",
+        "source": "unused-extra",
+    }
+    orphan_raw = _canonical(orphan)
+    orphan_path = bundle_file.parent / "artifacts" / "orphan-receipt.json"
+    orphan_path.write_bytes(orphan_raw)
+    bundle["source_receipts"].append(
+        {
+            "reference": ProviderArtifactReference(
+                "stock-data-source-receipt",
+                hashlib.sha256(orphan_raw).hexdigest(),
+                CONTRACT_SOURCE_RECEIPT_SCHEMA,
+            ).to_dict(),
+            "path": str(orphan_path),
+        }
+    )
+
+    def reference(field: str) -> ProviderArtifactReference:
+        return ProviderArtifactReference.from_dict(bundle[field]["reference"])
+
+    snapshot = build_companion_snapshot(
+        coverage_start=bundle["coverage_start"],
+        coverage_end=bundle["coverage_end"],
+        checkout=reference("checkout"),
+        database=reference("database"),
+        source_receipts=[
+            ProviderArtifactReference.from_dict(item["reference"])
+            for item in bundle["source_receipts"]
+        ],
+        execution_adjustment_identity=reference("execution_adjustment_identity"),
+        signal_adjustment_identity=reference("signal_adjustment_identity"),
+        exact_panel=reference("exact_panel"),
+        components={
+            name: ProviderArtifactReference.from_dict(
+                bundle["components"][name]["reference"]
+            )
+            for name in REQUIRED_COMPONENTS
+        },
+    )
+    report_path = _bundle_locator(bundle_file, "readiness_report")
+    report = json.loads(report_path.read_text())
+    assert report["ready"] is True
+    report["request"]["companion_snapshot_sha256"] = snapshot.snapshot_sha256
+    report_raw = _canonical(report)
+    report_path.write_bytes(report_raw)
+    bundle["readiness_report"]["reference"]["identifier"] = hashlib.sha256(
+        report_raw
+    ).hexdigest()
+    bundle_file.write_bytes(_canonical(bundle))
+
+    with pytest.raises(
+        ValueError,
+        match="availability_records readiness differs from independent closure",
+    ):
+        export_verified_provider_receipt(bundle_file)
+
+
 @pytest.mark.parametrize(
     "announcement_at",
     [DECISION_CUTOFF, f"{DAY}T09:25:01+08:00"],

@@ -27,3 +27,15 @@ Codex 重点复核路径：
 - Codex 独立复跑重点子集：`test_collector_attempt_launch` / `test_collector_ledger` / `test_collector_raw_postcondition` / `test_collector_recovery` / `test_verified_provider_readiness` / `test_provider_continuity_negative_gate` / `test_rqgm_feature_snapshot`，全部通过。
 
 备注：codex 尝试启动 `gpt-5.6-sol` 子代理对 provider readiness 做二次复核，两次等待未返回后关闭；结论基于主线源码审查与上述测试。ruff 基线（HEAD）本身有 166 个错误，项目未强制 lint,WIP 新增项为同类型风格问题，未处理。
+
+## 复审（readiness 正向路径专项）与孤儿 receipt 修复
+
+针对上一轮子代理未完成的 provider readiness 复核，单独跑了一轮 codex 专项复审。
+
+**发现（High)**:`materialize_provider_bundle` 允许未被任何组件使用的孤儿 source receipt 进入 `ready=true` 的 bundle——只校验"用到的 receipt 已绑定"（子集），未强制"绑定的 receipt 全部被消费"（精确闭包）。codex 已实际复现。
+
+**修复**(`stockdata/component_availability.py`):`verify_component_availability_records` verified 分支增加反向校验，`bound_receipt_set - used_receipts` 非空即 `ready=False` 并产生 `source_receipt_not_consumed` blocker。物化端与导出端调用同一验证器、传入相同 bound 集合，两侧天然一致；手工伪造 ready=true + 孤儿 receipt 的 bundle 在导出端独立复验时抛出 `availability_records readiness differs from independent closure`。
+
+**测试**：单元（多余 bound receipt 被阻塞）、端到端（物化 + 导出均 ready=False)、攻击面（伪造 ready=true bundle 被导出复验拒绝）。全量套件全绿。
+
+**codex 复审修复结论**:"修复有效，可以提交"，无高/中危问题；其指出的低危测试缺口（伪造 ready=true 路径）已补齐。
