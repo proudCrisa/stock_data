@@ -18,6 +18,7 @@ from stockdata.authority import (
     TRUST_REGISTRY_SCHEMA,
     load_enrolled_trust_registry,
     load_provider_trust_registry,
+    require_enrolled_role_coverage,
     verify_authority_envelope,
 )
 
@@ -186,21 +187,23 @@ def test_one_envelope_contract_covers_every_signed_component(tmp_path, component
     )
 
 
-def test_provider_registry_is_pinned_and_has_no_placeholder_enrollment():
+def test_provider_registry_is_pinned_and_covers_all_roles():
     registry = load_provider_trust_registry()
-    root = Ed25519PrivateKey.generate()
-    signer = Ed25519PrivateKey.generate()
-    envelope = _envelope(
-        signer, root, PROVIDER_TRUST_REGISTRY_SHA256
+    signers = tuple(registry._signers.values())
+
+    coverage = require_enrolled_role_coverage(
+        registry,
+        roles=sorted(AUTHORITY_COMPONENT_ROLES),
+        valid_from=max(signer.valid_from for signer in signers),
+        valid_until=min(signer.valid_until for signer in signers),
     )
 
     assert registry.registry_sha256 == PROVIDER_TRUST_REGISTRY_SHA256
-    with pytest.raises(ValueError, match="unknown trust root"):
-        _verify(
-            registry,
-            envelope,
-            envelope["payload"]["source_receipt_ids"],
-        )
+    assert set(coverage) == AUTHORITY_COMPONENT_ROLES
+    assert all(
+        registry._signers[publisher_key_id].trust_root_id != publisher_key_id
+        for publisher_key_id in coverage.values()
+    )
 
 
 def test_registry_requires_the_callers_exact_sha256_pin(authority_fixture):

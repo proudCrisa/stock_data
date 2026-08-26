@@ -20,7 +20,7 @@ SIGNER_ENROLLMENT_SCHEMA = "stockdata-signer-enrollment/1"
 AUTHORITY_ENVELOPE_SCHEMA = "stockdata-authority-envelope/1"
 ALGORITHM = "ed25519"
 PROVIDER_TRUST_REGISTRY_SHA256 = (
-    "69b94b1d01cb8dd299db799fac657b78ce77a548d35753ab9dca1c9bf94aeec6"
+    "3d6018a653bff8fed343dfa9798e91d0a1f4bea1748976198bd3f8e8e7e03bd8"
 )
 _PROVIDER_TRUST_REGISTRY_PATH = Path(__file__).with_name(
     "enrolled_trust_registry.json"
