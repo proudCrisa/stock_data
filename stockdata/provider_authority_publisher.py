@@ -323,10 +323,6 @@ def _parse_cutoffs(values: Sequence[str]) -> dict[str, str]:
     return result
 
 
-def _registry_sha256(path: str | Path) -> str:
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
 def _handle_build_registry(args: argparse.Namespace) -> None:
     build_canonical_registry(
         root_public_key_file=args.root_public_key,
@@ -340,7 +336,7 @@ def _handle_publish_envelope(args: argparse.Namespace) -> None:
     publish_authority_envelope(
         component=args.component,
         registry_file=args.registry,
-        registry_sha256=args.registry_sha256 or _registry_sha256(args.registry),
+        registry_sha256=args.registry_sha256,
         artifact_file=args.artifact,
         source_receipt_files=args.source_receipt,
         signer_private_key_env=args.signer_private_key_env,
@@ -369,7 +365,7 @@ def _parser() -> argparse.ArgumentParser:
     publish = subparsers.add_parser("publish-envelope")
     publish.add_argument("--component", required=True)
     publish.add_argument("--registry", required=True)
-    publish.add_argument("--registry-sha256")
+    publish.add_argument("--registry-sha256", required=True)
     publish.add_argument("--artifact", required=True)
     publish.add_argument("--source-receipt", action="append", default=[])
     publish.add_argument("--signer-private-key-env", required=True)

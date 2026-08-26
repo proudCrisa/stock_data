@@ -393,6 +393,8 @@ def test_cli_builds_registry_and_publishes_envelope(publisher_fixture, tmp_path)
                 "trading_calendar",
                 "--registry",
                 str(registry_file),
+                "--registry-sha256",
+                hashlib.sha256(registry_file.read_bytes()).hexdigest(),
                 "--artifact",
                 str(publisher_fixture["artifact_file"]),
                 "--source-receipt",
@@ -410,6 +412,33 @@ def test_cli_builds_registry_and_publishes_envelope(publisher_fixture, tmp_path)
         == 0
     )
     assert envelope_file.exists()
+
+
+def test_cli_requires_explicit_registry_sha256(publisher_fixture, tmp_path):
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "publish-envelope",
+                "--component",
+                "trading_calendar",
+                "--registry",
+                str(publisher_fixture["registry_file"]),
+                "--artifact",
+                str(publisher_fixture["artifact_file"]),
+                "--source-receipt",
+                str(publisher_fixture["receipt_file"]),
+                "--signer-private-key-env",
+                "SIGNER_PRIVATE_KEY_B64",
+                "--output",
+                str(tmp_path / "envelope.json"),
+                "--effective-at",
+                "2026-08-13T00:00:00+08:00",
+                "--available-at",
+                "2026-08-13T08:00:00+08:00",
+            ]
+        )
+
+    assert exc_info.value.code == 2
 
 
 def test_rejects_non_canonical_json(publisher_fixture, tmp_path):
