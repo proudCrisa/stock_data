@@ -1,0 +1,26 @@
+authority/provider-v1/root-public-key.json
+  s_579ff645196cac::t_7db23eb4ec4ccf 1
+tests/test_provider_authority_publisher.py
+  s_579ff645196cac::t_b7e1a5f4b5b294 417-443
+  s_579ff645196cac::t_0b14d8da24b317 396-397
+authority/provider-v1/root-signed-enrollment.json
+  s_579ff645196cac::t_7db23eb4ec4ccf 1
+stockdata/provider_authority_publisher.py
+  s_579ff645196cac::t_ac3acbaed3deff 339,368
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "81f90d5f400f46f2656906f7936c60760534c352",
+  "prompts": {},
+  "sessions": {
+    "s_579ff645196cac": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a02848-c8fb-7372-8b55-f0b6a5862db6",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
