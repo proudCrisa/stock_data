@@ -1,0 +1,23 @@
+tests/test_authority.py
+  s_579ff645196cac::t_f0897732714d7d 21,190,192-198,202-206
+stockdata/enrolled_trust_registry.json
+  s_579ff645196cac::t_f0897732714d7d 1
+stockdata/authority.py
+  s_579ff645196cac::t_f0897732714d7d 23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "31515e7f655aaac1e5ece1ea965185446cf87a03",
+  "prompts": {},
+  "sessions": {
+    "s_579ff645196cac": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a02848-c8fb-7372-8b55-f0b6a5862db6",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
