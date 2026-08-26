@@ -1,10 +1,11 @@
+import re
 from pathlib import Path
 
 import yaml
 
-
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
+REQUIREMENTS = ROOT / ".github" / "provider-authority-requirements.txt"
 
 
 def _workflow(name: str) -> tuple[str, dict[str, object]]:
@@ -21,6 +22,50 @@ def _dispatch_inputs(workflow: dict[str, object]) -> dict[str, object]:
     inputs = dispatch["inputs"]
     assert isinstance(inputs, dict)
     return inputs
+
+
+def test_authority_requirements_are_hashed_binary_packages_only() -> None:
+    text = REQUIREMENTS.read_text(encoding="utf-8")
+    requirements = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    for forbidden in (
+        "://",
+        "--editable",
+        "-e ",
+        "--index-url",
+        "--extra-index-url",
+        "--find-links",
+        "--trusted-host",
+    ):
+        assert forbidden not in text
+
+    packages: set[str] = set()
+    for requirement in requirements:
+        match = re.fullmatch(
+            r"([a-z0-9_-]+)==[^\s]+(?:\s+--hash=sha256:[0-9a-f]{64})+",
+            requirement,
+        )
+        assert match is not None
+        packages.add(match.group(1))
+
+    assert packages == {"cryptography", "cffi", "pycparser"}
+
+
+def test_workflows_install_hashed_binary_only_verifier_dependencies() -> None:
+    install = (
+        "python -m pip install --require-hashes --only-binary=':all:' "
+        "-r .github/provider-authority-requirements.txt"
+    )
+    for name in (
+        "provider-registry-custodian.yml",
+        "provider-component-authority.yml",
+    ):
+        text, _ = _workflow(name)
+        assert install in text
 
 
 def test_registry_custodian_uses_pinned_external_inputs_and_has_no_private_key() -> None:

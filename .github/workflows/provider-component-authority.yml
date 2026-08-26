@@ -68,7 +68,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install verifier dependencies
-        run: python -m pip install --require-hashes -r .github/provider-authority-requirements.txt
+        run: python -m pip install --require-hashes --only-binary=':all:' -r .github/provider-authority-requirements.txt
       - name: Download pinned authority inputs
         env:
           ARTIFACT_URL: ${{ inputs.artifact_url }}
