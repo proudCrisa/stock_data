@@ -1,0 +1,36 @@
+.github/workflows/provider-registry-custodian.yml
+  s_579ff645196cac::t_46a1f8ddf2839b 41
+tests/test_provider_authority_workflows.py
+  s_579ff645196cac::t_61100056388f8d 1,8,27-48,50-59,61-68
+  s_579ff645196cac::t_20860a6bbd7ef2 49
+  s_579ff645196cac::t_46a1f8ddf2839b 60
+  s_69840207a9145c::t_50739f29e6de1b 69-70
+.github/provider-authority-requirements.txt
+  s_579ff645196cac::t_19ef7f013f8b00 2-3
+.github/workflows/provider-component-authority.yml
+  s_579ff645196cac::t_46a1f8ddf2839b 71
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "eaa27ef200e48fba05b9b27334758b13952a05ae",
+  "prompts": {},
+  "sessions": {
+    "s_579ff645196cac": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a02848-c8fb-7372-8b55-f0b6a5862db6",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_69840207a9145c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03d40-f28a-7771-9d56-9da6b2b75bc4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
