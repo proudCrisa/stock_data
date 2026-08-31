@@ -62,7 +62,7 @@ def test_migrated_legacy_rows_remain_blocked(tmp_path):
     report = check_execution_readiness(database)
 
     assert report["ready"] is False
-    assert report["schema_version"] == 4
+    assert report["schema_version"] == 5
     assert "missing_receipts" in _codes(report)
 
 

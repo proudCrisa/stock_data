@@ -252,7 +252,15 @@ def sync_symbols(
     """Synchronize a bounded symbol/date set, committing each symbol separately."""
     if start > end:
         raise ValueError("start must be <= end")
-    if end > default_final_date():
+
+    calendar = cache.trading_calendar
+    _latest_final = (
+        (lambda: latest_finalized_date(calendar=calendar))
+        if calendar.has_data()
+        else latest_finalized_date
+    )
+
+    if end > _latest_final():
         raise ValueError("end must not be later than the latest finalized date")
     if adjustment_mode not in _VERSIONS:
         raise ValueError(f"unsupported adjustment_mode: {adjustment_mode}")
@@ -278,7 +286,7 @@ def sync_symbols(
         from .collector_continuity import require_collector_continuity_health
 
         require_collector_continuity_health()
-    current_session = end if end == latest_finalized_date() else None
+    current_session = end if end == _latest_final() else None
     results = []
     for code in normalized:
         try:
@@ -424,7 +432,7 @@ def sync_symbols(
             # 永久记为"已完成"。停牌股会因此每次重试，这是 fail-closed 的可接受代价。
             if bars:
                 coverage_end = end
-                if end == latest_finalized_date() and end not in by_date:
+                if end == _latest_final() and end not in by_date:
                     coverage_end = (
                         date.fromisoformat(end) - timedelta(days=1)
                     ).isoformat()

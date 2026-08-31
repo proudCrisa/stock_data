@@ -102,6 +102,75 @@ class TestMissingGaps:
         assert gaps == [("2023-12-01", "2024-01-01"), ("2024-01-05", "2024-06-30")]
 
 
+def _seed_calendar(cache, rows):
+    cache.refresh_trading_calendar(
+        rows[0]["date"], rows[-1]["date"], fetcher=lambda _s, _e: rows
+    )
+
+
+class TestTradingCalendarGaps:
+    def test_weekend_and_holiday_not_in_right_gap(self, cache):
+        cache.upsert("600519.SH", BARS_JAN)  # 01-02 ~ 01-04
+        _seed_calendar(cache, [
+            {"date": "2024-01-02", "is_trading_day": True},
+            {"date": "2024-01-03", "is_trading_day": True},
+            {"date": "2024-01-04", "is_trading_day": True},
+            {"date": "2024-01-05", "is_trading_day": False},  # 假假期
+            {"date": "2024-01-06", "is_trading_day": False},  # 周六
+            {"date": "2024-01-07", "is_trading_day": False},  # 周日
+            {"date": "2024-01-08", "is_trading_day": True},
+        ])
+        gaps = cache.missing_gaps("600519.SH", "2024-01-02", "2024-01-08")
+        assert gaps == [("2024-01-08", "2024-01-08")]
+
+    def test_holiday_not_in_left_gap(self, cache):
+        # 只覆盖 01-04；01-03 是假期，01-02 是交易日，应被纳入左侧缺口
+        cache.upsert("600519.SH", [BARS_JAN[2]])
+        _seed_calendar(cache, [
+            {"date": "2024-01-01", "is_trading_day": False},  # 假期
+            {"date": "2024-01-02", "is_trading_day": True},
+            {"date": "2024-01-03", "is_trading_day": False},  # 假期
+            {"date": "2024-01-04", "is_trading_day": True},
+        ])
+        gaps = cache.missing_gaps("600519.SH", "2024-01-01", "2024-01-04")
+        assert gaps == [("2024-01-01", "2024-01-02")]
+
+    def test_calendar_missing_is_fail_closed(self, cache):
+        cache.upsert("600519.SH", BARS_JAN)
+        gaps = cache.missing_gaps("600519.SH", "2024-01-02", "2024-01-08")
+        assert gaps == [("2024-01-05", "2024-01-08")]
+
+    def test_all_known_holidays_before_coverage_yield_no_left_gap(self, cache):
+        cache.upsert("600519.SH", BARS_JAN)  # starts 01-02
+        _seed_calendar(cache, [
+            {"date": "2024-01-01", "is_trading_day": False},
+        ])
+        gaps = cache.missing_gaps("600519.SH", "2024-01-01", "2024-01-04")
+        assert gaps == []
+
+    def test_trading_calendar_table_is_created(self, cache):
+        tables = {
+            row[0] for row in cache._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert "trading_calendar" in tables
+
+    def test_refresh_trading_calendar_upserts_rows(self, cache):
+        rows = [
+            {"date": "2024-01-01", "is_trading_day": False},
+            {"date": "2024-01-02", "is_trading_day": True},
+        ]
+        count = cache.refresh_trading_calendar(
+            "2024-01-01", "2024-01-02", fetcher=lambda _s, _e: rows
+        )
+        assert count == 2
+        cal = cache.trading_calendar
+        assert cal.is_trading_day("2024-01-02") is True
+        assert cal.is_trading_day("2024-01-01") is False
+        assert cal.is_trading_day("2024-01-03") is None
+
+
 class TestPersistenceOffline:
     def test_reopen_same_file_keeps_data(self, tmp_path):
         p = tmp_path / "persist.sqlite"
@@ -256,7 +325,7 @@ class TestMetadataIsolation:
             "600519.SH", [{**BARS_JAN[0], "high": 9.9, "close": 9.9}],
             adjustment_mode="raw", adjustment_version="baostock-adjustflag-3",
         )
-        assert cache.schema_version == 4
+        assert cache.schema_version == 5
         assert cache._daily_primary_key() == (
             "code", "date", "source", "adjustment_mode", "adjustment_version"
         )

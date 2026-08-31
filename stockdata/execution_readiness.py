@@ -13,7 +13,7 @@ from .rqgm_execution_export import _receipt_covers_bar
 from .ticker import normalize
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 DAILY_PRIMARY_KEY = (
     "code", "date", "source", "adjustment_mode", "adjustment_version",
 )

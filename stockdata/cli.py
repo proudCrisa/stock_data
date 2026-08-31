@@ -52,6 +52,11 @@ def build_params(argv: list) -> dict:
     u.add_argument("--end", default="")
     u.add_argument("--adjustment-mode", choices=("qfq", "raw", "hfq"), default="qfq")
 
+    cal = sub.add_parser("update-calendar")
+    cal.add_argument("--database", default="")
+    cal.add_argument("--start", required=True)
+    cal.add_argument("--end", required=True)
+
     snapshot = sub.add_parser("snapshot")
     snapshot_sub = snapshot.add_subparsers(dest="snapshot_action", required=True)
     create = snapshot_sub.add_parser("create")
@@ -183,6 +188,13 @@ def build_params(argv: list) -> dict:
             "start_date": args.start,
             "end_date": args.end,
             "adjustment_mode": args.adjustment_mode,
+        }
+    if args.kind == "update-calendar":
+        return {
+            "kind": "update_calendar",
+            "database": args.database or None,
+            "start_date": args.start,
+            "end_date": args.end,
         }
     if args.kind == "snapshot":
         if args.snapshot_action == "verify":
@@ -514,6 +526,23 @@ def main(argv=None):
         )
         json.dump(out, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
+        return 0
+    if params["kind"] == "update_calendar":
+        from .cache import Cache
+
+        cache = Cache(db)
+        try:
+            rows = cache.refresh_trading_calendar(
+                params["start_date"], params["end_date"]
+            )
+            json.dump(
+                {"refreshed": True, "rows": rows, "database": str(cache.path)},
+                sys.stdout,
+                ensure_ascii=False,
+            )
+            sys.stdout.write("\n")
+        finally:
+            cache.close()
         return 0
     if params["kind"] == "rqgm_provider_export":
         from .provider_export import export_verified_provider_receipt

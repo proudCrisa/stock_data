@@ -10,10 +10,11 @@ import hashlib
 import json
 import math
 import sqlite3
+from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS daily (
     code               TEXT NOT NULL,
@@ -68,6 +69,15 @@ BEGIN
 END;
 """
 
+_CALENDAR_SCHEMA = """
+CREATE TABLE IF NOT EXISTS trading_calendar (
+    date           TEXT PRIMARY KEY,
+    is_trading_day INTEGER NOT NULL CHECK (is_trading_day IN (0,1)),
+    source         TEXT NOT NULL,
+    retrieved_at   TEXT NOT NULL
+);
+"""
+
 _MIGRATION_COLUMNS = {
     "source": "TEXT NOT NULL DEFAULT 'legacy_unknown'",
     "adjustment_mode": "TEXT NOT NULL DEFAULT 'unknown'",
@@ -90,6 +100,65 @@ _BAOSTOCK_VERSIONS = {
 }
 
 _NON_COLLECTOR_BUSY_TIMEOUT_MS = 30_000
+
+
+def _default_calendar_fetcher(start: str, end: str) -> list[dict[str, object]]:
+    from .research_calendar import fetch_baostock_trade_calendar
+
+    return fetch_baostock_trade_calendar(start, end)
+
+
+class TradingCalendar:
+    """交易日历查询接口，绑定到同一 Cache 的 SQLite 连接。
+
+    对旧库或 collector 库可能缺少 ``trading_calendar`` 表的情况做容错：
+    视为无日历数据，由各调用方按 fail-closed 原则回退。
+    """
+
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+
+    def _select(self, sql: str, params: tuple[object, ...] = ()):
+        try:
+            return self._conn.execute(sql, params).fetchone()
+        except sqlite3.OperationalError:
+            return None
+
+    def has_data(self) -> bool:
+        return self._select("SELECT 1 FROM trading_calendar LIMIT 1") is not None
+
+    def is_trading_day(self, day: str) -> bool | None:
+        """返回当天是否交易日；表中无记录时返回 None，由调用方 fail-closed 决策。"""
+        row = self._select(
+            "SELECT is_trading_day FROM trading_calendar WHERE date=?", (day,)
+        )
+        if row is None:
+            return None
+        return bool(row[0])
+
+    def previous_trading_day_before(self, day: str) -> str | None:
+        """严格早于 day 的最近已知交易日。"""
+        row = self._select(
+            "SELECT date FROM trading_calendar "
+            "WHERE date < ? AND is_trading_day=1 "
+            "ORDER BY date DESC LIMIT 1",
+            (day,),
+        )
+        if row is None:
+            return None
+        return str(row[0])
+
+    def next_trading_day_after(self, day: str) -> str | None:
+        """严格晚于 day 的最近已知交易日。"""
+        row = self._select(
+            "SELECT date FROM trading_calendar "
+            "WHERE date > ? AND is_trading_day=1 "
+            "ORDER BY date ASC LIMIT 1",
+            (day,),
+        )
+        if row is None:
+            return None
+        return str(row[0])
 
 
 class InvalidBarError(ValueError):
@@ -232,6 +301,7 @@ class Cache:
 
         self._conn.executescript(_SYNC_SCHEMA)
         self._conn.executescript(_RECEIPT_SCHEMA)
+        self._conn.executescript(_CALENDAR_SCHEMA)
         self._conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
     def _daily_primary_key(self) -> tuple[str, ...]:
@@ -496,6 +566,80 @@ class Cache:
             return None
         return (row["lo"], row["hi"])
 
+    @property
+    def trading_calendar(self) -> TradingCalendar:
+        """返回绑定到当前连接的交易日历查询对象。"""
+        return TradingCalendar(self._conn)
+
+    def refresh_trading_calendar(
+        self,
+        start: str,
+        end: str,
+        fetcher: Callable[[str, str], list[dict[str, object]]] | None = None,
+    ) -> int:
+        """从 baostock（或可注入 fetcher）拉取交易日历并写入库。"""
+        self._require_collector_writer()
+        fetch = fetcher or _default_calendar_fetcher
+        rows = fetch(start, end)
+        if not isinstance(rows, list) or not all(
+            isinstance(r, dict)
+            and isinstance(r.get("date"), str)
+            and isinstance(r.get("is_trading_day"), bool)
+            for r in rows
+        ):
+            raise ValueError("calendar rows must be list of {date, is_trading_day}")
+        retrieved_at = _utc_now()
+        source = "baostock"
+        with self._conn:
+            self._conn.executemany(
+                "INSERT INTO trading_calendar(date,is_trading_day,source,retrieved_at) "
+                "VALUES (?,?,?,?) "
+                "ON CONFLICT(date) DO UPDATE SET "
+                "is_trading_day=excluded.is_trading_day, "
+                "source=excluded.source, retrieved_at=excluded.retrieved_at",
+                [
+                    (r["date"], int(r["is_trading_day"]), source, retrieved_at)
+                    for r in rows
+                ],
+            )
+        return len(rows)
+
+    def _previous_eligible_date(self, day: str) -> str:
+        """返回 day 之前最近一个可能产生缺口的日期。
+
+        已知非交易日会被跳过；若日历缺失则按 fail-closed 返回相邻日历日。
+        """
+        d = date.fromisoformat(day) - timedelta(days=1)
+        try:
+            while True:
+                row = self._conn.execute(
+                    "SELECT is_trading_day FROM trading_calendar WHERE date=?",
+                    (d.isoformat(),),
+                ).fetchone()
+                if row is None or row[0]:
+                    return d.isoformat()
+                d -= timedelta(days=1)
+        except sqlite3.OperationalError:
+            return d.isoformat()
+
+    def _next_eligible_date(self, day: str) -> str:
+        """返回 day 之后最近一个可能产生缺口的日期。
+
+        已知非交易日会被跳过；若日历缺失则按 fail-closed 返回相邻日历日。
+        """
+        d = date.fromisoformat(day) + timedelta(days=1)
+        try:
+            while True:
+                row = self._conn.execute(
+                    "SELECT is_trading_day FROM trading_calendar WHERE date=?",
+                    (d.isoformat(),),
+                ).fetchone()
+                if row is None or row[0]:
+                    return d.isoformat()
+                d += timedelta(days=1)
+        except sqlite3.OperationalError:
+            return d.isoformat()
+
     def missing_gaps(
         self,
         code: str,
@@ -507,7 +651,7 @@ class Cache:
         adjustment_version: str | None = None,
         finalized_only: bool = False,
     ) -> list[tuple[str, str]]:
-        """请求区间相对已覆盖区间的左右延伸缺口。"""
+        """请求区间相对已覆盖区间的左右延伸缺口（基于交易日历）。"""
         cov = self.covered_range(
             code,
             source=source,
@@ -520,9 +664,13 @@ class Cache:
         lo, hi = cov
         gaps = []
         if start < lo:
-            gaps.append((start, _shift(lo, -1)))
+            left_end = self._previous_eligible_date(lo)
+            if start <= left_end:
+                gaps.append((start, left_end))
         if end > hi:
-            gaps.append((_shift(hi, 1), end))
+            right_start = self._next_eligible_date(hi)
+            if right_start <= end:
+                gaps.append((right_start, end))
         return gaps
 
     def sync_coverage(

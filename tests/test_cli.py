@@ -251,6 +251,18 @@ class TestBuildParams:
         assert p["codes"] == "600519.SH,000001.SZ"
         assert p["start_date"] == "2024-01-01"
 
+    def test_update_calendar_params(self):
+        p = build_params([
+            "update-calendar", "--database", "/tmp/cache.sqlite",
+            "--start", "2024-01-01", "--end", "2024-12-31",
+        ])
+        assert p == {
+            "kind": "update_calendar",
+            "database": "/tmp/cache.sqlite",
+            "start_date": "2024-01-01",
+            "end_date": "2024-12-31",
+        }
+
     def test_snapshot_create_params(self):
         p = build_params([
             "snapshot", "create", "--output", "/tmp/snapshots",

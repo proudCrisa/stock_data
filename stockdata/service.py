@@ -65,7 +65,12 @@ class HistoryService:
     ) -> list[dict]:
         code = normalize(code)
         fetch_end = end
-        finalized_through = latest_finalized_date()
+        calendar = self.cache.trading_calendar
+        finalized_through = (
+            latest_finalized_date(calendar=calendar)
+            if calendar.has_data()
+            else latest_finalized_date()
+        )
         if finalized_only:
             fetch_end = min(end, finalized_through)
 

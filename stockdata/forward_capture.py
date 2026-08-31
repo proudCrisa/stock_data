@@ -79,7 +79,12 @@ def capture_forward_evidence(
     symbols = tuple(sorted({normalize(code) for code in codes}))
     if not symbols:
         raise ValueError("at least one code is required")
-    end = end or latest_finalized_date()
+    calendar = cache.trading_calendar
+    end = end or (
+        latest_finalized_date(calendar=calendar)
+        if calendar.has_data()
+        else latest_finalized_date()
+    )
     cache._require_collector_writer(
         step_id="post_close_prices", session=end
     )

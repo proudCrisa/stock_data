@@ -294,7 +294,20 @@ def capture_forward_context(
     local = current.astimezone(_SHANGHAI)
     if day != local.date():
         raise ValueError("forward context capture cannot backfill another date")
-    if day.weekday() >= 5:
+    calendar = cache.trading_calendar
+    if calendar.has_data():
+        flag = calendar.is_trading_day(effective_date)
+        if flag is not None:
+            if not flag:
+                raise ValueError(
+                    "forward context capture requires a trading day session"
+                )
+        elif day.weekday() >= 5:
+            # 日历缺失当天时保持原有周末启发式。
+            raise ValueError(
+                "forward context capture requires a weekday session candidate"
+            )
+    elif day.weekday() >= 5:
         raise ValueError("forward context capture requires a weekday session candidate")
     phase = _phase(local)
     cache._require_collector_writer(
