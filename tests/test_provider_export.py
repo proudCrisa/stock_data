@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import builtins
 import hashlib
+import inspect
 import json
 import os
 from copy import deepcopy
@@ -16,7 +17,11 @@ from stockdata.adjustment_identity import (
     SIGNAL_ADJUSTMENT_SCHEMA,
 )
 from stockdata.companion_snapshot import build_companion_snapshot
-from stockdata.provider_export import EXPORT_SCHEMA, export_verified_provider_receipt
+from stockdata.provider_export import (
+    EXPORT_SCHEMA,
+    export_verified_provider_receipt,
+    resolve_trusted_local_research_replay_inputs,
+)
 from stockdata.provider_materializer import materialize_provider_bundle
 from stockdata.rqgm_provider_contract import (
     CHECKOUT_SCHEMA,
@@ -333,6 +338,7 @@ def _retained_close_failure(
         ("extra", r"schema|incomplete"),
         ("wrong-registration-kind", r"registration.*kind|kind.*registration"),
         ("wrong-registration-schema", r"registration.*schema|schema.*registration"),
+        ("detached-v5-schema", r"semantic|continuity"),
         ("legacy-registration", r"registration.*schema|schema.*registration|/4"),
         ("wrong-ledger-kind", r"ledger.*kind|kind.*ledger"),
         ("wrong-ledger-schema", r"ledger.*schema|schema.*ledger"),
@@ -358,6 +364,10 @@ def test_bundle_input_v2_rejects_wrong_or_aliased_continuity_locators(
         elif mutation == "wrong-registration-kind":
             bundle["registration"]["reference"]["kind"] = "stock-data-registration"
         elif mutation == "wrong-registration-schema":
+            bundle["registration"]["reference"]["schema_version"] = (
+                "rqgm-forward-panel-registration/6"
+            )
+        elif mutation == "detached-v5-schema":
             bundle["registration"]["reference"]["schema_version"] = (
                 "rqgm-forward-panel-registration/5"
             )
@@ -433,6 +443,49 @@ def test_bundle_input_v2_exact_schema_is_frozen_without_task_4_4_semantics(
     exported = export_verified_provider_receipt(bundle_path)
     assert exported["schema_version"] == EXPORT_SCHEMA
     assert exported["ready"] is False
+
+
+def test_export_v5_rejects_components_detached_from_registration_prerequisites(
+    tmp_path, monkeypatch
+) -> None:
+    bundle_path, _ = _bundle(tmp_path)
+    bundle = json.loads(bundle_path.read_bytes())
+    registration_path = Path(bundle["registration"]["path"])
+    registration = {
+        "schema_version": "rqgm-forward-panel-registration/5",
+        "authority_mode": "trusted_local_mechanical",
+        "prerequisites": {
+            "source_receipt_ids": ["a" * 64],
+            "trading_calendar": {"artifact_sha256": "c" * 64},
+            "market_rule_prerequisite": {"artifact_sha256": "d" * 64},
+        },
+    }
+    registration_raw = _canonical(registration)
+    registration_path.write_bytes(registration_raw)
+    bundle["registration"]["reference"]["schema_version"] = (
+        "rqgm-forward-panel-registration/5"
+    )
+    bundle["registration"]["reference"]["identifier"] = hashlib.sha256(
+        registration_raw
+    ).hexdigest()
+    bundle_path.write_bytes(_canonical(bundle))
+
+    # Isolate the missing registration/prerequisite cross-check from the
+    # continuity and readiness checks covered by their dedicated tests.
+    monkeypatch.setattr(
+        provider_export,
+        "verify_registered_collector_materialization_snapshot",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        provider_export, "_require_trusted_local_negative_readiness", lambda report: None
+    )
+    monkeypatch.setattr(
+        provider_export, "verify_bound_readiness", lambda **kwargs: False
+    )
+
+    with pytest.raises(ValueError, match="registration|prerequisite|receipt|artifact"):
+        export_verified_provider_receipt(bundle_path)
 
 
 def test_bundle_input_v1_is_rejected_before_any_locator_or_gate(
@@ -835,3 +888,129 @@ def test_body_validation_export_keeps_body_and_cleanup_order_and_alias_fallback(
 
     assert fallback.value.__cause__ is body_error
     assert fallback_attempts == ["fallback-locator"]
+
+
+def _resolver_policy_binding(bundle: dict[str, object]) -> dict[str, object]:
+    market_rule_reference = bundle["components"]["market_rules"]["reference"]
+    binding = {
+        "research_authorization_reference": {
+            "schema_version": "stockdata-test-research-authorization/1",
+            "sha256": "a" * 64,
+        },
+        "shared_cash_policy_reference": {
+            "schema_version": "rqgm-trusted-local-shared-cash-policy/1",
+            "sha256": "b" * 64,
+        },
+        "market_rule_cost_policy_binding": {
+            "schema_version": "stockdata-market-rule-cost-policy-binding/1",
+            "policy_reference": {
+                "schema_version": "stockdata-test-market-rule-policy/1",
+                "sha256": "c" * 64,
+            },
+            "market_rule_artifact_reference": deepcopy(market_rule_reference),
+        },
+        "risk_policy_reference": {
+            "schema_version": "rqgm-trusted-local-risk-policy/1",
+            "sha256": "d" * 64,
+        },
+    }
+    cost_binding = binding["market_rule_cost_policy_binding"]
+    cost_binding["sha256"] = hashlib.sha256(_canonical(cost_binding)).hexdigest()
+    return binding
+
+
+def test_research_input_resolver_has_exact_keyword_only_api() -> None:
+    parameters = inspect.signature(
+        resolve_trusted_local_research_replay_inputs
+    ).parameters
+
+    assert list(parameters) == ["bundle_file", "replay_policy_binding"]
+    assert parameters["bundle_file"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert parameters["bundle_file"].default is inspect.Parameter.empty
+    assert parameters["replay_policy_binding"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["replay_policy_binding"].default is inspect.Parameter.empty
+    assert not {
+        "candidate_export",
+        "current_db",
+        "database",
+        "latest",
+        "result",
+        "completeness",
+        "readiness",
+        "authority",
+        "cache",
+        "callback",
+        "signature",
+    } & set(parameters)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda bundle: bundle["exact_panel"].update(
+            {"reference": {**bundle["exact_panel"]["reference"], "identifier": "0" * 64}}
+        ),
+        lambda bundle: bundle["ledger_snapshot"].update(
+            {"reference": {**bundle["ledger_snapshot"]["reference"], "identifier": "1" * 64}}
+        ),
+        lambda bundle: bundle["components"]["market_rules"].update(
+            {"reference": {**bundle["components"]["market_rules"]["reference"], "identifier": "2" * 64}}
+        ),
+        lambda bundle: bundle.update({"readiness_report": {"ready": True}}),
+    ],
+)
+def test_research_input_resolver_rejects_bundle_drift_without_partial_output(
+    tmp_path, monkeypatch, mutation
+) -> None:
+    bundle_path, _, _, _ = _real_bundle(tmp_path, monkeypatch)
+    bundle = json.loads(bundle_path.read_bytes())
+    policy_binding = _resolver_policy_binding(bundle)
+    mutation(bundle)
+    bundle_path.write_bytes(_canonical(bundle))
+    before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
+
+    with pytest.raises((TypeError, ValueError)):
+        resolve_trusted_local_research_replay_inputs(
+            bundle_path,
+            replay_policy_binding=policy_binding,
+        )
+
+    assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
+
+
+@pytest.mark.parametrize(
+    "argument_name, argument_value",
+    [
+        ("candidate_export", {"schema_version": "stockdata-rqgm-research-replay-export/1"}),
+        ("current_db", "/tmp/current.sqlite"),
+        ("latest", True),
+        ("result", {"profit": 1}),
+        ("completeness", True),
+        ("readiness", True),
+        ("authority", True),
+    ],
+)
+def test_research_input_resolver_does_not_expose_forbidden_authority_inputs(
+    argument_name: str, argument_value: object
+) -> None:
+    del argument_value
+    parameters = inspect.signature(
+        resolve_trusted_local_research_replay_inputs
+    ).parameters
+    assert argument_name not in parameters
+
+
+def test_research_input_resolver_rejects_noncanonical_or_regular_provider_inputs(
+    tmp_path, monkeypatch
+) -> None:
+    bundle_path, _, _, result = _real_bundle(tmp_path, monkeypatch)
+    bundle = json.loads(bundle_path.read_bytes())
+    policy_binding = _resolver_policy_binding(bundle)
+    regular_export = result["receipt"]
+
+    with pytest.raises((TypeError, ValueError)):
+        resolve_trusted_local_research_replay_inputs(
+            str(bundle_path.relative_to(tmp_path)),
+            replay_policy_binding=policy_binding,
+        )
+    assert regular_export["ready"] is False

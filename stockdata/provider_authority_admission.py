@@ -289,6 +289,194 @@ def _receipt_bindings(
     return set(result), observed_at, source, response_sha256
 
 
+def validate_local_mechanical_prerequisites(
+    *,
+    calendar_artifact: object,
+    market_rules_artifact: object,
+    expected_panel: Sequence[str],
+    bound_source_receipts: Mapping[str, object],
+) -> dict[str, object]:
+    """Validate local calendar and generic-rule content without authority claims."""
+
+    def has_authority_shape(value: object) -> bool:
+        if isinstance(value, Mapping):
+            return any(
+                any(
+                    token in str(key).lower()
+                    for token in ("authority", "envelope", "publisher", "signature", "trust")
+                )
+                or has_authority_shape(item)
+                for key, item in value.items()
+            )
+        if isinstance(value, list):
+            return any(has_authority_shape(item) for item in value)
+        return False
+
+    if has_authority_shape(calendar_artifact) or has_authority_shape(market_rules_artifact):
+        raise ValueError("local prerequisites contain authority-shaped fields")
+    expected = tuple(sorted(_panel_entry(entry) for entry in expected_panel))
+    receipts: dict[str, tuple[set[tuple[str, str, str]], str, str, str]] = {}
+    referenced_receipts: set[str] = set()
+    referenced_bindings: dict[str, set[tuple[str, str, str]]] = {}
+
+    # A registration binds its entire receipt closure.  Parse every bound receipt
+    # before using the artifacts so malformed and unused receipts cannot hide.
+    receipt_ids = [
+        _sha256(receipt_id, "bound source receipt id")
+        for receipt_id in bound_source_receipts
+    ]
+    for receipt_id in sorted(receipt_ids):
+        receipts[receipt_id] = _receipt_bindings(
+            bound_source_receipts[receipt_id], receipt_id
+        )
+        referenced_bindings[receipt_id] = set()
+
+    def bound_receipt(receipt_id: str) -> tuple[set[tuple[str, str, str]], str, str, str]:
+        if receipt_id not in bound_source_receipts:
+            raise ValueError("local prerequisite uses an unbound source receipt")
+        return receipts[receipt_id]
+
+    def records(
+        artifact: object, component: str, *, multiple_per_entry: bool = False
+    ) -> tuple[list[tuple[str, Mapping[str, object], set[str], datetime, datetime]], str]:
+        if not isinstance(artifact, Mapping) or set(artifact) != {
+            "schema_version", "component", "panel", "records"
+        }:
+            raise ValueError(f"local {component} artifact schema is incomplete")
+        if (
+            artifact["schema_version"] != COMPONENT_SCHEMAS[component]
+            or artifact["component"] != component
+            or artifact["panel"] != list(expected)
+        ):
+            raise ValueError(f"local {component} artifact differs exact panel")
+        raw_records = artifact["records"]
+        if not isinstance(raw_records, list) or not raw_records:
+            raise ValueError(f"local {component} records are empty")
+        parsed: list[tuple[str, Mapping[str, object], set[str], datetime, datetime]] = []
+        observed: list[tuple[str, str]] = []
+        for index, record in enumerate(raw_records):
+            if not isinstance(record, Mapping) or set(record) != {
+                "panel_entry", "payload", "record_sha256", "source_receipt_ids",
+                "effective_at", "available_at",
+            }:
+                raise ValueError(f"local {component} record {index} is incomplete")
+            entry = _panel_entry(record["panel_entry"])
+            if entry not in expected:
+                raise ValueError(f"local {component} record is outside the exact panel")
+            payload = _component_payload(component, record["payload"], panel_entry=entry)
+            record_sha256 = _sha256(record["record_sha256"], "record_sha256")
+            if record_sha256 != hashlib.sha256(_canonical(payload)).hexdigest():
+                raise ValueError(f"local {component} record hash drifted")
+            receipt_ids = record["source_receipt_ids"]
+            if (
+                not isinstance(receipt_ids, list)
+                or not receipt_ids
+                or receipt_ids != sorted(receipt_ids)
+                or len(receipt_ids) != len(set(receipt_ids))
+            ):
+                raise ValueError(f"local {component} source receipts are invalid")
+            normalized_receipts = {_sha256(value, "source_receipt_ids") for value in receipt_ids}
+            referenced_receipts.update(normalized_receipts)
+            binding = (component, entry, record_sha256)
+            for receipt_id in normalized_receipts:
+                bindings, _, source, response_sha256 = bound_receipt(receipt_id)
+                if binding not in bindings:
+                    raise ValueError(f"local {component} receipt does not bind record")
+                referenced_bindings[receipt_id].add(binding)
+                if component == "market_rules" and (
+                    payload["source"] != source or payload["source_sha256"] != response_sha256
+                ):
+                    raise ValueError("local market_rules source differs from its source receipt")
+            effective = datetime.fromisoformat(_timestamp(record["effective_at"], "effective_at"))
+            if effective.date().isoformat() != entry.split("@", 1)[1]:
+                raise ValueError(f"local {component} effective date differs panel")
+            available = max(
+                datetime.fromisoformat(_timestamp(record["available_at"], "available_at")),
+                *(datetime.fromisoformat(bound_receipt(receipt_id)[1]) for receipt_id in normalized_receipts),
+            )
+            parsed.append((entry, payload, normalized_receipts, available, effective))
+            observed.append((entry, record_sha256))
+        if observed != sorted(observed) or len(observed) != len(set(observed)):
+            raise ValueError(f"local {component} records must be sorted and unique")
+        if not multiple_per_entry and tuple(entry for entry, *_ in parsed) != expected:
+            raise ValueError(f"local {component} records differ exact panel")
+        return parsed, hashlib.sha256(_canonical(dict(artifact))).hexdigest()
+
+    calendar_records, calendar_sha256 = records(calendar_artifact, "trading_calendar")
+    calendar_available: dict[str, str] = {}
+    calendar_effective: dict[str, str] = {}
+    decision_cutoffs: dict[str, str] = {}
+    calendar_phases: dict[str, dict[str, str]] = {}
+    for entry, payload, _, available, effective in calendar_records:
+        cutoff = datetime.fromisoformat(str(payload["decision_cutoff_at"]))
+        if available >= cutoff or effective >= cutoff:
+            raise ValueError("local trading_calendar is post-cutoff")
+        calendar_available[entry] = available.isoformat()
+        calendar_effective[entry] = effective.isoformat()
+        decision_cutoffs[entry] = cutoff.isoformat()
+        calendar_phases[entry] = {
+            "decision_cutoff_at": cutoff.isoformat(),
+            "session_close_at": str(payload["session_close_at"]),
+            "next_session_decision_cutoff_at": str(payload["next_session_decision_cutoff_at"]),
+        }
+
+    rule_records, rules_sha256 = records(
+        market_rules_artifact, "market_rules", multiple_per_entry=True
+    )
+    rule_payloads: dict[str, list[Mapping[str, object]]] = {entry: [] for entry in expected}
+    rule_ids: dict[str, list[str]] = {entry: [] for entry in expected}
+    rule_available: dict[str, datetime] = {}
+    rule_effective: dict[str, datetime] = {}
+    all_rules: list[Mapping[str, object]] = []
+    for entry, payload, _, available, effective in rule_records:
+        if payload["is_st"] is None:
+            raise ValueError("local market_rules must enumerate both ST branches")
+        cutoff = datetime.fromisoformat(decision_cutoffs[entry])
+        if available >= cutoff or effective >= cutoff:
+            raise ValueError("local market_rules are post-cutoff")
+        rule_payloads[entry].append(dict(payload))
+        rule_ids[entry].append(str(payload["policy_id"]))
+        rule_available[entry] = max(rule_available.get(entry, available), available)
+        rule_effective[entry] = max(rule_effective.get(entry, effective), effective)
+        all_rules.append(payload)
+    for entry, payloads in rule_payloads.items():
+        _require_generic_market_rule_coverage(panel_entry=entry, payloads=payloads)
+    validate_market_rule_regimes(all_rules)
+    if referenced_receipts != set(receipts):
+        raise ValueError("local prerequisite source receipt closure is not exact")
+    if any(
+        bindings != referenced_bindings[receipt_id]
+        for receipt_id, (bindings, _, _, _) in receipts.items()
+    ):
+        raise ValueError("local prerequisite receipt binding closure is not exact")
+    used_receipts = sorted(referenced_receipts)
+    return {
+        "source_receipt_ids": used_receipts,
+        "trading_calendar": {
+            "artifact_sha256": calendar_sha256,
+            "source_receipt_ids": used_receipts,
+            "available_at_by_panel": calendar_available,
+            "effective_at_by_panel": calendar_effective,
+            "decision_cutoff_by_panel": decision_cutoffs,
+            "calendar_phases_by_panel": calendar_phases,
+        },
+        "market_rule_prerequisite": {
+            "artifact_sha256": rules_sha256,
+            "source_receipt_ids": used_receipts,
+            "available_at_by_panel": {
+                entry: rule_available[entry].isoformat() for entry in expected
+            },
+            "effective_at_by_panel": {
+                entry: rule_effective[entry].isoformat() for entry in expected
+            },
+            "decision_cutoff_by_panel": decision_cutoffs,
+            "policy_ids_by_panel": {
+                entry: sorted(rule_ids[entry]) for entry in expected
+            },
+        },
+    }
+
+
 def admit_signed_component_authority(
     *,
     component: str,
@@ -737,6 +925,172 @@ def preregister_generic_market_rulebook(
     )
 
 
+def verify_trusted_local_forward_prerequisites(
+    *,
+    calendar_value: object,
+    market_rules_value: object,
+    expected_panel: Sequence[str],
+    bound_source_receipts: Mapping[str, object],
+) -> dict[str, object]:
+    """Verify forward-only local inputs without creating authority evidence."""
+
+    expected = tuple(sorted(_panel_entry(item) for item in expected_panel))
+
+    def forbidden(value: object) -> bool:
+        if isinstance(value, Mapping):
+            return any(
+                any(word in str(key).lower() for word in (
+                    "signature", "trust", "publisher", "envelope", "authority"
+                ))
+                or forbidden(item)
+                for key, item in value.items()
+            )
+        if isinstance(value, list):
+            return any(forbidden(item) for item in value)
+        return False
+
+    if forbidden(calendar_value) or forbidden(market_rules_value):
+        raise ValueError("trusted local prerequisites contain authority-shaped fields")
+
+    receipts: dict[str, tuple[set[tuple[str, str, str]], str, str, str]] = {}
+
+    def receipt(receipt_id: str) -> tuple[set[tuple[str, str, str]], str, str, str]:
+        if receipt_id not in receipts:
+            try:
+                receipts[receipt_id] = _receipt_bindings(
+                    bound_source_receipts[receipt_id], receipt_id
+                )
+            except KeyError as exc:
+                raise ValueError("trusted local input uses an unbound source receipt") from exc
+        return receipts[receipt_id]
+
+    def records(
+        artifact_value: object, component: str, *, generic_rules: bool = False
+    ) -> tuple[dict[str, dict[str, object]], set[str], dict[str, tuple[datetime, datetime]]]:
+        if not isinstance(artifact_value, Mapping) or set(artifact_value) != {
+            "schema_version", "component", "panel", "records"
+        }:
+            raise ValueError(f"trusted local {component} artifact schema is incomplete")
+        if (
+            artifact_value["schema_version"] != COMPONENT_SCHEMAS[component]
+            or artifact_value["component"] != component
+            or not isinstance(artifact_value["panel"], list)
+            or tuple(artifact_value["panel"]) != expected
+            or len(set(artifact_value["panel"])) != len(expected)
+            or not isinstance(artifact_value["records"], list)
+        ):
+            raise ValueError(f"trusted local {component} artifact differs exact panel")
+        payloads: dict[str, list[Mapping[str, object]]] = {entry: [] for entry in expected}
+        times: dict[str, tuple[datetime, datetime]] = {}
+        source_ids: set[str] = set()
+        observed: list[tuple[str, str]] = []
+        for index, record in enumerate(artifact_value["records"]):
+            if not isinstance(record, Mapping) or set(record) != {
+                "panel_entry", "payload", "record_sha256", "source_receipt_ids",
+                "effective_at", "available_at",
+            }:
+                raise ValueError(f"trusted local {component} record {index} is incomplete")
+            entry = _panel_entry(record["panel_entry"])
+            if entry not in payloads:
+                raise ValueError(f"trusted local {component} record is outside exact panel")
+            payload = (
+                validate_market_rule_payload(record["payload"], panel_entry=entry)
+                if generic_rules
+                else _component_payload(component, record["payload"], panel_entry=entry)
+            )
+            digest = _sha256(record["record_sha256"], "record_sha256")
+            if digest != hashlib.sha256(_canonical(payload)).hexdigest():
+                raise ValueError(f"trusted local {component} record hash drifted")
+            ids = record["source_receipt_ids"]
+            if not isinstance(ids, list) or not ids or ids != sorted(ids) or len(ids) != len(set(ids)):
+                raise ValueError(f"trusted local {component} source receipts are invalid")
+            normalized = {_sha256(item, "source_receipt_ids") for item in ids}
+            binding = (component, entry, digest)
+            if any(binding not in receipt(item)[0] for item in normalized):
+                raise ValueError(f"trusted local {component} receipt does not bind record")
+            if generic_rules and any(
+                payload["source"] != receipt(item)[2] or payload["source_sha256"] != receipt(item)[3]
+                for item in normalized
+            ):
+                raise ValueError("trusted local market_rules source differs from source receipt")
+            effective = datetime.fromisoformat(_timestamp(record["effective_at"], "effective_at"))
+            available = max(
+                datetime.fromisoformat(_timestamp(record["available_at"], "available_at")),
+                *(datetime.fromisoformat(receipt(item)[1]) for item in normalized),
+            )
+            if effective.date().isoformat() != entry.split("@")[1]:
+                raise ValueError(f"trusted local {component} effective date differs panel")
+            previous = times.get(entry)
+            times[entry] = (
+                max(previous[0], available) if previous else available,
+                max(previous[1], effective) if previous else effective,
+            )
+            payloads[entry].append(dict(payload))
+            source_ids.update(normalized)
+            observed.append((entry, digest))
+        if generic_rules:
+            if observed != sorted(observed) or len(observed) != len(set(observed)):
+                raise ValueError("trusted local market_rules records must be sorted and unique")
+        elif len(observed) != len(expected) or tuple(entry for entry, _ in observed) != expected:
+            raise ValueError("trusted local trading_calendar records differ exact panel")
+        if set(times) != set(expected):
+            raise ValueError(f"trusted local {component} records do not cover exact panel")
+        return ({entry: dict(payloads[entry][0]) for entry in expected} if not generic_rules else {
+            entry: {"policies": payloads[entry]} for entry in expected
+        }, source_ids, times)
+
+    calendar_payloads, calendar_receipts, calendar_times = records(
+        calendar_value, "trading_calendar"
+    )
+    cutoffs = {
+        entry: _timestamp(calendar_payloads[entry]["decision_cutoff_at"], "decision_cutoff_at")
+        for entry in expected
+    }
+    for entry, (available, effective) in calendar_times.items():
+        cutoff = datetime.fromisoformat(cutoffs[entry])
+        if available >= cutoff or effective >= cutoff:
+            raise ValueError("trusted local trading_calendar is post-cutoff")
+    rule_payloads, rule_receipts, rule_times = records(
+        market_rules_value, "market_rules", generic_rules=True
+    )
+    policy_ids: dict[str, list[str]] = {}
+    all_rules: list[Mapping[str, object]] = []
+    for entry, value in rule_payloads.items():
+        policies = cast(list[Mapping[str, object]], value["policies"])
+        if any(policy["is_st"] is None for policy in policies):
+            raise ValueError("trusted local market_rules must enumerate both ST branches")
+        _require_generic_market_rule_coverage(panel_entry=entry, payloads=policies)
+        cutoff = datetime.fromisoformat(cutoffs[entry])
+        available, effective = rule_times[entry]
+        if available >= cutoff or effective >= cutoff:
+            raise ValueError("trusted local market_rules are post-cutoff")
+        policy_ids[entry] = sorted(str(policy["policy_id"]) for policy in policies)
+        all_rules.extend(policies)
+    validate_market_rule_regimes(all_rules)
+    return {
+        "source_receipt_ids": sorted(calendar_receipts | rule_receipts),
+        "trading_calendar": {
+            "artifact_sha256": hashlib.sha256(_canonical(calendar_value)).hexdigest(),
+            "source_receipt_ids": sorted(calendar_receipts),
+            "available_at_by_panel": {entry: calendar_times[entry][0].isoformat() for entry in expected},
+            "effective_at_by_panel": {entry: calendar_times[entry][1].isoformat() for entry in expected},
+            "decision_cutoff_by_panel": cutoffs,
+            "next_session_decision_cutoff_at_by_panel": {
+                entry: str(calendar_payloads[entry]["next_session_decision_cutoff_at"])
+                for entry in expected
+            },
+        },
+        "market_rules": {
+            "artifact_sha256": hashlib.sha256(_canonical(market_rules_value)).hexdigest(),
+            "source_receipt_ids": sorted(rule_receipts),
+            "available_at_by_panel": {entry: rule_times[entry][0].isoformat() for entry in expected},
+            "effective_at_by_panel": {entry: rule_times[entry][1].isoformat() for entry in expected},
+            "decision_cutoff_by_panel": cutoffs,
+            "policy_ids_by_panel": policy_ids,
+        },
+    }
+
+
 def require_predecision_authority(
     authority: AdmittedProviderAuthority,
     *,
@@ -765,4 +1119,5 @@ __all__ = [
     "admit_signed_component_authority",
     "preregister_generic_market_rulebook",
     "require_predecision_authority",
+    "validate_local_mechanical_prerequisites",
 ]

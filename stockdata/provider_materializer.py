@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import json
-import os
+import os as _stdlib_os
 from pathlib import Path
 import secrets
 import shutil
@@ -28,6 +28,7 @@ from stockdata.collector_continuity import (
     open_nofollow_regular,
     probe_database_collector_genesis_strict,
     verify_file_identity,
+    verify_registered_collector_materialization_complete,
 )
 from stockdata.component_availability import verify_component_availability_records
 from stockdata.execution_readiness import load_panel
@@ -37,6 +38,7 @@ from stockdata.provider_authority_admission import (
     AdmittedProviderAuthority,
     SIGNED_COMPONENTS,
     admit_signed_component_authority,
+    validate_local_mechanical_prerequisites,
 )
 from stockdata.provider_export import (
     _export_verified_provider_receipt,
@@ -45,13 +47,18 @@ from stockdata.provider_export import (
     LEDGER_REFERENCE_KIND,
     LEDGER_SNAPSHOT_SCHEMA,
     REGISTRATION_REFERENCE_KIND,
-    REGISTRATION_SCHEMA,
+    REGISTRATION_SCHEMAS,
+    TRUSTED_LOCAL_READINESS_BLOCKER,
+    TRUSTED_LOCAL_REGISTRATION_SCHEMA,
     export_verified_provider_receipt,  # noqa: F401 - retained compatibility module attribute
 )
 from stockdata.provider_intrinsic import (
+    FORWARD_COMPONENTS,
     INTRINSIC_COMPONENTS,
     IntrinsicEvidenceError,
+    reconstruct_forward_component_evidence,
     reconstruct_intrinsic_evidence,
+    verify_forward_component_evidence,
     verify_intrinsic_evidence,
 )
 from stockdata.rqgm_provider_contract import (
@@ -64,6 +71,16 @@ from stockdata.rqgm_provider_contract import (
     SOURCE_RECEIPT_SCHEMA,
     ProviderArtifactReference,
 )
+
+
+class _ProviderOSFacade:
+    """Keep materializer filesystem fault injection scoped to this module."""
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(_stdlib_os, name)
+
+
+os = _ProviderOSFacade()
 
 
 class ProviderMaterializationError(ValueError):
@@ -352,6 +369,26 @@ def _validate_collector_snapshot(
         kind=CONTINUITY_CLOSURE_REFERENCE_KIND,
         schema=CLOSURE_SCHEMA,
     )
+    registration_path = _snapshot_path(
+        registration_value["path"], "collector snapshot registration"
+    )
+    try:
+        registration_object = json.loads(
+            _read_snapshot_artifact(
+                registration_path,
+                "collector snapshot registration",
+                expected_sha256=registration_sha256,
+            )[0].decode("ascii")
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ProviderMaterializationError("collector registration snapshot is invalid") from exc
+    registration_schema = (
+        registration_object.get("schema_version")
+        if isinstance(registration_object, Mapping)
+        else None
+    )
+    if registration_schema not in REGISTRATION_SCHEMAS:
+        raise ProviderMaterializationError("collector registration snapshot has unsupported schema")
     artifacts = (
         (
             "database",
@@ -360,13 +397,11 @@ def _validate_collector_snapshot(
         ),
         (
             "registration",
-            _snapshot_path(
-                registration_value["path"], "collector snapshot registration"
-            ),
+            registration_path,
             ProviderArtifactReference(
                 REGISTRATION_REFERENCE_KIND,
                 registration_sha256,
-                REGISTRATION_SCHEMA,
+                registration_schema,
             ),
         ),
         (
@@ -413,17 +448,12 @@ def _validate_collector_snapshot(
         physical_identities.add(physical_identity)
         validated[name] = _SnapshotArtifact(reference, path, raw, identity)
 
-    try:
-        registration_object = json.loads(validated["registration"].raw.decode("ascii"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ProviderMaterializationError("collector registration snapshot is invalid") from exc
     if (
         not isinstance(registration_object, Mapping)
-        or registration_object.get("schema_version") != REGISTRATION_SCHEMA
         or _canonical(registration_object) != validated["registration"].raw
     ):
         raise ProviderMaterializationError(
-            "collector registration snapshot must be canonical registration /4"
+            "collector registration snapshot must be canonical"
         )
     try:
         closure_object = json.loads(
@@ -495,6 +525,7 @@ def _readiness_report(
     companion_sha256: str,
     admitted_authorities: Mapping[str, AdmittedProviderAuthority] | None = None,
     intrinsic_evidence: Mapping[str, Mapping[str, object]] | None = None,
+    trusted_local_mechanical: bool = False,
 ) -> dict[str, object]:
     reported_components = full_report.get("components")
     if not isinstance(reported_components, Mapping):
@@ -537,6 +568,31 @@ def _readiness_report(
         components[component] = {"ready": False, "blockers": component_blockers}
         blockers.extend({**item, "component": component} for item in component_blockers)
 
+    if trusted_local_mechanical:
+        blockers = []
+        for component, evidence in tuple(components.items()):
+            original_blockers = evidence.get("blockers")
+            if not isinstance(original_blockers, list) or any(
+                not isinstance(item, Mapping) for item in original_blockers
+            ):
+                raise ProviderMaterializationError(
+                    f"trusted-local readiness blockers for {component} are malformed"
+                )
+            component_blockers = [dict(item) for item in original_blockers]
+            component_blockers.append(
+                {
+                    "code": TRUSTED_LOCAL_READINESS_BLOCKER,
+                    "count": 1,
+                }
+            )
+            components[component] = {
+                "ready": False,
+                "blockers": component_blockers,
+            }
+            blockers.extend(
+                {**item, "component": component} for item in component_blockers
+            )
+
     ready = not blockers and all(
         evidence.get("ready") is True for evidence in components.values()
     )
@@ -556,6 +612,57 @@ def _readiness_report(
     }
 
 
+def _require_trusted_local_materialization_inputs(
+    *,
+    registration_raw: bytes,
+    source_receipts: Sequence[ProviderArtifactReference],
+    components: Mapping[str, ProviderArtifactReference],
+) -> None:
+    """Keep `/5` bundle inputs attached to the registered local prerequisites."""
+
+    registration = _json(registration_raw, "trusted-local registration")
+    if not isinstance(registration, Mapping):
+        raise ProviderMaterializationError("trusted-local registration is invalid")
+    prerequisites = registration.get("prerequisites")
+    if not isinstance(prerequisites, Mapping):
+        raise ProviderMaterializationError(
+            "trusted-local registration prerequisites are invalid"
+        )
+    receipt_ids = prerequisites.get("source_receipt_ids")
+    calendar = prerequisites.get("trading_calendar")
+    rules = prerequisites.get("market_rule_prerequisite")
+    if (
+        not isinstance(receipt_ids, list)
+        or receipt_ids != sorted(receipt_ids)
+        or len(receipt_ids) != len(set(receipt_ids))
+        or any(
+            _sha256(receipt_id, "trusted-local source receipt id") != receipt_id
+            for receipt_id in receipt_ids
+        )
+        or not isinstance(calendar, Mapping)
+        or not isinstance(rules, Mapping)
+    ):
+        raise ProviderMaterializationError(
+            "trusted-local registration prerequisites are invalid"
+        )
+    if sorted(reference.identifier for reference in source_receipts) != receipt_ids:
+        raise ProviderMaterializationError(
+            "trusted-local materialization source receipts differ from registration"
+        )
+    calendar_sha256 = calendar.get("artifact_sha256")
+    if (
+        _sha256(calendar_sha256, "trusted-local trading_calendar artifact_sha256")
+        != components["trading_calendar"].identifier
+    ):
+        raise ProviderMaterializationError(
+            "trusted-local materialization trading_calendar differs from registration"
+        )
+    if not isinstance(rules.get("artifact_sha256"), str):
+        raise ProviderMaterializationError(
+            "trusted-local market_rules prerequisite is invalid"
+        )
+
+
 def materialize_provider_bundle(
     *,
     output_dir: str | Path,
@@ -569,6 +676,9 @@ def materialize_provider_bundle(
     component_files: Mapping[str, str | Path],
     component_authority_files: Mapping[str, str | Path] | None = None,
     source: str,
+    _collector_snapshot: _CollectorSnapshot | None = None,
+    _embed_collector_snapshot: bool = False,
+    _published_output_dir: str | Path | None = None,
 ) -> dict[str, object]:
     """Create one immutable bundle from reconstructed and admitted evidence.
 
@@ -606,19 +716,22 @@ def materialize_provider_bundle(
         if not valid:
             raise ProviderMaterializationError(f"{field} is invalid")
 
-    _require_collector_materialization_candidate(database_file)
-    try:
-        snapshot_result = create_registered_collector_materialization_snapshot(
-            registration_file,
-            database=database_file,
-            staging_directory=snapshot_staging_directory,
+    if _collector_snapshot is None:
+        _require_collector_materialization_candidate(database_file)
+        try:
+            snapshot_result = create_registered_collector_materialization_snapshot(
+                registration_file,
+                database=database_file,
+                staging_directory=snapshot_staging_directory,
+            )
+        except CollectorContinuityError as exc:
+            raise ProviderMaterializationError(str(exc)) from exc
+        snapshot = _validate_collector_snapshot(
+            snapshot_result,
+            staging_parent=snapshot_staging_directory,
         )
-    except CollectorContinuityError as exc:
-        raise ProviderMaterializationError(str(exc)) from exc
-    snapshot = _validate_collector_snapshot(
-        snapshot_result,
-        staging_parent=snapshot_staging_directory,
-    )
+    else:
+        snapshot = _collector_snapshot
     snapshot_database = str(snapshot.database.path)
 
     panel_entries, panel = _canonical_panel(panel_file)
@@ -724,14 +837,40 @@ def materialize_provider_bundle(
             )
             for component in REQUIRED_COMPONENTS
         }
+        trusted_local_mechanical = (
+            snapshot.registration.reference.schema_version
+            == TRUSTED_LOCAL_REGISTRATION_SCHEMA
+        )
+        if trusted_local_mechanical:
+            _require_trusted_local_materialization_inputs(
+                registration_raw=snapshot.registration.raw,
+                source_receipts=source_receipts,
+                components=components,
+            )
 
         paths = {
             checkout: _write_artifact(destination, checkout_raw),
-            database: snapshot.database.path,
             execution_adjustment: _write_artifact(destination, execution_raw),
             signal_adjustment: _write_artifact(destination, signal_raw),
             exact_panel: _write_artifact(destination, panel_raw),
         }
+        if _embed_collector_snapshot:
+            paths.update(
+                {
+                    database: _write_artifact(destination, snapshot.database.raw),
+                    snapshot.registration.reference: _write_artifact(
+                        destination, snapshot.registration.raw
+                    ),
+                    snapshot.ledger.reference: _write_artifact(
+                        destination, snapshot.ledger.raw
+                    ),
+                    snapshot.continuity_closure.reference: _write_artifact(
+                        destination, snapshot.continuity_closure.raw
+                    ),
+                }
+            )
+        else:
+            paths[database] = snapshot.database.path
         paths.update(
             {_reference("stock-data-source-receipt", SOURCE_RECEIPT_SCHEMA, raw): _write_artifact(destination, raw) for raw in receipt_raws}
         )
@@ -933,6 +1072,7 @@ def materialize_provider_bundle(
             companion_sha256=companion.snapshot_sha256,
             admitted_authorities=admitted_authorities,
             intrinsic_evidence=intrinsic_evidence,
+            trusted_local_mechanical=trusted_local_mechanical,
         )
         report_raw = _canonical(report)
         readiness = _reference("stock-data-readiness-report", READINESS_REPORT_SCHEMA, report_raw)
@@ -945,14 +1085,19 @@ def materialize_provider_bundle(
             "checkout": _locator(checkout, paths[checkout]),
             "database": _locator(database, paths[database]),
             "registration": _locator(
-                snapshot.registration.reference, snapshot.registration.path
+                snapshot.registration.reference,
+                paths.get(snapshot.registration.reference, snapshot.registration.path),
             ),
             "ledger_snapshot": _locator(
-                snapshot.ledger.reference, snapshot.ledger.path
+                snapshot.ledger.reference,
+                paths.get(snapshot.ledger.reference, snapshot.ledger.path),
             ),
             "continuity_closure": _locator(
                 snapshot.continuity_closure.reference,
-                snapshot.continuity_closure.path,
+                paths.get(
+                    snapshot.continuity_closure.reference,
+                    snapshot.continuity_closure.path,
+                ),
             ),
             "source_receipts": [_locator(reference, paths[reference]) for reference in source_receipts],
             "execution_adjustment_identity": _locator(execution_adjustment, paths[execution_adjustment]),
@@ -977,6 +1122,41 @@ def materialize_provider_bundle(
             raise AssertionError(
                 "materialized readiness differs from independent export verification"
             )
+        if _published_output_dir is not None:
+            published_root = Path(_published_output_dir).expanduser().resolve()
+            projected = json.loads(bundle_raw.decode("ascii"))
+
+            def project(locator: object) -> None:
+                if not isinstance(locator, dict):
+                    raise AssertionError("provider locator projection is invalid")
+                path = Path(str(locator["path"]))
+                locator["path"] = str(published_root / path.relative_to(destination))
+
+            for field in (
+                "checkout",
+                "database",
+                "registration",
+                "ledger_snapshot",
+                "continuity_closure",
+                "execution_adjustment_identity",
+                "signal_adjustment_identity",
+                "exact_panel",
+                "readiness_report",
+            ):
+                project(projected[field])
+            for locator in projected["source_receipts"]:
+                project(locator)
+            for locator in projected["components"].values():
+                project(locator)
+            published_raw = _canonical(projected)
+            temporary_published = destination / f".bundle-{secrets.token_hex(16)}.json"
+            _write_exclusive(
+                temporary_published,
+                published_raw,
+                "provider bundle publication temporary",
+            )
+            temporary_bundle.unlink()
+            temporary_bundle = temporary_published
         try:
             os.replace(temporary_bundle, bundle_file)
         except OSError as exc:
@@ -991,3 +1171,622 @@ def materialize_provider_bundle(
         if output_created and not committed:
             shutil.rmtree(destination, ignore_errors=True)
         raise
+
+
+@dataclass
+class _RetainedInput:
+    path: Path
+    opened: object
+    raw: bytes
+    field: str
+
+
+def _retain_input(path: str | Path, field: str) -> _RetainedInput:
+    try:
+        canonical = Path(
+            os.path.abspath(os.path.expanduser(os.fspath(path)))
+        )
+        opened = open_nofollow_regular(canonical)
+    except (CollectorContinuityError, OSError, TypeError, ValueError) as exc:
+        raise ProviderMaterializationError(
+            f"{field} must name a canonical no-follow regular file"
+        ) from exc
+    try:
+        status = os.fstat(opened.descriptor)
+        raw = bytearray()
+        offset = 0
+        while offset < status.st_size:
+            chunk = os.pread(
+                opened.descriptor, min(1024 * 1024, status.st_size - offset), offset
+            )
+            if not chunk:
+                raise ProviderMaterializationError(f"{field} was truncated")
+            raw.extend(chunk)
+            offset += len(chunk)
+        current = os.fstat(opened.descriptor)
+        if (
+            current.st_dev != status.st_dev
+            or current.st_ino != status.st_ino
+            or current.st_size != status.st_size
+        ):
+            raise ProviderMaterializationError(f"{field} identity drifted")
+        verify_file_identity(canonical, opened.identity)
+        return _RetainedInput(canonical, opened, bytes(raw), field)
+    except BaseException:
+        opened.close()
+        raise
+
+
+def _reverify_retained_input(value: _RetainedInput) -> None:
+    try:
+        status = os.fstat(value.opened.descriptor)
+        raw = os.pread(value.opened.descriptor, status.st_size, 0)
+        if len(raw) != status.st_size or raw != value.raw:
+            raise ProviderMaterializationError(f"{value.field} content drifted")
+    except CollectorContinuityError as exc:
+        raise ProviderMaterializationError(
+            f"{value.field} identity drifted"
+        ) from exc
+
+
+def _require_complete_sqlite_bytes(raw: bytes) -> None:
+    if len(raw) < 100 or raw[:16] != b"SQLite format 3\x00":
+        raise ProviderMaterializationError("collector database is invalid")
+    page_size = int.from_bytes(raw[16:18], "big")
+    if page_size == 1:
+        page_size = 65536
+    page_count = int.from_bytes(raw[28:32], "big")
+    if page_size < 512 or page_size & (page_size - 1) or not page_count:
+        raise ProviderMaterializationError("collector database extent is invalid")
+    if len(raw) != page_size * page_count:
+        raise ProviderMaterializationError("collector database physical bytes drifted")
+
+
+def _new_private_materialization_directory(output_dir: Path) -> Path:
+    if os.path.lexists(output_dir):
+        raise ProviderMaterializationError("output_dir must not already exist")
+    parent = output_dir.parent
+    try:
+        status = os.lstat(parent)
+    except OSError as exc:
+        raise ProviderMaterializationError("output_dir parent is unavailable") from exc
+    if not stat.S_ISDIR(status.st_mode):
+        raise ProviderMaterializationError("output_dir parent must be a directory")
+    for _ in range(8):
+        private = parent / f".registered-provider-materialize-{secrets.token_hex(16)}"
+        try:
+            private.mkdir(mode=0o700)
+            _fsync_directory(parent, "registered materializer parent")
+            return private
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise ProviderMaterializationError(
+                "private materialization staging cannot be created"
+            ) from exc
+    raise ProviderMaterializationError("private materialization staging collides")
+
+
+def _remove_private_materialization_directory(path: Path) -> None:
+    for _ in range(2):
+        if not os.path.lexists(path):
+            return
+        try:
+            shutil.rmtree(path)
+        except OSError:
+            continue
+    if os.path.lexists(path):
+        raise ProviderMaterializationError("private materialization cleanup failed")
+
+
+def _trusted_local_registration_inputs(
+    registration: _RetainedInput,
+) -> tuple[
+    Mapping[str, object],
+    tuple[str, ...],
+    tuple[_RetainedInput, ...],
+    _RetainedInput,
+    _RetainedInput,
+]:
+    value = _json(registration.raw, "trusted-local registration")
+    if (
+        not isinstance(value, Mapping)
+        or _canonical(value) != registration.raw
+        or value.get("schema_version") != TRUSTED_LOCAL_REGISTRATION_SCHEMA
+        or value.get("authority_mode") != "trusted_local_mechanical"
+    ):
+        raise ProviderMaterializationError("registration must be trusted-local /5")
+    files = value.get("prerequisite_files")
+    if (
+        not isinstance(files, Mapping)
+        or set(files) != {"source_receipts", "trading_calendar", "market_rules"}
+        or not isinstance(files["source_receipts"], list)
+        or len(files["source_receipts"]) != 2
+        or any(not isinstance(path, str) for path in files["source_receipts"])
+        or not isinstance(files["trading_calendar"], str)
+        or not isinstance(files["market_rules"], str)
+    ):
+        raise ProviderMaterializationError("trusted-local prerequisite files are invalid")
+    retained: list[_RetainedInput] = []
+    try:
+        receipts = tuple(
+            _retain_input(path, f"trusted-local source receipt {index}")
+            for index, path in enumerate(files["source_receipts"])
+        )
+        retained.extend(receipts)
+        calendar = _retain_input(files["trading_calendar"], "trusted-local calendar")
+        retained.append(calendar)
+        rules = _retain_input(files["market_rules"], "trusted-local market rules")
+        retained.append(rules)
+        paths = [
+            registration.path,
+            *(item.path for item in receipts),
+            calendar.path,
+            rules.path,
+        ]
+        identities = [
+            _snapshot_physical_identity(item.opened.identity, item.field)
+            for item in (registration, *receipts, calendar, rules)
+        ]
+        if len(set(paths)) != len(paths) or len(set(identities)) != len(identities):
+            raise ProviderMaterializationError("trusted-local prerequisite files alias")
+        return value, tuple(files["source_receipts"]), receipts, calendar, rules
+    except BaseException:
+        for item in reversed(retained):
+            item.opened.close()
+        raise
+
+
+def _select_trusted_local_market_rules(
+    rules: Mapping[str, object], *, instrument_status: Mapping[str, object]
+) -> Mapping[str, object]:
+    records = rules.get("records")
+    statuses = instrument_status.get("records")
+    if not isinstance(records, list) or not isinstance(statuses, list):
+        raise ProviderMaterializationError("trusted-local market rules are invalid")
+    selected_status: dict[str, bool] = {}
+    for record in statuses:
+        if not isinstance(record, Mapping):
+            raise ProviderMaterializationError("instrument status record is invalid")
+        entry = record.get("panel_entry")
+        payload = record.get("payload")
+        if (
+            not isinstance(entry, str)
+            or not isinstance(payload, Mapping)
+            or type(payload.get("is_st")) is not bool
+            or entry in selected_status
+        ):
+            raise ProviderMaterializationError("instrument status selection is invalid")
+        selected_status[entry] = payload["is_st"]
+    selected: dict[str, Mapping[str, object]] = {}
+    for record in records:
+        if not isinstance(record, Mapping):
+            raise ProviderMaterializationError("market rule record is invalid")
+        entry = record.get("panel_entry")
+        payload = record.get("payload")
+        if not isinstance(entry, str) or not isinstance(payload, Mapping):
+            raise ProviderMaterializationError("market rule record is invalid")
+        if entry in selected_status and payload.get("is_st") is selected_status[entry]:
+            if entry in selected:
+                raise ProviderMaterializationError("market rule selection is ambiguous")
+            selected[entry] = record
+    if set(selected) != set(selected_status):
+        raise ProviderMaterializationError("market rule selection is incomplete")
+    result = dict(rules)
+    result["records"] = [
+        selected[entry]
+        for entry in sorted(selected)
+    ]
+    return result
+
+
+def _build_trusted_local_availability(
+    *,
+    panel: list[str],
+    components: Mapping[str, Mapping[str, object]],
+    decision_cutoffs: Mapping[str, str],
+    calendar_phases: Mapping[str, Mapping[str, str]],
+    source_receipt_ids: Sequence[str],
+) -> dict[str, object]:
+    calendar = components.get("trading_calendar")
+    if not isinstance(calendar, Mapping) or not isinstance(
+        calendar.get("records"), list
+    ):
+        raise ProviderMaterializationError("trusted-local calendar records are invalid")
+    phases = {
+        record.get("panel_entry"): record.get("payload")
+        for record in calendar["records"]
+        if isinstance(record, Mapping)
+    }
+    if set(phases) != set(panel) or any(
+        not isinstance(value, Mapping) for value in phases.values()
+    ):
+        raise ProviderMaterializationError("trusted-local calendar phases are invalid")
+    records: list[dict[str, object]] = []
+    for component, artifact in components.items():
+        if component == "availability_records":
+            continue
+        component_records = artifact.get("records")
+        if not isinstance(component_records, list):
+            raise ProviderMaterializationError(
+                f"{component} component records are invalid"
+            )
+        for record in component_records:
+            if not isinstance(record, Mapping):
+                raise ProviderMaterializationError(
+                    f"{component} component record is invalid"
+                )
+            entry = record.get("panel_entry")
+            if not isinstance(entry, str) or entry not in phases:
+                raise ProviderMaterializationError(
+                    f"{component} component panel is invalid"
+                )
+            cutoff_kind = (
+                "next_session_decision_cutoff_at"
+                if component in {"execution_prices", "signal_prices"}
+                else "decision_cutoff_at"
+            )
+            cutoff = phases[entry].get(cutoff_kind)
+            if not isinstance(cutoff, str):
+                raise ProviderMaterializationError("trusted-local cutoff is invalid")
+            records.append(
+                {
+                    "component": component,
+                    "panel_entry": entry,
+                    "record_sha256": record.get("record_sha256"),
+                    "source_receipt_ids": record.get("source_receipt_ids"),
+                    "event_at": record.get("effective_at"),
+                    "available_at": record.get("available_at"),
+                    "cutoff_kind": cutoff_kind,
+                    "applicable_cutoff_at": cutoff,
+                }
+            )
+    artifact = {
+        "schema_version": COMPONENT_SCHEMAS["availability_records"],
+        "panel": panel,
+        "records": sorted(
+            records,
+            key=lambda record: (
+                str(record["component"]),
+                str(record["panel_entry"]),
+                str(record["record_sha256"]),
+            ),
+        ),
+    }
+    try:
+        verified = verify_component_availability_records(
+            artifact,
+            expected_panel_sha256=hashlib.sha256(_canonical(panel)).hexdigest(),
+            expected_panel_size=len(panel),
+            expected_decision_cutoffs=decision_cutoffs,
+            bound_source_receipt_ids=sorted(source_receipt_ids),
+            component_records={
+                component: cast(Sequence[Mapping[str, object]], artifact_value["records"])
+                for component, artifact_value in components.items()
+                if component != "availability_records"
+            },
+            expected_signed_calendar_phases=calendar_phases,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ProviderMaterializationError(
+            "trusted-local availability closure is invalid"
+        ) from exc
+    if (
+        not verified.ready
+        or verified.source_receipt_ids != tuple(sorted(source_receipt_ids))
+    ):
+        raise ProviderMaterializationError("trusted-local availability closure is incomplete")
+    return artifact
+
+
+def materialize_registered_provider_bundle(
+    *,
+    registration_file: str | Path,
+    database: str | Path,
+    output_dir: str | Path,
+) -> Path:
+    """Atomically materialize one complete trusted-local collector snapshot."""
+
+    try:
+        destination = Path(
+            os.path.abspath(os.path.expanduser(os.fspath(output_dir)))
+        )
+    except (TypeError, ValueError) as exc:
+        raise ProviderMaterializationError("output_dir is invalid") from exc
+    retained: list[_RetainedInput] = []
+    private: Path | None = None
+    published = False
+    result: Path | None = None
+    body_error: BaseException | None = None
+    try:
+        registration = _retain_input(registration_file, "trusted-local registration")
+        retained.append(registration)
+        live_database = _retain_input(database, "trusted-local database")
+        retained.append(live_database)
+        _require_complete_sqlite_bytes(live_database.raw)
+        (
+            registration_value,
+            _,
+            source_receipts,
+            calendar,
+            market_rules,
+        ) = _trusted_local_registration_inputs(registration)
+        retained.extend((*source_receipts, calendar, market_rules))
+        ledger = _retain_input(
+            default_collector_ledger_path(str(live_database.path)),
+            "trusted-local ledger",
+        )
+        retained.append(ledger)
+        retained_inputs = {
+            "registration": registration,
+            "database": live_database,
+            "ledger": ledger,
+            "prerequisites": (source_receipts, calendar, market_rules),
+        }
+        try:
+            verify_registered_collector_materialization_complete(
+                registration_file,
+                database=database,
+                _retained_inputs=retained_inputs,
+            )
+        except CollectorContinuityError as exc:
+            raise ProviderMaterializationError(str(exc)) from exc
+        for item in retained:
+            _reverify_retained_input(item)
+        symbols = registration_value.get("symbols")
+        sessions = registration_value.get("sessions")
+        if not isinstance(symbols, list) or not isinstance(sessions, list):
+            raise ProviderMaterializationError("trusted-local panel is invalid")
+        panel = sorted(f"{symbol}@{session}" for symbol in symbols for session in sessions)
+        if (
+            len(panel) != 36
+            or len(panel) != len(set(panel))
+            or registration_value.get("panel_sha256")
+            != hashlib.sha256(_canonical(panel)).hexdigest()
+        ):
+            raise ProviderMaterializationError("trusted-local panel is invalid")
+        receipt_values = {
+            hashlib.sha256(item.raw).hexdigest(): _json(item.raw, item.field)
+            for item in source_receipts
+        }
+        if len(receipt_values) != 2:
+            raise ProviderMaterializationError("trusted-local source receipts alias")
+        calendar_value = _json(calendar.raw, calendar.field)
+        market_rules_value = _json(market_rules.raw, market_rules.field)
+        try:
+            local = validate_local_mechanical_prerequisites(
+                calendar_artifact=calendar_value,
+                market_rules_artifact=market_rules_value,
+                expected_panel=panel,
+                bound_source_receipts=receipt_values,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ProviderMaterializationError(
+                "trusted-local prerequisites are invalid"
+            ) from exc
+        prerequisites = registration_value.get("prerequisites")
+        if not isinstance(prerequisites, Mapping) or any(
+            prerequisites.get(field) != value for field, value in local.items()
+        ):
+            raise ProviderMaterializationError("trusted-local prerequisites drifted")
+        calendar_prerequisite = prerequisites.get("trading_calendar")
+        rules_prerequisite = prerequisites.get("market_rule_prerequisite")
+        if (
+            not isinstance(calendar_prerequisite, Mapping)
+            or not isinstance(rules_prerequisite, Mapping)
+            or calendar_prerequisite.get("artifact_sha256")
+            != hashlib.sha256(calendar.raw).hexdigest()
+            or rules_prerequisite.get("artifact_sha256")
+            != hashlib.sha256(market_rules.raw).hexdigest()
+        ):
+            raise ProviderMaterializationError("trusted-local prerequisite bytes drifted")
+        calendar_local = local.get("trading_calendar")
+        if not isinstance(calendar_local, Mapping):
+            raise ProviderMaterializationError("trusted-local calendar is invalid")
+        decision_cutoffs = calendar_local.get("decision_cutoff_by_panel")
+        calendar_phases = calendar_local.get("calendar_phases_by_panel")
+        if not isinstance(decision_cutoffs, Mapping) or not isinstance(
+            calendar_phases, Mapping
+        ):
+            raise ProviderMaterializationError("trusted-local calendar is invalid")
+
+        private = _new_private_materialization_directory(destination)
+        try:
+            snapshot_result = create_registered_collector_materialization_snapshot(
+                registration_file,
+                database=database,
+                staging_directory=private,
+                _retained_inputs=retained_inputs,
+            )
+        except CollectorContinuityError as exc:
+            raise ProviderMaterializationError(str(exc)) from exc
+        snapshot = _validate_collector_snapshot(
+            snapshot_result, staging_parent=private
+        )
+        execution_value = {
+            "schema_version": EXECUTION_ADJUSTMENT_SCHEMA,
+            "price_role": "execution",
+            "source": registration_value["source"],
+            "adjustment_mode": registration_value["adjustment_mode"],
+            "adjustment_version": registration_value["adjustment_version"],
+        }
+        signal_value = {
+            "schema_version": SIGNAL_ADJUSTMENT_SCHEMA,
+            "price_role": "signal",
+            "source": registration_value["source"],
+            "adjustment_mode": registration_value["adjustment_mode"],
+            "adjustment_version": registration_value["adjustment_version"],
+        }
+        execution = verify_adjustment_identity(
+            execution_value, expected_price_role="execution"
+        )
+        signal = verify_adjustment_identity(
+            signal_value, expected_price_role="signal"
+        )
+        try:
+            intrinsic = reconstruct_intrinsic_evidence(
+                snapshot.database.raw,
+                panel=panel,
+                execution_adjustment=execution,
+                signal_adjustment=signal,
+                decision_cutoffs=cast(Mapping[str, str], decision_cutoffs),
+            )
+            forward = reconstruct_forward_component_evidence(
+                snapshot.database.raw,
+                panel=panel,
+                decision_cutoffs=cast(Mapping[str, str], decision_cutoffs),
+            )
+        except IntrinsicEvidenceError as exc:
+            raise ProviderMaterializationError(exc.code) from exc
+        collector_receipts = dict(intrinsic.source_receipts)
+        for receipt_id, receipt in forward.source_receipts.items():
+            existing = collector_receipts.get(receipt_id)
+            if existing is not None and existing != receipt:
+                raise ProviderMaterializationError("collector receipt identity drifted")
+            collector_receipts[receipt_id] = receipt
+        component_values: dict[str, Mapping[str, object]] = {
+            "trading_calendar": cast(Mapping[str, object], calendar_value),
+            "market_rules": _select_trusted_local_market_rules(
+                cast(Mapping[str, object], market_rules_value),
+                instrument_status=forward.components["instrument_status"],
+            ),
+            **intrinsic.components,
+            **forward.components,
+        }
+        component_references = {
+            component: _reference(
+                f"stock-data-{component.replace('_', '-')}",
+                COMPONENT_SCHEMAS[component],
+                _canonical(component_values[component]),
+            )
+            for component in (*INTRINSIC_COMPONENTS, *FORWARD_COMPONENTS)
+        }
+        try:
+            verify_intrinsic_evidence(
+                intrinsic,
+                claimed_components={
+                    component: component_values[component]
+                    for component in INTRINSIC_COMPONENTS
+                },
+                component_references={
+                    component: component_references[component]
+                    for component in INTRINSIC_COMPONENTS
+                },
+                bound_source_receipts=collector_receipts,
+                database_sha256=snapshot.database.reference.identifier,
+            )
+            verify_forward_component_evidence(
+                forward,
+                claimed_components={
+                    component: component_values[component]
+                    for component in FORWARD_COMPONENTS
+                },
+                component_references={
+                    component: component_references[component]
+                    for component in FORWARD_COMPONENTS
+                },
+                bound_source_receipts=collector_receipts,
+            )
+        except IntrinsicEvidenceError as exc:
+            raise ProviderMaterializationError(exc.code) from exc
+        component_values["availability_records"] = _build_trusted_local_availability(
+            panel=panel,
+            components=component_values,
+            decision_cutoffs=cast(Mapping[str, str], decision_cutoffs),
+            calendar_phases=cast(Mapping[str, Mapping[str, str]], calendar_phases),
+            source_receipt_ids=[*receipt_values, *collector_receipts],
+        )
+
+        derived = private / "derived"
+        derived.mkdir(mode=0o700)
+        _fsync_directory(derived, "registered materializer derived directory")
+        panel_file = _write_exclusive(
+            derived / "panel.json", _canonical(panel), "registered materializer panel"
+        )
+        execution_file = _write_exclusive(
+            derived / "execution-adjustment.json",
+            _canonical(execution_value),
+            "registered materializer execution adjustment",
+        )
+        signal_file = _write_exclusive(
+            derived / "signal-adjustment.json",
+            _canonical(signal_value),
+            "registered materializer signal adjustment",
+        )
+        receipt_files = [
+            _write_exclusive(
+                derived / f"receipt-{index}.json",
+                item.raw,
+                f"registered materializer source receipt {index}",
+            )
+            for index, item in enumerate(source_receipts)
+        ]
+        component_files = {
+            component: _write_exclusive(
+                derived / f"{component}.json",
+                _canonical(component_values[component]),
+                f"registered materializer component {component}",
+            )
+            for component in REQUIRED_COMPONENTS
+        }
+        _fsync_directory(derived, "registered materializer derived directory")
+        materialized = materialize_provider_bundle(
+            output_dir=private / "bundle-stage",
+            database_file=snapshot.database.path,
+            registration_file=snapshot.registration.path,
+            snapshot_staging_directory=private,
+            panel_file=panel_file,
+            source_receipt_files=receipt_files,
+            execution_adjustment_file=execution_file,
+            signal_adjustment_file=signal_file,
+            component_files=component_files,
+            source=str(registration_value["source"]),
+            _collector_snapshot=snapshot,
+            _embed_collector_snapshot=True,
+            _published_output_dir=destination,
+        )
+        staged_bundle = Path(materialized["bundle_file"])
+        if staged_bundle.parent != private / "bundle-stage":
+            raise ProviderMaterializationError("registered materializer output drifted")
+        _reverify_collector_snapshot(snapshot)
+        for item in retained:
+            _reverify_retained_input(item)
+        os.replace(staged_bundle.parent, destination)
+        published = True
+        result = destination / "bundle.json"
+        export_verified_provider_receipt(result)
+        _reverify_collector_snapshot(snapshot)
+        for item in retained:
+            _reverify_retained_input(item)
+    except BaseException as exc:
+        body_error = exc
+
+    cleanup_error: BaseException | None = None
+    if body_error is not None and published:
+        try:
+            _remove_private_materialization_directory(destination)
+        except BaseException as exc:
+            cleanup_error = exc
+    if private is not None:
+        try:
+            _remove_private_materialization_directory(private)
+        except BaseException as exc:
+            cleanup_error = exc if cleanup_error is None else cleanup_error
+    for item in reversed(retained):
+        try:
+            item.opened.close()
+        except BaseException as exc:
+            cleanup_error = exc if cleanup_error is None else cleanup_error
+    if body_error is not None:
+        if cleanup_error is not None:
+            raise ProviderMaterializationError(
+                "registered materialization and cleanup failed"
+            ) from body_error
+        raise body_error
+    if cleanup_error is not None:
+        if published:
+            _remove_private_materialization_directory(destination)
+        raise ProviderMaterializationError("registered materialization cleanup failed")
+    if result is None:
+        raise AssertionError("registered materialization result is unavailable")
+    return result

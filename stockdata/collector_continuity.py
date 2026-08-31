@@ -819,7 +819,7 @@ _GUARD_TRIGGER_SQL: Final = {
         WHEN NEW.code NOT IN (SELECT symbol FROM forward_collector_symbols)
           OR NEW.source != 'tencent'
           OR NEW.adjustment_mode != 'raw'
-          OR NEW.adjustment_version != 'tencent-qt-daily-v1'
+          OR NEW.adjustment_version NOT GLOB 'tencent-qt-daily-v[0-9]*'
           OR NEW.is_final != 1
           OR NEW.receipt_id IS NULL BEGIN
             SELECT RAISE(ABORT, 'collector daily evidence identity is invalid');
@@ -853,7 +853,7 @@ _GUARD_TRIGGER_SQL: Final = {
         WHEN NEW.code NOT IN (SELECT symbol FROM forward_collector_symbols)
           OR NEW.source != 'tencent'
           OR NEW.adjustment_mode != 'raw'
-          OR NEW.adjustment_version != 'tencent-qt-daily-v1'
+          OR NEW.adjustment_version NOT GLOB 'tencent-qt-daily-v[0-9]*'
           OR NEW.start_date > NEW.end_date BEGIN
             SELECT RAISE(ABORT, 'collector sync coverage identity is invalid');
         END
@@ -3605,6 +3605,9 @@ _REGISTRATION_V4_FIELDS: Final = frozenset(
     }
 )
 _REGISTRATION_V4_SCHEMA: Final = "rqgm-forward-panel-registration/4"
+_REGISTRATION_V5_SCHEMA: Final = "rqgm-forward-panel-registration/5"
+_REGISTRATION_V5_AUTHORITY_MODE: Final = "trusted_local_mechanical"
+_REGISTRATION_V5_FIELDS: Final = _REGISTRATION_V4_FIELDS | frozenset({"authority_mode"})
 
 
 def _read_registered_schedule_authority(
@@ -3639,9 +3642,20 @@ def _decode_registered_schedule_authority(raw: bytes) -> dict[str, object]:
     """Decode schedule authority from canonical registration bytes only."""
 
     registration = decode_canonical_json_object(raw)
-    require_exact_keys(registration, _REGISTRATION_V4_FIELDS, "collector registration")
-    if registration["schema_version"] != _REGISTRATION_V4_SCHEMA:
+    schema = registration.get("schema_version")
+    fields = (
+        _REGISTRATION_V4_FIELDS
+        if schema == _REGISTRATION_V4_SCHEMA
+        else _REGISTRATION_V5_FIELDS
+    )
+    require_exact_keys(registration, fields, "collector registration")
+    if schema not in {_REGISTRATION_V4_SCHEMA, _REGISTRATION_V5_SCHEMA}:
         raise CollectorContinuityError("collector registration schema is unsupported")
+    if (
+        schema == _REGISTRATION_V5_SCHEMA
+        and registration.get("authority_mode") != _REGISTRATION_V5_AUTHORITY_MODE
+    ):
+        raise CollectorContinuityError("collector registration authority mode is invalid")
     registration_sha256 = hashlib.sha256(raw).hexdigest()
     _require_event_sha256(registration["panel_sha256"], "registration panel_sha256")
     _require_event_sha256(registration["prerequisites_sha256"], "registration prerequisites_sha256")
@@ -5081,14 +5095,25 @@ def _read_registered_collector_read_authority(
     finally:
         opened.close()
     registration = decode_canonical_json_object(raw)
-    require_exact_keys(registration, _REGISTRATION_V4_FIELDS, "registered collector registration")
+    schema = registration.get("schema_version")
+    fields = (
+        _REGISTRATION_V4_FIELDS
+        if schema == _REGISTRATION_V4_SCHEMA
+        else _REGISTRATION_V5_FIELDS
+    )
+    require_exact_keys(registration, fields, "registered collector registration")
     registration_sha256 = hashlib.sha256(raw).hexdigest()
     if (
-        registration.get("schema_version") != _REGISTRATION_V4_SCHEMA
+        schema not in {_REGISTRATION_V4_SCHEMA, _REGISTRATION_V5_SCHEMA}
         or registration_sha256 != spec.registration_sha256
         or registration_sha256 != frozen.registration_sha256
     ):
         raise CollectorContinuityError("registered collector registration identity drifted")
+    if (
+        schema == _REGISTRATION_V5_SCHEMA
+        and registration.get("authority_mode") != _REGISTRATION_V5_AUTHORITY_MODE
+    ):
+        raise CollectorContinuityError("registered collector registration authority mode is invalid")
     prerequisites = registration.get("prerequisites")
     if not isinstance(prerequisites, Mapping):
         raise CollectorContinuityError("registered collector prerequisites are invalid")
@@ -5504,9 +5529,20 @@ def _validate_raw_step_spec(spec: CollectorStepSpec) -> _FrozenCollectorStepSche
     finally:
         opened.close()
     registration = decode_canonical_json_object(raw)
-    require_exact_keys(registration, _REGISTRATION_V4_FIELDS, "collector raw registration")
-    if registration.get("schema_version") != _REGISTRATION_V4_SCHEMA:
+    schema = registration.get("schema_version")
+    fields = (
+        _REGISTRATION_V4_FIELDS
+        if schema == _REGISTRATION_V4_SCHEMA
+        else _REGISTRATION_V5_FIELDS
+    )
+    require_exact_keys(registration, fields, "collector raw registration")
+    if schema not in {_REGISTRATION_V4_SCHEMA, _REGISTRATION_V5_SCHEMA}:
         raise CollectorContinuityError("collector raw registration schema is unsupported")
+    if (
+        schema == _REGISTRATION_V5_SCHEMA
+        and registration.get("authority_mode") != _REGISTRATION_V5_AUTHORITY_MODE
+    ):
+        raise CollectorContinuityError("collector raw registration authority mode is invalid")
     registration_sha256 = hashlib.sha256(raw).hexdigest()
     if registration_sha256 != spec.registration_sha256 or registration_sha256 != frozen.registration_sha256:
         raise CollectorContinuityError("collector raw registration identity drifted")
@@ -6078,6 +6114,7 @@ def _verify_actions_raw(
         raise CollectorContinuityError("collector raw action coverage is incomplete")
     expected_coverage = []
     expected_actions = []
+    action_rows_reconstruct = True
     receipt_row = next(row for row, _ in records["collection_receipts"] if row.get("receipt_id") == receipt_id)
     observed_at = receipt_row["observed_at"]
     for symbol in spec.symbols:
@@ -6085,15 +6122,30 @@ def _verify_actions_raw(
         expected_coverage.append({"observation_date": spec.session, "symbol": symbol, "available_at": observed_at,
                                   "source": spec.selector_source, "receipt_id": receipt_id, "event_count": len(rows)})
         for source_row in rows:
-            payload = canonical_json_bytes(source_row).decode("ascii")
-            effective, announcement = _event_fields(source_row)
+            try:
+                payload = canonical_json_bytes(source_row).decode("ascii")
+                effective, announcement = _event_fields(source_row)
+            except (TypeError, ValueError):
+                action_rows_reconstruct = False
+                continue
             expected_actions.append({
                 "observation_date": spec.session, "symbol": symbol,
                 "event_id": hashlib.sha256(payload.encode("ascii")).hexdigest(), "effective_date": effective,
                 "announcement_date": announcement, "payload_json": payload, "available_at": observed_at,
                 "source": spec.selector_source, "receipt_id": receipt_id,
             })
-    if not _exact_rows(coverage, expected_coverage) or not _exact_rows(actions, expected_actions):
+    if not _exact_rows(coverage, expected_coverage):
+        raise CollectorContinuityError("collector raw actions reconstruction is invalid")
+    if not action_rows_reconstruct or not _exact_rows(actions, expected_actions):
+        authority = _read_registered_schedule_authority(spec.registration_file)
+        registration = authority.get("registration")
+        if (
+            isinstance(registration, Mapping)
+            and registration.get("schema_version") == _REGISTRATION_V5_SCHEMA
+        ):
+            # `/5` preserves complete raw action captures.  Their semantic
+            # normalizability is assessed by the later materializer.
+            return tuple(spec.symbols), ()
         raise CollectorContinuityError("collector raw actions reconstruction is invalid")
     return tuple(spec.symbols), ()
 
@@ -6352,6 +6404,14 @@ def _verify_collector_raw_postcondition_from_connection(
             return _raw_result(raw_class, "prices_complete" if raw_class == "complete" else "prices_partial", after, receipt_ids=sorted(receipts), requests=request_hashes, responses=response_hashes, verified=verified, missing=missing)
         raise CollectorContinuityError("collector raw step identity is invalid")
     except CollectorContinuityError:
+        if spec.step_id == "post_close_prices":
+            authority = _read_registered_schedule_authority(spec.registration_file)
+            registration = authority.get("registration")
+            if (
+                isinstance(registration, Mapping)
+                and registration.get("schema_version") == _REGISTRATION_V5_SCHEMA
+            ):
+                raise
         return _raw_result("forbidden", "forbidden_evidence", after)
 
 
@@ -8472,6 +8532,7 @@ def _reverify_registered_collector_static_prerequisites(
             first_session=sessions[0],
             registered_at=registered_at,
             observed_at=observed_at,
+            authority_mode=str(registration.get("authority_mode", "signed")),
         )
     except (FuturePanelRegistrationError, KeyError, TypeError, ValueError) as exc:
         raise CollectorContinuityError("collector static prerequisites drifted") from exc
@@ -8850,8 +8911,28 @@ def _verify_collector_snapshot_database(
     expected_step_state: Mapping[str, object],
     expected_logical_state: Mapping[str, object],
 ) -> None:
+    _verify_collector_snapshot_database_for_schedule(
+        path,
+        spec,
+        _validate_raw_step_spec(spec),
+        capability=capability,
+        expected_step_state=expected_step_state,
+        expected_logical_state=expected_logical_state,
+    )
+
+
+def _verify_collector_snapshot_database_for_schedule(
+    path: str,
+    spec: CollectorStepSpec,
+    frozen_schedule: _FrozenCollectorStepSchedule,
+    *,
+    capability: Mapping[str, object],
+    expected_step_state: Mapping[str, object],
+    expected_logical_state: Mapping[str, object],
+) -> None:
+    """Verify a private snapshot against an already retained schedule."""
+
     _reject_registered_collector_read_sidecars(path)
-    frozen_schedule = _validate_raw_step_spec(spec)
     opened = open_nofollow_regular(path)
     connection: sqlite3.Connection | None = None
     body_error: BaseException | None = None
@@ -9210,27 +9291,38 @@ def _read_registered_materialization_bytes(
     authority: Mapping[str, object],
     lease: CollectorPhaseLease,
     history: Sequence[Mapping[str, object]],
+    *,
+    retained_inputs: Mapping[str, object] | None = None,
 ) -> tuple[bytes, bytes]:
     registration_file = str(authority["registration_file"])
-    opened = open_nofollow_regular(registration_file)
-    try:
-        size = os.fstat(opened.descriptor).st_size
-        if size <= 0 or size > 1_048_576:
-            raise CollectorContinuityError("collector registration snapshot size is invalid")
-        registration_raw = os.pread(opened.descriptor, size, 0)
-        if len(registration_raw) != size:
-            raise CollectorContinuityError("collector registration snapshot was truncated")
-        verify_file_identity(registration_file, opened.identity)
-    finally:
-        opened.close()
+    if retained_inputs is None:
+        opened = open_nofollow_regular(registration_file)
+        try:
+            size = os.fstat(opened.descriptor).st_size
+            if size <= 0 or size > 1_048_576:
+                raise CollectorContinuityError("collector registration snapshot size is invalid")
+            registration_raw = os.pread(opened.descriptor, size, 0)
+            if len(registration_raw) != size:
+                raise CollectorContinuityError("collector registration snapshot was truncated")
+            verify_file_identity(registration_file, opened.identity)
+        finally:
+            opened.close()
+        lease.verify()
+        ledger_raw = _ledger_source_bytes(lease.ledger)
+    else:
+        _verify_retained_collector_materialization_inputs(
+            retained_inputs,
+            registration_file=registration_file,
+            database=str(authority["database_path"]),
+        )
+        registration_raw = getattr(retained_inputs["registration"], "raw")
+        ledger_raw = getattr(retained_inputs["ledger"], "raw")
     if (
         hashlib.sha256(registration_raw).hexdigest()
         != authority.get("registration_sha256")
         or decode_canonical_json_object(registration_raw) != authority.get("registration")
     ):
         raise CollectorContinuityError("collector registration snapshot drifted")
-    lease.verify()
-    ledger_raw = _ledger_source_bytes(lease.ledger)
     if parse_collector_ledger(ledger_raw) != tuple(history):
         raise CollectorContinuityError("collector ledger snapshot drifted")
     lease.verify()
@@ -9269,11 +9361,437 @@ def _reverify_collector_materialization_live_state(
     _reject_registered_collector_read_sidecars(schedule.database_path)
 
 
+def verify_registered_collector_materialization_complete(
+    registration_file: str | os.PathLike[str],
+    *,
+    database: str | os.PathLike[str],
+    _retained_inputs: Mapping[str, object] | None = None,
+) -> None:
+    """Reject a collector that is not a complete registered materialization."""
+
+    require_collector_continuity_health()
+    canonical_registration = lexical_absolute_path(
+        os.path.abspath(os.path.expanduser(os.fspath(registration_file)))
+    )
+    canonical_database = lexical_absolute_path(
+        os.path.abspath(os.path.expanduser(os.fspath(database)))
+    )
+    if _retained_inputs is not None:
+        _retained_collector_materialization(
+            _retained_inputs,
+            registration_file=canonical_registration,
+            database=canonical_database,
+        )
+        return
+    bootstrap = _read_registered_schedule_authority(canonical_registration)
+    if bootstrap.get("database_path") != canonical_database:
+        raise CollectorContinuityError(
+            "collector materialization database differs from registration"
+        )
+    ledger_path = bootstrap.get("ledger_path")
+    if not isinstance(ledger_path, str):
+        raise CollectorContinuityError("collector materialization ledger is invalid")
+    with acquire_collector_phase_lease(ledger_path) as lease:
+        _reject_registered_collector_read_sidecars(canonical_database)
+        specs = freeze_collector_step_schedule(
+            registration_file=canonical_registration
+        )
+        schedule = _FROZEN_COLLECTOR_STEP_SCHEDULES.get(
+            specs[0].schedule_sha256
+        )
+        if (
+            schedule is None
+            or schedule.database_path != canonical_database
+            or schedule.ledger_path != ledger_path
+            or schedule.ledger_identity != lease.verify()
+        ):
+            raise CollectorContinuityError(
+                "collector materialization schedule authority drifted"
+            )
+        authority = _read_bound_registration(canonical_registration)
+        if any(
+            authority.get(field) != bootstrap.get(field)
+            for field in (
+                "registration_sha256",
+                "database_path",
+                "ledger_path",
+                "ledger_identity",
+                "capability",
+                "registration",
+            )
+        ):
+            raise CollectorContinuityError("collector materialization authority drifted")
+        registration = authority.get("registration")
+        if (
+            isinstance(registration, Mapping)
+            and registration.get("schema_version") == _REGISTRATION_V5_SCHEMA
+        ):
+            _reverify_registered_collector_static_prerequisites(
+                authority,
+                observed_at=_raw_timestamp(
+                    _collector_attempt_now(), "materialization observation"
+                ),
+            )
+        capability = authority.get("capability")
+        if not isinstance(capability, Mapping):
+            raise CollectorContinuityError(
+                "collector materialization capability is invalid"
+            )
+        _, tail_state, _ = _complete_collector_materialization_history(
+            lease,
+            schedule,
+            registration_sha256=str(authority["registration_sha256"]),
+            database_uuid=str(capability["database_uuid"]),
+        )
+        with open_registered_collector_read_connection(specs[11]) as token:
+            live_state = snapshot_collector_step_state(token, specs[11])
+        if live_state != tail_state:
+            raise CollectorContinuityError("collector materialization live tail drifted")
+
+
+def _verify_retained_collector_materialization_inputs(
+    values: Mapping[str, object],
+    *,
+    registration_file: str,
+    database: str,
+) -> dict[str, bytes]:
+    if set(values) != {"registration", "database", "ledger", "prerequisites"}:
+        raise CollectorContinuityError("collector retained materialization inputs are invalid")
+    expected_paths = {
+        "registration": registration_file,
+        "database": database,
+        "ledger": default_collector_ledger_path(database),
+    }
+    retained_raw: dict[str, bytes] = {}
+
+    def verify_retained(
+        value: object, *, field: str, expected_path: str
+    ) -> bytes:
+        path = getattr(value, "path", None)
+        opened = getattr(value, "opened", None)
+        raw = getattr(value, "raw", None)
+        descriptor = getattr(opened, "descriptor", None)
+        identity = getattr(opened, "identity", None)
+        try:
+            canonical_path = lexical_absolute_path(os.fspath(path))
+        except (TypeError, ValueError) as exc:
+            raise CollectorContinuityError(
+                f"collector retained {field} path is invalid"
+            ) from exc
+        if canonical_path != expected_path or not isinstance(raw, bytes):
+            raise CollectorContinuityError(
+                f"collector retained {field} input is invalid"
+            )
+        if not isinstance(descriptor, int) or identity is None:
+            raise CollectorContinuityError(
+                f"collector retained {field} descriptor is invalid"
+            )
+        try:
+            status = os.fstat(descriptor)
+            observed = os.pread(descriptor, status.st_size, 0)
+            if len(observed) != status.st_size or observed != raw:
+                raise CollectorContinuityError(
+                    f"collector retained {field} content drifted"
+                )
+        except OSError as exc:
+            raise CollectorContinuityError(
+                f"collector retained {field} cannot be verified"
+            ) from exc
+        return raw
+
+    for retained_name, expected_path in expected_paths.items():
+        retained_raw[retained_name] = verify_retained(
+            values[retained_name], field=retained_name, expected_path=expected_path
+        )
+
+    registration = decode_canonical_json_object(retained_raw["registration"])
+    files = registration.get("prerequisite_files")
+    if (
+        not isinstance(files, Mapping)
+        or set(files) != {"source_receipts", "trading_calendar", "market_rules"}
+        or not isinstance(files["source_receipts"], list)
+        or len(files["source_receipts"]) != 2
+        or any(not isinstance(path, str) for path in files["source_receipts"])
+        or not isinstance(files["trading_calendar"], str)
+        or not isinstance(files["market_rules"], str)
+    ):
+        raise CollectorContinuityError("collector retained prerequisites are invalid")
+    prerequisites = values["prerequisites"]
+    if (
+        not isinstance(prerequisites, tuple)
+        or len(prerequisites) != 3
+        or not isinstance(prerequisites[0], tuple)
+        or len(prerequisites[0]) != 2
+    ):
+        raise CollectorContinuityError("collector retained prerequisites are invalid")
+    expected_prerequisites = (
+        ("source receipt 0", prerequisites[0][0], files["source_receipts"][0]),
+        ("source receipt 1", prerequisites[0][1], files["source_receipts"][1]),
+        ("calendar", prerequisites[1], files["trading_calendar"]),
+        ("market rules", prerequisites[2], files["market_rules"]),
+    )
+    for prerequisite_name, value, path in expected_prerequisites:
+        verify_retained(
+            value,
+            field=f"prerequisite {prerequisite_name}",
+            expected_path=path,
+        )
+    return retained_raw
+
+
+@dataclass(frozen=True)
+class _RetainedCollectorMaterialization:
+    registration_raw: bytes
+    database_raw: bytes
+    ledger_raw: bytes
+    authority: Mapping[str, object]
+    schedule: _FrozenCollectorStepSchedule
+    history: tuple[dict[str, object], ...]
+    tail_state: Mapping[str, object]
+    logical_state: Mapping[str, object]
+    capability: Mapping[str, object]
+
+
+def _retained_collector_materialization(
+    values: Mapping[str, object],
+    *,
+    registration_file: str,
+    database: str,
+) -> _RetainedCollectorMaterialization:
+    """Bind all materialization authority to one retained input lifecycle."""
+
+    retained_raw = _verify_retained_collector_materialization_inputs(
+        values,
+        registration_file=registration_file,
+        database=database,
+    )
+    authority = _decode_registered_schedule_authority(retained_raw["registration"])
+    if authority.get("database_path") != database:
+        raise CollectorContinuityError(
+            "collector materialization database differs from registration"
+        )
+    ledger_path = authority.get("ledger_path")
+    if ledger_path != default_collector_ledger_path(database):
+        raise CollectorContinuityError("collector materialization ledger is invalid")
+    capability = authority.get("capability")
+    if not isinstance(capability, Mapping):
+        raise CollectorContinuityError("collector materialization capability is invalid")
+    for name, capability_field in (
+        ("database", "database_identity"),
+        ("ledger", "ledger_identity"),
+    ):
+        expected = PhysicalIdentity.from_dict(capability[capability_field])
+        observed = getattr(getattr(values[name], "opened", None), "identity", None)
+        if observed != expected:
+            raise CollectorContinuityError(
+                f"collector retained {name} identity drifted"
+            )
+    history = parse_collector_ledger(retained_raw["ledger"])
+    _validate_registered_schedule_ledger(authority, history)
+    schedule = _build_collector_step_schedule(
+        authority, registration_file=registration_file
+    )
+    if (
+        schedule.database_path != database
+        or schedule.ledger_path != ledger_path
+        or schedule.ledger_identity
+        != PhysicalIdentity.from_dict(capability["ledger_identity"])
+    ):
+        raise CollectorContinuityError(
+            "collector materialization schedule authority drifted"
+        )
+    history, tail_state, logical_state = _validate_complete_collector_materialization_history(
+        history,
+        schedule,
+        registration_sha256=str(authority["registration_sha256"]),
+        database_uuid=str(capability["database_uuid"]),
+    )
+    return _RetainedCollectorMaterialization(
+        registration_raw=retained_raw["registration"],
+        database_raw=retained_raw["database"],
+        ledger_raw=retained_raw["ledger"],
+        authority=authority,
+        schedule=schedule,
+        history=history,
+        tail_state=tail_state,
+        logical_state=logical_state,
+        capability=capability,
+    )
+
+
+def _create_retained_collector_materialization_snapshot(
+    retained: _RetainedCollectorMaterialization,
+    *,
+    staging_directory: str | os.PathLike[str],
+) -> dict[str, object]:
+    """Materialize one snapshot entirely from retained collector inputs."""
+
+    staging_path, parent_fd, directory_fd, staging_leaf = (
+        _create_collector_snapshot_staging(staging_directory)
+    )
+    result: dict[str, object] | None = None
+    body_error: BaseException | None = None
+    try:
+        temporary_leaf = f".database-{secrets.token_hex(16)}.sqlite"
+        temporary_fd = create_exclusive_regular_file(directory_fd, temporary_leaf)
+        temporary_path = os.path.join(staging_path, temporary_leaf)
+        try:
+            os.fchmod(temporary_fd, 0o600)
+            if stat.S_IMODE(os.fstat(temporary_fd).st_mode) != 0o600:
+                raise CollectorContinuityError(
+                    "collector snapshot temporary database is not private"
+                )
+            temporary_identity = _verify_collector_snapshot_temp_identity(
+                temporary_fd, directory_fd, temporary_path
+            )
+            _write_all_collector_artifact(temporary_fd, retained.database_raw)
+            os.fsync(temporary_fd)
+            if _verify_collector_snapshot_temp_identity(
+                temporary_fd, directory_fd, temporary_path
+            ) != temporary_identity:
+                raise CollectorContinuityError(
+                    "collector snapshot database identity drifted during materialization"
+                )
+            database_sha256 = _sha256_open_descriptor(temporary_fd)
+            if database_sha256 != hashlib.sha256(retained.database_raw).hexdigest():
+                raise CollectorContinuityError("collector snapshot database content drifted")
+            _verify_collector_snapshot_database_for_schedule(
+                temporary_path,
+                retained.schedule.specs[11],
+                retained.schedule,
+                capability=retained.capability,
+                expected_step_state=retained.tail_state,
+                expected_logical_state=retained.logical_state,
+            )
+            try:
+                os.stat(database_sha256, dir_fd=directory_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise CollectorContinuityError(
+                    "collector snapshot database content address collides"
+                )
+            os.fchmod(temporary_fd, 0o400)
+            os.fsync(temporary_fd)
+            os.replace(
+                temporary_leaf,
+                database_sha256,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+            )
+            os.fsync(directory_fd)
+        finally:
+            os.close(temporary_fd)
+
+        snapshot_database_path = os.path.join(staging_path, database_sha256)
+        _reject_registered_collector_read_sidecars(snapshot_database_path)
+        snapshot_opened = open_nofollow_regular(snapshot_database_path)
+        try:
+            if (
+                stat.S_IMODE(os.fstat(snapshot_opened.descriptor).st_mode) != 0o400
+                or _sha256_open_descriptor(snapshot_opened.descriptor) != database_sha256
+            ):
+                raise CollectorContinuityError(
+                    "collector snapshot database finalization drifted"
+                )
+        finally:
+            snapshot_opened.close()
+
+        registration_path = _write_collector_snapshot_artifact(
+            directory_fd, staging_path, retained.registration_raw
+        )
+        ledger_snapshot_path = _write_collector_snapshot_artifact(
+            directory_fd, staging_path, retained.ledger_raw
+        )
+        database_reference = {
+            "kind": SNAPSHOT_DATABASE_REFERENCE_KIND,
+            "identifier": database_sha256,
+            "schema_version": SNAPSHOT_DATABASE_REFERENCE_SCHEMA,
+        }
+        tail = retained.history[-1]
+        closure = validate_collector_continuity_closure(
+            {
+                "schema_version": CLOSURE_SCHEMA,
+                "live_database_identity": retained.capability["database_identity"],
+                "live_ledger_identity": retained.capability["ledger_identity"],
+                "database_uuid": retained.capability["database_uuid"],
+                "registration_sha256": retained.authority["registration_sha256"],
+                "ledger_head": {
+                    "seq": tail["seq"],
+                    "event_type": tail["event_type"],
+                    "event_sha256": tail["event_sha256"],
+                },
+                "logical_state": retained.tail_state,
+                "snapshot_database_reference": database_reference,
+            }
+        )
+        closure_raw = canonical_json_bytes(closure)
+        closure_path = _write_collector_snapshot_artifact(
+            directory_fd, staging_path, closure_raw
+        )
+        closure_sha256 = hashlib.sha256(closure_raw).hexdigest()
+        os.fsync(directory_fd)
+        os.fsync(parent_fd)
+        result = {
+            "staging_directory": staging_path,
+            "database": {
+                "path": snapshot_database_path,
+                "reference": database_reference,
+            },
+            "registration": {
+                "path": registration_path,
+                "sha256": hashlib.sha256(retained.registration_raw).hexdigest(),
+            },
+            "ledger": {
+                "path": ledger_snapshot_path,
+                "sha256": hashlib.sha256(retained.ledger_raw).hexdigest(),
+            },
+            "continuity_closure": {
+                "path": closure_path,
+                "reference": {
+                    "kind": CONTINUITY_CLOSURE_REFERENCE_KIND,
+                    "identifier": closure_sha256,
+                    "schema_version": CLOSURE_SCHEMA,
+                },
+            },
+        }
+    except BaseException as exc:
+        body_error = exc
+    cleanup_error: BaseException | None = None
+    if body_error is not None:
+        try:
+            _cleanup_collector_snapshot_staging(parent_fd, directory_fd, staging_leaf)
+        except BaseException as exc:
+            cleanup_error = exc
+    close_errors: list[BaseException] = []
+    for descriptor in (directory_fd, parent_fd):
+        try:
+            os.close(descriptor)
+        except BaseException as exc:
+            close_errors.append(exc)
+    for exc in close_errors:
+        cleanup_error = (
+            exc
+            if cleanup_error is None
+            else _combine_collector_context_errors(cleanup_error, exc)
+        )
+    if body_error is not None:
+        if cleanup_error is not None:
+            raise _combine_collector_context_errors(body_error, cleanup_error)
+        raise body_error
+    if cleanup_error is not None:
+        raise cleanup_error
+    if result is None:
+        raise CollectorContinuityError("collector materialization snapshot is unavailable")
+    return result
+
+
 def create_registered_collector_materialization_snapshot(
     registration_file: str | os.PathLike[str],
     *,
     database: str | os.PathLike[str],
     staging_directory: str | os.PathLike[str],
+    _retained_inputs: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Create one durable snapshot in a new private child of the staging parent."""
 
@@ -9284,6 +9802,24 @@ def create_registered_collector_materialization_snapshot(
     canonical_database = lexical_absolute_path(
         os.path.abspath(os.path.expanduser(os.fspath(database)))
     )
+    if _retained_inputs is not None:
+        retained = _retained_collector_materialization(
+            _retained_inputs,
+            registration_file=canonical_registration,
+            database=canonical_database,
+        )
+        return _create_retained_collector_materialization_snapshot(
+            retained, staging_directory=staging_directory
+        )
+
+    def reverify_retained_inputs() -> None:
+        if _retained_inputs is not None:
+            _verify_retained_collector_materialization_inputs(
+                _retained_inputs,
+                registration_file=canonical_registration,
+                database=canonical_database,
+            )
+
     bootstrap = _read_registered_schedule_authority(canonical_registration)
     if bootstrap.get("database_path") != canonical_database:
         raise CollectorContinuityError("collector materialization database differs from registration")
@@ -9292,6 +9828,7 @@ def create_registered_collector_materialization_snapshot(
         raise CollectorContinuityError("collector materialization ledger is invalid")
     lease = acquire_collector_phase_lease(ledger_path)
     with lease:
+        reverify_retained_inputs()
         _reject_registered_collector_read_sidecars(canonical_database)
         specs = freeze_collector_step_schedule(
             registration_file=canonical_registration
@@ -9319,6 +9856,17 @@ def create_registered_collector_materialization_snapshot(
             )
         ):
             raise CollectorContinuityError("collector materialization authority drifted")
+        registration = authority.get("registration")
+        if (
+            isinstance(registration, Mapping)
+            and registration.get("schema_version") == _REGISTRATION_V5_SCHEMA
+        ):
+            _reverify_registered_collector_static_prerequisites(
+                authority,
+                observed_at=_raw_timestamp(
+                    _collector_attempt_now(), "materialization observation"
+                ),
+            )
         capability = authority.get("capability")
         if not isinstance(capability, Mapping):
             raise CollectorContinuityError("collector materialization capability is invalid")
@@ -9332,6 +9880,7 @@ def create_registered_collector_materialization_snapshot(
             live_state = snapshot_collector_step_state(token, specs[11])
         if live_state != tail_state:
             raise CollectorContinuityError("collector materialization live tail drifted")
+        reverify_retained_inputs()
 
         staging_path, parent_fd, directory_fd, staging_leaf = (
             _create_collector_snapshot_staging(staging_directory)
@@ -9381,6 +9930,7 @@ def create_registered_collector_materialization_snapshot(
                     expected_step_state=tail_state,
                     expected_logical_state=logical_state,
                 )
+                reverify_retained_inputs()
                 try:
                     os.stat(
                         database_sha256,
@@ -9427,8 +9977,9 @@ def create_registered_collector_materialization_snapshot(
                 history=history,
                 expected_step_state=tail_state,
             )
+            reverify_retained_inputs()
             registration_raw, ledger_raw = _read_registered_materialization_bytes(
-                authority, lease, history
+                authority, lease, history, retained_inputs=_retained_inputs
             )
             registration_path = _write_collector_snapshot_artifact(
                 directory_fd, staging_path, registration_raw
@@ -9444,6 +9995,7 @@ def create_registered_collector_materialization_snapshot(
                 history=history,
                 expected_step_state=tail_state,
             )
+            reverify_retained_inputs()
 
             database_reference = {
                 "kind": SNAPSHOT_DATABASE_REFERENCE_KIND,
@@ -9474,6 +10026,7 @@ def create_registered_collector_materialization_snapshot(
             closure_sha256 = hashlib.sha256(closure_raw).hexdigest()
             os.fsync(directory_fd)
             os.fsync(parent_fd)
+            reverify_retained_inputs()
             result = {
                 "staging_directory": staging_path,
                 "database": {

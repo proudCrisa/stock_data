@@ -13,6 +13,8 @@ from stockdata.collector_continuity import (
 from stockdata.forward_panel_capture import capture_phase  # noqa: F401 - audit sentinel
 from stockdata.future_panel_registration import (
     REGISTRATION_SCHEMA,
+    TRUSTED_LOCAL_AUTHORITY_MODE,
+    TRUSTED_LOCAL_REGISTRATION_SCHEMA,
     reverify_registration_prerequisites,  # noqa: F401 - retained compatibility surface
 )
 
@@ -35,6 +37,7 @@ _EXPECTED_KEYS = {
     "prerequisites",
     "prerequisites_sha256",
 }
+_TRUSTED_LOCAL_EXPECTED_KEYS = _EXPECTED_KEYS | {"authority_mode"}
 class RegisteredPanelCaptureError(ValueError):
     """Raised when a capture request does not exactly match its registration."""
 
@@ -76,9 +79,16 @@ def _read_registration(path: str | Path) -> Mapping[str, object]:
         raise RegisteredPanelCaptureError("registration_file schema is incomplete")
     if raw != _canonical(dict(value)):
         raise RegisteredPanelCaptureError("registration_file must use canonical JSON bytes")
-    if value.get("schema_version") != REGISTRATION_SCHEMA:
+    schema = value.get("schema_version")
+    if schema not in {REGISTRATION_SCHEMA, TRUSTED_LOCAL_REGISTRATION_SCHEMA}:
         raise RegisteredPanelCaptureError("registration has an unsupported schema")
-    if set(value) != _EXPECTED_KEYS:
+    expected_keys = (
+        _EXPECTED_KEYS if schema == REGISTRATION_SCHEMA else _TRUSTED_LOCAL_EXPECTED_KEYS
+    )
+    if set(value) != expected_keys or (
+        schema == TRUSTED_LOCAL_REGISTRATION_SCHEMA
+        and value.get("authority_mode") != TRUSTED_LOCAL_AUTHORITY_MODE
+    ):
         raise RegisteredPanelCaptureError("registration_file schema is incomplete")
     return value
 
