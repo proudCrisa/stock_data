@@ -1,0 +1,21 @@
+scripts/fetch_baostock_calendar.py
+  s_a2350370dd4250::t_60cfb3f5682a2d 2,10,21-23,25-34
+tests/test_execution_readiness.py
+  s_a2350370dd4250::t_4b699eac6038b5 65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "3bce75a75dce6f24dbf5f2c82fa4a9a8c930dd74",
+  "prompts": {},
+  "sessions": {
+    "s_a2350370dd4250": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a04275-1bc7-7c10-bfdf-c6346f9b4168",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
