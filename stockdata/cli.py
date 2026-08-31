@@ -19,8 +19,15 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 
+class _StoreOnce(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None) -> None:
+        if getattr(namespace, self.dest, None) is not None:
+            parser.error(f"{option_string} may only be provided once")
+        setattr(namespace, self.dest, values)
+
+
 def build_params(argv: list) -> dict:
-    parser = argparse.ArgumentParser(prog="stockdata-cli")
+    parser = argparse.ArgumentParser(prog="stockdata-cli", allow_abbrev=False)
     sub = parser.add_subparsers(dest="kind", required=True)
 
     q = sub.add_parser("history")
@@ -109,9 +116,30 @@ def build_params(argv: list) -> dict:
     provider_materialize.add_argument("--component-authority", action="append")
     provider_materialize.add_argument("--source", required=True)
 
+    registered_provider_materialize = sub.add_parser(
+        "rqgm-provider-materialize-registered"
+    )
+    registered_provider_materialize.add_argument("--registration-file", required=True)
+    registered_provider_materialize.add_argument("--database", required=True)
+    registered_provider_materialize.add_argument("--output-dir", required=True)
+
+    research_replay = sub.add_parser(
+        "rqgm-provider-research-replay", allow_abbrev=False
+    )
+    research_replay.add_argument("--bundle-file", required=True, action=_StoreOnce)
+    research_replay.add_argument(
+        "--policy-request-file", required=True, action=_StoreOnce
+    )
+
     future_prepare = sub.add_parser("future-panel-prepare")
     future_prepare.add_argument("--database", required=True)
     future_prepare.add_argument("--panel-file", required=True)
+
+    local_prerequisites = sub.add_parser("future-panel-local-prerequisites")
+    local_prerequisites.add_argument("--panel-file", required=True)
+    local_prerequisites.add_argument("--output-dir", required=True)
+    local_prerequisites.add_argument("--calendar-facts-file", required=True)
+    local_prerequisites.add_argument("--market-rules-facts-file", required=True)
 
     future_registration = sub.add_parser("future-panel-register")
     future_registration.add_argument("--output", required=True)
@@ -119,9 +147,14 @@ def build_params(argv: list) -> dict:
     future_registration.add_argument("--panel-file", required=True)
     future_registration.add_argument("--source-receipt", action="append", required=True)
     future_registration.add_argument("--calendar-file", required=True)
-    future_registration.add_argument("--calendar-authority", required=True)
+    future_registration.add_argument("--calendar-authority")
     future_registration.add_argument("--market-rules-file", required=True)
-    future_registration.add_argument("--market-rules-authority", required=True)
+    future_registration.add_argument("--market-rules-authority")
+    future_registration.add_argument(
+        "--authority-mode",
+        choices=("signed", "trusted_local_mechanical"),
+        default="signed",
+    )
 
     registered_capture = sub.add_parser("registered-panel-capture")
     registered_capture.add_argument("--registration-file", required=True)
@@ -238,14 +271,43 @@ def build_params(argv: list) -> dict:
             "component_authority_files": component_authority_files,
             "source": args.source,
         }
+    if args.kind == "rqgm-provider-materialize-registered":
+        return {
+            "kind": "rqgm_provider_materialize_registered",
+            "registration_file": args.registration_file,
+            "database": args.database,
+            "output_dir": args.output_dir,
+        }
+    if args.kind == "rqgm-provider-research-replay":
+        return {
+            "kind": "rqgm_provider_research_replay",
+            "bundle_file": args.bundle_file,
+            "policy_request_file": args.policy_request_file,
+        }
     if args.kind == "future-panel-prepare":
         return {
             "kind": "future_panel_prepare",
             "database_file": args.database,
             "panel_file": args.panel_file,
         }
-    if args.kind == "future-panel-register":
+    if args.kind == "future-panel-local-prerequisites":
         return {
+            "kind": "future_panel_local_prerequisites",
+            "panel_file": args.panel_file,
+            "output_dir": args.output_dir,
+            "calendar_facts_file": args.calendar_facts_file,
+            "market_rules_facts_file": args.market_rules_facts_file,
+        }
+    if args.kind == "future-panel-register":
+        if args.authority_mode == "signed" and (
+            args.calendar_authority is None or args.market_rules_authority is None
+        ):
+            parser.error("signed future-panel-register requires both authority files")
+        if args.authority_mode == "trusted_local_mechanical" and (
+            args.calendar_authority is not None or args.market_rules_authority is not None
+        ):
+            parser.error("trusted_local_mechanical does not accept authority files")
+        params = {
             "kind": "future_panel_register",
             "output_file": args.output,
             "database_file": args.database,
@@ -256,6 +318,9 @@ def build_params(argv: list) -> dict:
             "market_rules_file": args.market_rules_file,
             "market_rules_authority_file": args.market_rules_authority,
         }
+        if args.authority_mode != "signed":
+            params["authority_mode"] = args.authority_mode
+        return params
     if args.kind == "registered-panel-capture":
         return {
             "kind": "registered_panel_capture",
@@ -475,12 +540,66 @@ def main(argv=None):
         json.dump(out, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
         return 0
+    if params["kind"] == "rqgm_provider_materialize_registered":
+        from .provider_materializer import materialize_registered_provider_bundle
+
+        bundle_file = materialize_registered_provider_bundle(
+            registration_file=params["registration_file"],
+            database=params["database"],
+            output_dir=params["output_dir"],
+        )
+        json.dump({"bundle_file": str(bundle_file)}, sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return 0
+    if params["kind"] == "rqgm_provider_research_replay":
+        try:
+            request_raw = Path(params["policy_request_file"]).read_bytes()
+            request = json.loads(request_raw.decode("ascii"))
+            canonical_request = json.dumps(
+                request,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("ascii")
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise ValueError("research replay policy request file is invalid") from exc
+        if request_raw != canonical_request:
+            raise ValueError("research replay policy request file is not canonical")
+        from .provider_export import run_trusted_local_research_replay_bridge
+
+        out = run_trusted_local_research_replay_bridge(
+            params["bundle_file"], policy_request=request
+        )
+        sys.stdout.write(
+            json.dumps(
+                out,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            + "\n"
+        )
+        return 0
     if params["kind"] == "future_panel_prepare":
         from .future_panel_registration import prepare_future_collector_database
 
         out = prepare_future_collector_database(
             database_file=params["database_file"],
             panel_file=params["panel_file"],
+        )
+        json.dump(out, sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return 0
+    if params["kind"] == "future_panel_local_prerequisites":
+        from .trusted_local_prerequisites import materialize_trusted_local_prerequisites
+
+        out = materialize_trusted_local_prerequisites(
+            panel_file=params["panel_file"],
+            output_dir=params["output_dir"],
+            calendar_facts_file=params["calendar_facts_file"],
+            market_rules_facts_file=params["market_rules_facts_file"],
         )
         json.dump(out, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
@@ -497,6 +616,7 @@ def main(argv=None):
             calendar_authority_file=params["calendar_authority_file"],
             market_rules_file=params["market_rules_file"],
             market_rules_authority_file=params["market_rules_authority_file"],
+            authority_mode=params.get("authority_mode", "signed"),
         )
         json.dump(out, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
@@ -554,6 +674,21 @@ def main(argv=None):
         out = _run_cache_command(params, db, writer_token)
         json.dump(out, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
+        # 写入型命令（update / forward-capture 等）结果中 errors>0 时返回非零，
+        # 让 launchd/cron/CI 能感知失败；读取型命令不受影响。
+        if (
+            isinstance(out, dict)
+            and params["kind"]
+            in {
+                "update",
+                "forward_capture",
+                "forward_context_capture",
+                "forward_corporate_actions_capture",
+                "registered_panel_capture",
+            }
+            and out.get("errors", 0) > 0
+        ):
+            return 1
         return 0
     finally:
         if writer_token is not None:

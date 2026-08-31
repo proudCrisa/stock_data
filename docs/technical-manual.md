@@ -17,7 +17,7 @@ SQLite 缓存的日线 OHLCV 服务，drop-in 替换 ffd.findesk.cn 的 FFD MCP 
 #### 规模指标
 - 115 个 Python 文件 · 49 个 stockdata 模块
 - 60+ 测试文件 · 全量套件约 17 分钟
-- 3 个价格身份 · 570 个去重代码 · 至 2026-08-24
+- 3 个价格身份 · 577 个去重代码 · 生产身份至 2026-08-28
 
 ## 整体架构
 
@@ -51,11 +51,11 @@ SQLite 缓存的日线 OHLCV 服务，drop-in 替换 ffd.findesk.cn 的 FFD MCP 
 
 <p><img src="assets/technical-manual/05-db-schema.svg" width="1000"/></p>
 
-### 价格身份登记册（2026-08-25 实库口径）
+### 价格身份登记册（2026-08-31 实库口径）
 
 | 身份 (source · mode · version) | 代码数 | 数据区间 | 角色 | 读写策略 |
 | --- | --- | --- | --- | --- |
-| `baostock · qfq · baostock-adjustflag-2` | 91 | 2015-01-05 → 2026-08-24 | 生产读取路径唯一身份 | 可读可写；`sync_symbols` 日更 |
+| `baostock · qfq · baostock-adjustflag-2` | 104 | 2015-01-05 → 2026-08-28 | 生产读取路径唯一身份 | 可读可写；`sync_symbols` 日更 |
 | `tonghuashun · qfq · ths-qfq-v1` | 473 | 2023-05-29 → 2026-08-14 | 离线宇宙（研究级） | 只读冻结；不回补、不合并实时 bar |
 | `wind · qfq · wind-fwd-v1` | 501 | 2023-12-01 → 2026-08-24 | 研究 / 跨源验证 | 只读；`ingest_wind_csv` 校验入库，缺 coverage 不自证 |
 | `tencent · raw · tencent-qt-daily-v1` | 前瞻面板 | 注册日起前向 | 采集器 raw 价格 + 回执 | 仅注册采集器写；finalized 行 append-only |
@@ -156,48 +156,31 @@ stockdata-cli rqgm-provider-export --bundle-file out/bundle/bundle.json   # 只�
 | 研究工件 | `scripts/verify_research_artifacts.py` · `validate_against_findesk.py` | 哈希与行数一致 | 变更后 |
 | 证据链 | `rqgm-provider-export` 对存量 bundle 重跑字节级复验 | ready 判定与物化时一致 | 发布前必跑 |
 
-2026-08-25 实库查询口径：baostock 身份 91 代码（2015-01-05 → 2026-08-24，无 tail lag）；wind 身份 501 代码（2023-12-01 → 2026-08-24，2 只停牌正确跳过）；tonghuashun 身份 473 代码（2023-05-29 → 2026-08-14，只读冻结，各代码深度不一）。全库 570 个去重代码，28 个 wind/baostock 重叠代码收盘价偏差中位数 0.0000%。
+2026-08-31 实库查询口径：baostock 身份 104 代码（2015-01-05 → 2026-08-28，无 tail lag；面板文件 config/panel-baostock.txt 与之对齐，launchd 日更）；wind 身份 501 代码（2023-12-01 → 2026-08-24，研究只读，待人工 ingest 追平）；tonghuashun 身份 473 代码（2023-05-29 → 2026-08-14，只读冻结，各代码深度不一）。全库 577 个去重代码，28 个 wind/baostock 重叠代码收盘价偏差中位数 0.0000%（2026-08-24 比对）。
 
 ## 自动化持续更新机制
 
-推荐用 launchd（macOS 原生）承载三类定时任务；所有任务共享三条守卫：只写各自身份、end 不超过最新 finalized 交易日、任何校验失败以非零退出并保留现场（不记 coverage）。
+launchd（macOS 原生）承载定时任务；所有任务共享三条守卫：只写各自身份、end 不超过最新 finalized 交易日、任何校验失败以非零退出并保留现场（不记 coverage）。
 
-| 任务 | 调度 | 内容 | 失败处理 |
+| 任务 | 调度 | 内容 | 状态 |
 | --- | --- | --- | --- |
-| `daily-sync` | 交易日 17:30 | baostock 身份 91 代码 `update` 增量至最新 finalized 日 | 下一交易日补跑（缺口语义自动追平） |
-| `wind-ingest` | 交易日 21:00 | 单 worker 串行拉前一日 wind 数据（501 代码 ≈ 35 分钟）→ `ingest_wind_csv` | 脏文件留原地，人工介入 |
-| `weekly-audit` | 周日 09:00 | `audit_cache_completeness` + 跨身份偏差比对 + 异常行扫描 | 报告落盘 `docs/changes/`，异常即告警 |
-| `monthly-backup` | 每月 1 日 06:00 | `scripts/backup_encrypt.py` 加密备份 SQLite + 账本 | 保留最近 3 份 |
+| `daily-sync` | 周一至周五 17:35 | `scripts/daily_sync.sh`：baostock 身份 104 代码 `update` 增量（start = 当日-30 天，end = 最新 finalized 日） | **已部署**（2026-08-26，8/27、8/28 两次实盘运行均 exit=0） |
+| `wind-ingest` | 交易日 21:00 | 单 worker 串行拉前一日 wind 数据（501 代码 ≈ 35 分钟）→ `ingest_wind_csv` | 未部署，半自动人工触发 |
+| `weekly-audit` | 周日 09:00 | `audit_cache_completeness` + 跨身份偏差比对 + 异常行扫描 | 未部署 |
+| `monthly-backup` | 每月 1 日 06:00 | `scripts/backup_encrypt.py` 加密备份 SQLite + 账本 | 未部署（脚本需交互密码，暂不能无人值守） |
 
-### launchd 示例（~/Library/LaunchAgents/local.stockdata.daily-sync.plist）
+### daily-sync 部署明细（2026-08-26 起生效）
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>local.stockdata.daily-sync</string>
-  <key>ProgramArguments</key><array>
-    <string>/Users/cdzhangxueli/workspaces/stock_data/.venv/bin/python</string>
-    <string>-m</string><string>stockdata.cli</string>
-    <string>update</string><string>--codes-file</string>
-    <string>/Users/cdzhangxueli/workspaces/stock_data/config/panel-baostock.txt</string>
-    <string>--start</string><string>AUTO</string>
-  </array>
-  <key>StartCalendarInterval</key><dict>
-    <key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer>
-    <key>Weekday</key><integer>1</integer>
-  </dict>
-  <key>StandardOutPath</key><string>/tmp/stockdata-daily-sync.log</string>
-  <key>StandardErrorPath</key><string>/tmp/stockdata-daily-sync.err</string>
-</dict></plist>
-# 加载：launchctl load ~/Library/LaunchAgents/local.stockdata.daily-sync.plist
-# 注：plist 需按周一至周五各配一条 StartCalendarInterval（或改用 cron：30 17 * * 1-5）
-```
+- plist：`~/Library/LaunchAgents/local.stockdata.daily-sync.plist`（已 `launchctl load`，`launchctl list | grep stockdata` 可见）
+- 包装脚本：`scripts/daily_sync.sh`，负责：单实例锁（`~/.stockdata/daily-sync.lock`，防与手动同步撞车）、计算滚动 start、日志落盘、失败时 macOS 系统通知
+- 日志：`~/.stockdata/logs/daily-sync.log`（同步输出）+ `daily-sync.launchd.log/.err`（launchd 本身）
+- 非交易日空跑无害：baostock 无数据返回即零增量；漏跑由 30 天滚动窗口自动追平
+- 卸载：`launchctl unload ~/Library/LaunchAgents/local.stockdata.daily-sync.plist`
 
-- **幂等性是自动化前提**：覆盖区间 MIN/MAX 合并 + 缺口日历语义，使任何漏跑都能被下一次运行自动追平，无需补偿逻辑。
-- **fail-closed 兜底**：物化/导出/入库任一环校验失败即非零退出且不留半成品；自动化只负责触发，正确性由验证器保证。
+- **幂等性是自动化前提**：覆盖区间 MIN/MAX 合并 + 30 天滚动窗口，使任何漏跑都能被后续运行自动追平，无需补偿逻辑。
 - **Wind 通道保持半自动**：MCP datasource 有调用配额与限流，批量回填沿用"子代理串行 + 节奏守卫"模式，不并入无人值守任务。
 - **codebase-memory 索引**：代码结构索引（`Users-cdzhangxueli-workspaces-stock_data`）在重大提交后手动重建；本说明书的架构/时序/物理模型图可由索引重新生成校准。
+- **fail-closed 兜底**（2026-08-26 加固）：入库前 bar 级校验（价格为正且有限、OHLC 关系、volume 非负，脏行整批拒收）；baostock 空字段不再写成 0.0 假 bar；历史 no_data 区间不再扩展 coverage（假完整已封）；拉取失败抛 `HistoryFetchError` 向上传播；CLI 写入型命令 errors>0 时非零退出；非 collector 连接 busy_timeout=30s。
 
 ---
 

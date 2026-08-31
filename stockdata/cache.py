@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -88,6 +89,18 @@ _BAOSTOCK_VERSIONS = {
     "raw": "baostock-adjustflag-3",
 }
 
+_NON_COLLECTOR_BUSY_TIMEOUT_MS = 30_000
+
+
+class InvalidBarError(ValueError):
+    """Bar 级校验失败时抛出，携带 code、date 与原因。"""
+
+    def __init__(self, code: str, bar_date: str, reason: str):
+        self.code = code
+        self.bar_date = bar_date
+        self.reason = reason
+        super().__init__(f"invalid bar {code}@{bar_date}: {reason}")
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -117,6 +130,10 @@ class Cache:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.path))
         self._conn.row_factory = sqlite3.Row
+        if not self._collector_marked:
+            self._conn.execute(
+                f"PRAGMA busy_timeout={_NON_COLLECTOR_BUSY_TIMEOUT_MS}"
+            )
         try:
             if self._collector_marked:
                 from .collector_continuity import verify_collector_authority_schema
@@ -231,6 +248,44 @@ class Cache:
     def schema_version(self) -> int:
         return int(self._conn.execute("PRAGMA user_version").fetchone()[0])
 
+    @staticmethod
+    def _validate_bar(code: str, bar: dict) -> None:
+        """Bar 级完整性校验：拒绝任何脏数据进入 daily 表。"""
+        bar_date = bar.get("date")
+        try:
+            date.fromisoformat(bar_date)
+        except (TypeError, ValueError):
+            raise InvalidBarError(
+                code, str(bar_date), "date must be a valid YYYY-MM-DD string"
+            )
+
+        def _finite(value):
+            return isinstance(value, (int, float)) and math.isfinite(value)
+
+        price_fields = ("open", "high", "low", "close")
+        for field in price_fields:
+            value = bar.get(field)
+            if not _finite(value) or value <= 0:
+                raise InvalidBarError(
+                    code, bar_date, f"{field} must be positive and finite"
+                )
+
+        open_, high, low, close = (
+            bar["open"], bar["high"], bar["low"], bar["close"]
+        )
+        if high < low:
+            raise InvalidBarError(code, bar_date, "high must be >= low")
+        if high < open_ or high < close:
+            raise InvalidBarError(code, bar_date, "high must be >= open and close")
+        if low > open_ or low > close:
+            raise InvalidBarError(code, bar_date, "low must be <= open and close")
+
+        volume = bar.get("volume")
+        if not _finite(volume) or volume < 0:
+            raise InvalidBarError(
+                code, bar_date, "volume must be non-negative and finite"
+            )
+
     def upsert(
         self,
         code: str,
@@ -271,6 +326,8 @@ class Cache:
         for bar in bars:
             if "is_final" in bar and not isinstance(bar["is_final"], bool):
                 raise ValueError("bar is_final must be a bool")
+        for bar in bars:
+            self._validate_bar(code, bar)
         try:
             with self._conn:
                 receipt_ids = {}

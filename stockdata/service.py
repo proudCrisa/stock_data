@@ -14,6 +14,10 @@ from .finalization import latest_finalized_date
 from .ticker import normalize
 
 
+class HistoryFetchError(RuntimeError):
+    """HistoryService 主源拉取失败时抛出，携带原始异常上下文。"""
+
+
 class HistoryService:
     def __init__(self, cache: Cache, primary_fetch=None,
                  fallback_fetch=None, today_fetch=None, *,
@@ -27,7 +31,9 @@ class HistoryService:
         if primary_fetch is not None:
             self._primary = primary_fetch
         elif source == "baostock":
-            self._primary = _default_primary
+            self._primary = lambda code, start, end: _default_primary(
+                code, start, end, adjustment_mode=adjustment_mode
+            )
         else:
             # 非 baostock 身份默认只读：默认 fetcher 是 baostock 取数，
             # 若放任回补会把 baostock 数据误标成其他身份（复权混源）。
@@ -35,11 +41,11 @@ class HistoryService:
         self._fallback = fallback_fetch
         if today_fetch is not None:
             self._today = today_fetch
-        elif source == "baostock":
+        elif source == "baostock" and adjustment_mode == "qfq":
             self._today = _default_today
         else:
-            # 非 baostock 身份默认不合并腾讯实时 bar：
-            # 「只读本地缓存」契约下返回序列不应混入异源行。
+            # 非 baostock 以及 raw/hfq 身份都不合并腾讯实时 bar，避免异源
+            # intraday 行进入单一复权身份的历史序列。
             self._today = _none_today
         self.source = source
         self.adjustment_mode = adjustment_mode
@@ -133,23 +139,17 @@ class HistoryService:
         return rows
 
     def _fetch_gap(self, code, gstart, gend) -> list[dict]:
-        """Fetch one gap without crossing adjustment modes or versions."""
+        """Fetch one gap without crossing adjustment modes or versions.
+
+        失败直接向上传播，不再静默吞异常返回空列表。
+        """
         try:
             return self._primary(code, gstart, gend)
-        except Exception:
-            pass
-        fallback_matches = (
-            self._fallback is not None
-            and self.fallback_source == self.source
-            and self.fallback_adjustment_mode == self.adjustment_mode
-            and self.fallback_adjustment_version == self.adjustment_version
-        )
-        if fallback_matches:
-            try:
-                return self._fallback(code)
-            except Exception:
-                pass
-        return []
+        except Exception as exc:
+            raise HistoryFetchError(
+                f"failed to fetch {code} [{gstart},{gend}] from "
+                f"{self.source}/{self.adjustment_mode}/{self.adjustment_version}"
+            ) from exc
 
 
 def _merge_today(rows, bar, start, end):
@@ -172,9 +172,11 @@ def _none_today(code):
     return None
 
 
-def _default_primary(code, start, end):
+def _default_primary(code, start, end, *, adjustment_mode="qfq"):
     from .fetch_baostock import fetch_baostock
-    return fetch_baostock(code, start, end)
+    return fetch_baostock(
+        code, start, end, adjustment_mode=adjustment_mode
+    )
 
 
 def _default_today(code):

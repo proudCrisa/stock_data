@@ -329,3 +329,80 @@ class TestBuildParams:
             "signal_adjustment_version": None,
             "panel_file": "/tmp/panel.json",
         }
+
+
+class TestWriteCommandExitCode:
+    def test_update_returns_nonzero_when_sync_reports_errors(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        from stockdata import cli
+
+        def fake_sync(cache, codes, start, end, *, adjustment_mode="qfq"):
+            return {
+                "start": start,
+                "end": end,
+                "source": "baostock",
+                "adjustment_mode": adjustment_mode,
+                "adjustment_version": "baostock-adjustflag-2",
+                "symbols": [
+                    {
+                        "code": "600519.SH",
+                        "status": "error",
+                        "start": start,
+                        "end": end,
+                        "written": 0,
+                        "error": "boom",
+                    }
+                ],
+                "synced": 0,
+                "up_to_date": 0,
+                "errors": 1,
+            }
+
+        monkeypatch.setattr("stockdata.sync.sync_symbols", fake_sync)
+        monkeypatch.setenv("STOCKDATA_DB", str(tmp_path / "cli.sqlite"))
+
+        rc = cli.main([
+            "update", "--codes", "600519.SH",
+            "--start", "2024-01-01", "--end", "2024-01-07",
+        ])
+        assert rc == 1
+        out = json.loads(capsys.readouterr().out)
+        assert out["errors"] == 1
+
+    def test_update_returns_zero_when_sync_succeeds(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        from stockdata import cli
+
+        def fake_sync(cache, codes, start, end, *, adjustment_mode="qfq"):
+            return {
+                "start": start,
+                "end": end,
+                "source": "baostock",
+                "adjustment_mode": adjustment_mode,
+                "adjustment_version": "baostock-adjustflag-2",
+                "symbols": [
+                    {
+                        "code": "600519.SH",
+                        "status": "synced",
+                        "start": start,
+                        "end": end,
+                        "written": 2,
+                    }
+                ],
+                "synced": 1,
+                "up_to_date": 0,
+                "errors": 0,
+            }
+
+        monkeypatch.setattr("stockdata.sync.sync_symbols", fake_sync)
+        monkeypatch.setenv("STOCKDATA_DB", str(tmp_path / "cli.sqlite"))
+
+        rc = cli.main([
+            "update", "--codes", "600519.SH",
+            "--start", "2024-01-01", "--end", "2024-01-07",
+        ])
+        assert rc == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["errors"] == 0

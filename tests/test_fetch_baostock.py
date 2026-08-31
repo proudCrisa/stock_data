@@ -55,13 +55,30 @@ class TestParseRows:
     def test_empty_rows(self):
         assert _parse_rows(FIELDS, []) == []
 
-    def test_blank_volume_becomes_zero(self):
-        # baostock 停牌日可能返回空字符串字段
+    def test_blank_required_fields_drop_row_and_count_dropped(self):
+        # baostock 停牌日可能返回空字符串字段，不能写成假零价 K 线
         rows = [["2024-01-02", "", "", "", "", ""]]
-        bar = _parse_rows(FIELDS, rows)[0]
-        assert bar["date"] == "2024-01-02"
-        assert bar["open"] == 0.0
-        assert bar["volume"] == 0.0
+        parsed = _parse_rows(FIELDS, rows)
+        assert len(parsed) == 0
+        assert parsed.dropped == 1
+
+    def test_unparseable_required_field_drops_row(self):
+        rows = [
+            ["2024-01-02", "10.0", "11.0", "9.0", "10.5", "100"],
+            ["2024-01-03", "10.0", "bad", "9.0", "10.5", "100"],
+        ]
+        parsed = _parse_rows(FIELDS, rows)
+        assert [b["date"] for b in parsed] == ["2024-01-02"]
+        assert parsed.dropped == 1
+
+    def test_partial_blank_required_field_drops_only_invalid_row(self):
+        rows = [
+            ["2024-01-02", "10.0", "11.0", "9.0", "10.5", "100"],
+            ["2024-01-03", "10.0", "11.0", "9.0", "10.5", ""],
+        ]
+        parsed = _parse_rows(FIELDS, rows)
+        assert [b["date"] for b in parsed] == ["2024-01-02"]
+        assert parsed.dropped == 1
 
     def test_field_order_respected(self):
         # 若字段顺序不同，按列名对齐
