@@ -104,6 +104,11 @@ rows = svc.get_history("600519.SH", "2026-08-01", "2026-08-24")
 ```bash
 stockdata-cli update --codes-file config/panel-baostock.txt --start 2026-08-25
 # end 缺省 = latest_finalized_date()；覆盖区间自动 MIN/MAX 合并，重跑幂等
+
+stockdata-cli update-calendar --database ~/.stockdata/cache.sqlite \
+    --start 2026-01-01 --end 2026-12-31
+# 刷新库内交易日历（trading_calendar 表）；缺口计算/finalized 判定/前瞻 capture 均消费它，
+# 日历缺失时各路径 fail-closed 回退到启发式
 ```
 
 ### 历史回填
@@ -166,8 +171,8 @@ launchd（macOS 原生）承载定时任务；所有任务共享三条守卫：�
 | --- | --- | --- | --- |
 | `daily-sync` | 周一至周五 17:35 | `scripts/daily_sync.sh`：baostock 身份 104 代码 `update` 增量（start = 当日-30 天，end = 最新 finalized 日） | **已部署**（2026-08-26，8/27、8/28 两次实盘运行均 exit=0） |
 | `wind-ingest` | 交易日 21:00 | 单 worker 串行拉前一日 wind 数据（501 代码 ≈ 35 分钟）→ `ingest_wind_csv` | 未部署，半自动人工触发 |
-| `weekly-audit` | 周日 09:00 | `audit_cache_completeness` + 跨身份偏差比对 + 异常行扫描 | 未部署 |
-| `monthly-backup` | 每月 1 日 06:00 | `scripts/backup_encrypt.py` 加密备份 SQLite + 账本 | 未部署（脚本需交互密码，暂不能无人值守） |
+| `weekly-audit` | 周日 09:07 | `scripts/weekly_audit.sh`：交易日历刷新（至当年年底）+ `audit_cache_completeness` + 全库异常行扫描 | **已部署**（2026-08-31） |
+| `monthly-backup` | 每月 1 日 06:13 | `scripts/monthly_backup.sh`：Keychain 密钥经 fd 传入 `backup_encrypt.py`，产物落 `~/.stockdata/backups/`，轮转保留 3 份 | **已部署**（2026-08-31，含恢复演练验证） |
 
 ### daily-sync 部署明细（2026-08-26 起生效）
 
@@ -180,7 +185,7 @@ launchd（macOS 原生）承载定时任务；所有任务共享三条守卫：�
 - **幂等性是自动化前提**：覆盖区间 MIN/MAX 合并 + 30 天滚动窗口，使任何漏跑都能被后续运行自动追平，无需补偿逻辑。
 - **Wind 通道保持半自动**：MCP datasource 有调用配额与限流，批量回填沿用"子代理串行 + 节奏守卫"模式，不并入无人值守任务。
 - **codebase-memory 索引**：代码结构索引（`Users-cdzhangxueli-workspaces-stock_data`）在重大提交后手动重建；本说明书的架构/时序/物理模型图可由索引重新生成校准。
-- **fail-closed 兜底**（2026-08-26 加固）：入库前 bar 级校验（价格为正且有限、OHLC 关系、volume 非负，脏行整批拒收）；baostock 空字段不再写成 0.0 假 bar；历史 no_data 区间不再扩展 coverage（假完整已封）；拉取失败抛 `HistoryFetchError` 向上传播；CLI 写入型命令 errors>0 时非零退出；非 collector 连接 busy_timeout=30s。
+- **fail-closed 兜底**（2026-08-26 加固）：入库前 bar 级校验（价格为正且有限、OHLC 关系、volume 非负，脏行整批拒收）；baostock 空字段不再写成 0.0 假 bar；历史 no_data 区间不再扩展 coverage（假完整已封）；拉取失败抛 `HistoryFetchError` 向上传播；CLI 写入型命令 errors>0 时非零退出；非 collector 连接 busy_timeout=30s。2026-08-31 起缺口计算 / finalized 日判定 / 前瞻 capture 均由库内 trading_calendar 驱动（日历缺失时 fail-closed 回退启发式）。
 
 ---
 

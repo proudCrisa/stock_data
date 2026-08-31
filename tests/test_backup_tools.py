@@ -57,3 +57,33 @@ def test_wrong_password_does_not_write_plaintext(
     with pytest.raises(SystemExit, match="解密失败"):
         backup_decrypt.main([str(encrypted), str(output)])
     assert not output.exists()
+
+
+def test_read_password_from_fd_for_unattended_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"fd-password\n")
+    os.close(write_fd)
+    monkeypatch.setenv("STOCKDATA_BACKUP_PASSWORD_FD", str(read_fd))
+    try:
+        assert backup_encrypt._read_password() == b"fd-password"
+    finally:
+        os.close(read_fd)
+
+
+def test_read_password_from_fd_rejects_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    monkeypatch.setenv("STOCKDATA_BACKUP_PASSWORD_FD", str(read_fd))
+    try:
+        with pytest.raises(SystemExit, match="密钥为空"):
+            backup_encrypt._read_password()
+    finally:
+        os.close(read_fd)
