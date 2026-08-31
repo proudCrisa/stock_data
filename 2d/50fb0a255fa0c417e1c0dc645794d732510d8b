@@ -1,0 +1,21 @@
+scripts/monthly_backup.sh
+  s_07da34ae130f65::t_d2648d0113903b 1-43
+tests/test_backup_tools.py
+  s_07da34ae130f65::t_b564c192b8af4d 60-89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "2d50fb0a255fa0c417e1c0dc645794d732510d8b",
+  "prompts": {},
+  "sessions": {
+    "s_07da34ae130f65": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a056fa-8ce4-7ac0-b54f-26d1bb14ac25",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
