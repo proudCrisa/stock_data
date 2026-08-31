@@ -1,0 +1,73 @@
+stockdata/service.py
+  s_d98bda93092fc7::t_434d0f45eaae47 47-48
+  s_d98bda93092fc7::t_9d978dda3b8f98 17-20,34-36,44,142-145,148-152,175,177-179
+stockdata/sync.py
+  s_2bc64ce835ca64::t_015bed34071fe4 405
+  s_2bc64ce835ca64::t_e8d568bf10bc38 51-54,423-440
+  s_2bc64ce835ca64::t_6e6557194462b2 401-404,406
+stockdata/cli.py
+  s_206ee7ffc1b070::t_64ce5baf3060be 150,152-157,302-310,321-323,619,677-691
+  s_f6de264746c8df::t_48783fc7d834de 22-28,30,126-132
+  s_f6de264746c8df::t_89d08863a133c1 133,280-286,300,553-584,603,606
+  s_2bc64ce835ca64::t_926ebbd717d6d1 119-125,274-279,543-551
+  s_6a0407fef96ff2::t_7052e65721bda3 138-140,143,293,295-297,595-598
+  s_c823b3a8f14ac5::t_c4eba0215b9e23 141-142,298-299,599-602
+  s_f6de264746c8df::t_4198f29b53baed 604-605
+  s_f6de264746c8df::t_2ff485940ba840 301,552
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "48f6aea9b2c788f0c7408cde618223d7d317706d",
+  "prompts": {},
+  "sessions": {
+    "s_206ee7ffc1b070": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03d43-472e-7341-8023-547ea481a994",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_2bc64ce835ca64": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a040ec-d649-7940-adbf-ccf54bafa720",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_6a0407fef96ff2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03e5c-f6a9-7223-b01e-2820dec8bbc0",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_c823b3a8f14ac5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03e84-64af-7a33-b0f1-3319543efd75",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_d98bda93092fc7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a043af-e380-7552-ae48-49c349b0bbbe",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_f6de264746c8df": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a04168-c793-7113-b6a7-e7d93f96c6cb",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
