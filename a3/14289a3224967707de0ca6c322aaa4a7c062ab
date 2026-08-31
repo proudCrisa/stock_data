@@ -1,0 +1,543 @@
+stockdata/future_panel_registration.py
+  s_206ee7ffc1b070::t_f3deed232a8a87 54,60-61,203,368,417-422,425-430,496,498-499,501,508-517,526,531-538,546-559,561-569,649,672-673,677-678,695,733,737-741,758-759
+  s_206ee7ffc1b070::t_ec9a1e434e104c 640,679-684
+  s_206ee7ffc1b070::t_8bc69d339104cd 560
+  s_206ee7ffc1b070::t_87e31e2b710aee 671
+  s_a2350370dd4250::t_1bb1b921d2955f 19-25
+openspec/changes/add-trusted-local-forward-registration/proposal.md
+  s_206ee7ffc1b070::t_9054be17b2e770 1-26
+tests/test_make_service.py
+  s_d98bda93092fc7::t_b198382e29ae87 27-81
+tests/test_daily_bar_product.py
+  s_d98bda93092fc7::t_df3067ab49e0fc 84-86,101-103
+  s_d98bda93092fc7::t_4543077fe33278 74,90
+  s_d98bda93092fc7::t_0aa7c3353e8223 1-16,19-23,26-35,38-41,46-63,65-73,76-83,87,91-92,95-100,104-142,152-190
+  s_d98bda93092fc7::t_314e1658adac63 64,75,88-89,93-94,191-197
+  s_d98bda93092fc7::t_16f90d75d7b565 17-18,24-25,36-37,42-45,143-151,198-205
+scripts/export_daily_bar_product.py
+  s_d98bda93092fc7::t_733feedc4afa77 7,9-11
+  s_d98bda93092fc7::t_5277c3a5b93a9f 1-6,8,12,14-28,30-40,42-49,52-59
+  s_d98bda93092fc7::t_28d90f98936ada 50-51
+  s_d98bda93092fc7::t_314e1658adac63 29,41
+  s_d98bda93092fc7::t_15ead75e891e88 13
+stockdata/candidate_admission_capture.py
+  s_d98bda93092fc7::t_13d8d46b79523c 276,596-597
+  s_d98bda93092fc7::t_a36e4a65f06152 28
+  s_d98bda93092fc7::t_041d6c0ec64a97 147
+  s_d98bda93092fc7::t_0bf171f415cb55 59-67,295,337-338,361-368
+  s_d98bda93092fc7::t_a80e9f4fdfb970 182-184,214,227-229,242-247,371-374
+  s_d98bda93092fc7::t_1155dea1b98182 40-58,135-141,296-298,336,339-340,343-344,537-546
+  s_d98bda93092fc7::t_795de005587f60 580,588-590
+  s_d98bda93092fc7::t_f847b7d0c4c177 15-18,369-370
+  s_d98bda93092fc7::t_9eca31acb9d3d4 162,168-171,198
+  s_d98bda93092fc7::t_b90303e66a927f 1-14,20-21,27,29-39,69-134,248-275,277,286-294,299-335,341-342,345-360,375-439,441-536,547-563,565-579,581-587,591-595,598-603
+  s_d98bda93092fc7::t_dc34e464eef78f 278-285,564
+  s_d98bda93092fc7::t_8cda6227bd2085 163-167,221-224
+  s_d98bda93092fc7::t_99b8318bf356c7 22-26,68,142-146,148-161,172-181,185-197,199-213,215-220,225-226,230-241
+  s_d98bda93092fc7::t_17f72bf728cf3e 19,440
+stockdata/collector_continuity.py
+  s_f6de264746c8df::t_a1d970d4f163fa 8914-8934
+  s_206ee7ffc1b070::t_71ab0d8326ec52 3608-3610,3645-3652,3654-3658,8535
+  s_f6de264746c8df::t_2b6e4846766363 9814-9822,9831,9883,9933,9980,9982,9998,10029
+  s_f6de264746c8df::t_432223fd5ca91b 9622-9786
+  s_f6de264746c8df::t_8b9a946926c73b 9368,9379-9385,9806,9810-9812
+  s_2bc64ce835ca64::t_5285d74e2337e6 9364-9367,9369-9378,9386-9451
+  s_2bc64ce835ca64::t_ed08a8cb849ebe 6117,6125-6130,6137-6148
+  s_2bc64ce835ca64::t_86ddb7c8b211b3 6408-6413
+  s_f6de264746c8df::t_e251e9d867cf8b 9457,9539-9619
+  s_f6de264746c8df::t_c54b04937878b0 9294-9295,9298-9319
+  s_f6de264746c8df::t_fcffe8f5121346 9502-9504,9533-9538
+  s_2bc64ce835ca64::t_33ac45116c2542 822,856
+  s_2bc64ce835ca64::t_ad097928d43b51 9452-9456,9459-9464,9470-9499,9620-9621,9794,9805,9807-9809,9813
+  s_f6de264746c8df::t_fb3b7cd95793dc 6407,6414
+  s_0fe2a34442d62f::t_ef2c473e6f0b48 5098-5104,5107,5112-5116,5532-5539,5541-5545
+  s_206ee7ffc1b070::t_193bbb9eb97a6a 9859-9869
+  s_f6de264746c8df::t_a463e6d231f3d0 9458,9465-9469,9500-9501,9505-9532
+  s_f6de264746c8df::t_4db7cc1a31b6cb 9787-9788
+stockdata/component_availability.py
+  s_0fe2a34442d62f::t_a0eaa9860131f4 220,224,249,258,260-263,279,311,314-315,317-319,366,375,396-405
+  s_0fe2a34442d62f::t_108d824e485406 239,248,259,286,316
+  s_0fe2a34442d62f::t_508720953d7eb7 376,407,463-466
+  s_0fe2a34442d62f::t_98273fd42c631c 240-247
+  s_0fe2a34442d62f::t_9ede9dcb29f17d 250,268-269,309-310
+tests/test_trusted_local_forward_registration.py
+  s_0fc46762078e91::t_182a3125b97b39 19-21,161-181,199-243
+  s_438456103ebcde::t_fffdae7a556d86 7,13
+  s_206ee7ffc1b070::t_8f8dfe48039af5 1-6,8-9,12,14-18,22-25,27-34,36,38-146,148-149,151-159,244-245,279-341,346-411,417-426
+  s_438456103ebcde::t_4d26c365377eb1 246-278
+  s_438456103ebcde::t_a4a3328136766f 26
+  s_206ee7ffc1b070::t_97acb89dcc9198 35,37,147,150,160,342-345,412-416
+  s_438456103ebcde::t_f6b4a6f2c26f5b 10-11
+  s_0fc46762078e91::t_cd92c3825a165d 182-198
+tests/test_provider_export.py
+  s_2097cfda980fd3::t_2558b92bd0e27d 5,20-24,891-1016
+  s_438456103ebcde::t_4d26c365377eb1 448-490
+  s_206ee7ffc1b070::t_fdb694db30ad70 341,367-370
+tests/test_provider_materializer.py
+  s_0fc46762078e91::t_68732d8acc0ca4 238,241-245
+  s_0fc46762078e91::t_182a3125b97b39 25-29,172-237,239-240,246-247
+  s_93b541d0ca87df::t_37c288c9a94040 248-249
+tests/test_trusted_local_research_replay_resolver.py
+  s_2097cfda980fd3::t_814a8800a6e9f0 566,569-579,616
+  s_2097cfda980fd3::t_9d751fb2e73b27 181-185
+  s_2097cfda980fd3::t_c8184822a87ffe 27
+  s_2097cfda980fd3::t_5e6b0c9c2076c8 424-428,435-438,447-448,452-453,455-476
+  s_2097cfda980fd3::t_06d6a3b85a8e2e 290-298,304,310-311,313,316-320,322-329,408-416
+  s_2097cfda980fd3::t_c3d07bcd9af838 321
+  s_2097cfda980fd3::t_810e9ed665644c 12-14,284-289,404-407,801-834
+  s_2097cfda980fd3::t_3f0b7949bbab25 59-63,68-87,93-131
+  s_2097cfda980fd3::t_6433988a9d43ae 753,783
+  s_2097cfda980fd3::t_0c9f310dcea855 28-31,33-36,167-180,186-201,367-371,375-377
+  s_2097cfda980fd3::t_618e64fd3c38e1 538-539
+  s_2097cfda980fd3::t_0e80a6d700decf 386-389
+  s_2097cfda980fd3::t_b067f329bf63d8 16-18
+  s_2097cfda980fd3::t_50ee85459232c7 1-5,8-10,15,32,37,43-58,282-283,314-315,417-423,429-434,439-446,449-451,454,477-537,540-549,708-744,784-800
+  s_2097cfda980fd3::t_74893860f83875 6,745-752,754-782
+  s_2097cfda980fd3::t_01c67a98b39a35 19,41
+  s_2097cfda980fd3::t_51fe00564d3c47 64-67,88-92
+  s_2097cfda980fd3::t_02f423c25e4b52 365,372-374,385,390-395,400-403
+  s_2097cfda980fd3::t_bc4dc07dcdac93 366,378-381,397-399
+  s_2097cfda980fd3::t_4dc2ebaa610b32 628
+  s_2097cfda980fd3::t_ad92ac4e7d31e6 550-565,567-568,580-615,617-627,629-707
+  s_2097cfda980fd3::t_c717f5407983fb 38-40,42
+  s_2097cfda980fd3::t_87e1ee59e0aed1 7,11,20-26,132-166,202-281,299-303,305-309,312,330-364,382-384,396
+scripts/export_qmt_readonly_probe.py
+  s_192209869065c0::t_3b0d171ffe014c 1-15,17-22,29-30,34-35,47-55,59-70
+  s_192209869065c0::t_e23c716503797d 16,23-28,31-33,36-46,56-58
+stockdata/registered_panel_capture.py
+  s_206ee7ffc1b070::t_2e37a1f37d5103 16-17,40,82-83,85-91
+scripts/capture_candidate_admission.py
+  s_d98bda93092fc7::t_b90303e66a927f 1-63
+openspec/changes/add-trusted-local-forward-registration/.openspec.yaml
+  s_206ee7ffc1b070::t_9054be17b2e770 1-2
+stockdata/daily_bar_product.py
+  s_d98bda93092fc7::t_68c7cc288a2a17 66-70,72
+  s_d98bda93092fc7::t_314e1658adac63 50-54,126,145-147,152,209-210,269,297,302
+  s_d98bda93092fc7::t_67c7fd7d22a2c1 267,298
+  s_d98bda93092fc7::t_b6dc49462d3a04 6,106-107
+  s_d98bda93092fc7::t_5277c3a5b93a9f 1-5,7-8,10-19,21-49,55-65,71,73-102,116-125,127-144,148-151,153-182,184-202,207-208,211-237,244-253,256-260,266,268,271-286,289-293,296,299,303-317,324-327,331-343
+  s_d98bda93092fc7::t_77cf475e1a50af 9,20,103-105,108-115,183,203-206,238-243,254-255,261-265,270,287-288,294-295,300-301,318-323,328-330
+tests/test_candidate_admission_capture.py
+  s_d98bda93092fc7::t_f847b7d0c4c177 4
+  s_d98bda93092fc7::t_041d6c0ec64a97 5,72-82,202-240
+  s_d98bda93092fc7::t_5e8211a4207a0c 33-65,171-191
+  s_d98bda93092fc7::t_b90303e66a927f 1-3,6-17,28-32,66-71,83-95,99-148
+  s_d98bda93092fc7::t_8cda6227bd2085 192-201
+  s_d98bda93092fc7::t_1155dea1b98182 96-98,149-158,170
+  s_d98bda93092fc7::t_0bf171f415cb55 18-27,159-169
+openspec/changes/add-trusted-local-forward-registration/specs/forward-collector-continuity/spec.md
+  s_206ee7ffc1b070::t_3bd1879efc4d2d 197-205
+  s_206ee7ffc1b070::t_9054be17b2e770 1-19,27,34-36,45-62
+  s_d95e6e27e50afb::t_067cb8e86b1cbe 282-312
+  s_4c7a5178dcee6d::t_1ef5f5f8d39967 138-142,146-148,152
+  s_206ee7ffc1b070::t_2f1b42c62fa4c6 219-243
+  s_e20fdf4518143f::t_e4cfafb5ecf632 137,143-145,162-165,172
+  s_206ee7ffc1b070::t_f405e1682084a7 188-196
+  s_0fe2a34442d62f::t_69eae4c8f08103 101-106
+  s_e20fdf4518143f::t_b1b5d42b931206 20-22
+  s_206ee7ffc1b070::t_2e9a6d1348059b 23-26,28-33,37-44
+  s_1e2dfa62979172::t_47067351459a3e 73,75-76,80-81,126-133,156-157
+  s_206ee7ffc1b070::t_d60048c14152d6 178-187,206-218
+  s_1e2dfa62979172::t_261954011123a5 74,77-79,149-151,153-155
+  s_e20fdf4518143f::t_fcea5a4d09fdbe 65-69
+  s_ae39ddc7bb7417::t_196bc00a228443 244-281
+  s_e20fdf4518143f::t_baad608f6a10ba 63-64,70-72,82-88,119-125,134-136,158-161,166-171,173-177
+  s_0fe2a34442d62f::t_8c793f8eed3ff0 89-100,107-118
+stockdata/qmt_readonly_probe.py
+  s_192209869065c0::t_0d969668c9bdba 166-169
+  s_192209869065c0::t_d55831f11010bc 5,192-199,236-247,252-262,264,266,270,272-290,292-307,323-325,333-337,407-408,413-418,422-427,437-440,455-457,463-482,486-488,490,496,498-503,509-516,521-532
+  s_192209869065c0::t_e23c716503797d 8,11-13,17,19-22,33-39,67,74-78,107,112,173-176,213-214,219-224,341-365,367-406,409-412,419-421,428-436,441-454,458-462,483-485,489,491-495,497,504-508,517-520,533-559,563,577
+  s_192209869065c0::t_2b4f5963777ff8 579-585
+  s_192209869065c0::t_3b0d171ffe014c 1-4,6-7,9-10,14-16,18,23-32,40-66,68-73,79-106,108-111,113-165,170-172,177-191,200-212,215-218,225-235,248-251,263,265,267-269,271,291,308-322,326-332,338-340,366,560-562,564-576,578,586-587
+tests/test_trusted_local_prerequisite_materializer.py
+  s_438456103ebcde::t_ffe61f2ae59e61 74-85,87-138,140-176,192,197-198,454-456,462-491,496-497,551-554,556,561-562
+  s_f07f0c0a4b98fb::t_646d4193dc234e 6-7,11,367,371
+  s_438456103ebcde::t_7cc967bb2d0dd9 427-428,437-438
+  s_f07f0c0a4b98fb::t_5d9454ca3d0855 37-41,183,286,316,393,540,577,579-581,587,593,596,617
+  s_f07f0c0a4b98fb::t_59cff1bcdd2d0f 12,545-550,555,557-560,563,565
+  s_f07f0c0a4b98fb::t_5d99f8992b704a 1-5,8-10,13-36,42-73,177-182,184,190-191,193-196,199-285,287-315,317-352,355-366,368-370,372-392,394-415,534-539,541-544,564,566-576,578,582-586,588-592,594-595,597,599-603,606-616,618-624,626-630,633-636
+  s_f07f0c0a4b98fb::t_25d9b59ef57699 185-189
+  s_438456103ebcde::t_b52f19128e5c0c 86,139,503-533,598,604-605,625,631-632
+  s_f07f0c0a4b98fb::t_36a6c33a8d3d4a 353-354
+  s_438456103ebcde::t_4d26c365377eb1 416-426,429-436,439-453,457-461,492-495,498-502
+stockdata/provider_materializer.py
+  s_93b541d0ca87df::t_b0b8acffe96cb8 840-849,1075
+  s_93b541d0ca87df::t_6b8a4dddb3e346 628-630,638-641,645-647
+  s_f6de264746c8df::t_927688711e910c 1520-1525,1528-1530,1599
+  s_2bc64ce835ca64::t_f57a386dbfa213 652-655,657-663
+  s_f6de264746c8df::t_3d7c30b426c63f 1572-1582
+  s_f6de264746c8df::t_5458bfaa387e56 1594-1598,1600-1602
+  s_2bc64ce835ca64::t_78b7f26dcc980e 9,76-83
+  s_2bc64ce835ca64::t_3d770cd4c11b01 1649-1652
+  s_f6de264746c8df::t_fb3b7cd95793dc 1526-1527,1531-1535
+  s_2bc64ce835ca64::t_837dbc03a9ac31 1310-1335,1519
+  s_2bc64ce835ca64::t_c7de42c0e7a53d 1174-1231,1245-1309,1336-1339,1383-1503,1507-1514,1536-1571,1583-1593,1603-1648,1653-1792
+  s_2bc64ce835ca64::t_2702297f7a91d4 1515-1518
+  s_2bc64ce835ca64::t_1ee4f9a6212994 1340-1382
+  s_93b541d0ca87df::t_8c5adf0e9186c6 51,584
+  s_206ee7ffc1b070::t_b7ce82c477b709 50,372-391,400,404,456
+  s_2bc64ce835ca64::t_fc53c1817f0fe7 1232-1244,1504-1506
+  s_2bc64ce835ca64::t_d9354c04fe5a63 31,41,56,59,61,679-681,719-731,733-734,857-873,1088-1089,1092-1093,1097-1100,1125-1159
+  s_93b541d0ca87df::t_0df26492694585 52,528,571-583,585-595,615-627,631-637,642-644,648-651,656
+  s_15c58fc8169e24::t_d2d51ab2ec139b 84-85,664-665
+stockdata/provider_authority_admission.py
+  s_5464beefdb15fb::t_9a0a77fb554368 301-316
+  s_c823b3a8f14ac5::t_3b01ebb6ada566 320,332,380,383,385,447-451
+  s_206ee7ffc1b070::t_8bc69d339104cd 463
+  s_93b541d0ca87df::t_0df26492694585 319,322-323,330-331,333,379,445-446,452,454
+  s_206ee7ffc1b070::t_c53cf1cae7b845 292-300,317-318,321,334-378,381-382,384,386-444,453,455-462,464-479
+  s_93b541d0ca87df::t_8cae0f2680f990 328-329
+  s_5464beefdb15fb::t_bd20df447e7c6d 928-1091
+  s_206ee7ffc1b070::t_7028dc95561b78 1122
+  s_93b541d0ca87df::t_6b8a4dddb3e346 324-327
+  s_a2350370dd4250::t_2a7d9abce34541 1092-1093
+tests/test_trusted_local_registration_schedule.py
+  s_2097cfda980fd3::t_f198d8b95935ae 8
+  s_2097cfda980fd3::t_b29415cb43a8ec 1-7,9-41,49,57,59-72
+  s_2097cfda980fd3::t_636371855e155c 42-48,50-56,58,73-79
+  s_2097cfda980fd3::t_d82a03f4044e1f 80
+stockdata/trusted_local_research_replay_export.py
+  s_0fe2a34442d62f::t_2c7cb23ed97538 308,351-375,460
+  s_d4631cbeb8a60a::t_815c9518fb8a32 96-97,320,329-330,379,383-385,437-440
+  s_d4631cbeb8a60a::t_44828dcceeacb4 7
+  s_d4631cbeb8a60a::t_74b5f542d05266 1-6,10-18,20-62,64-66,75-78,87-95,98-103,105-146,151-170,174-221,223,225-239,243-245,247-248,258-259,261-262,318-319,321-328,343,350,376-378,380-382,386-410,415-418,428-436,441-452,456-459,461-462
+  s_d4631cbeb8a60a::t_5f2d932303ed07 263,265,268-270,316-317,331-333,342,411
+  s_d4631cbeb8a60a::t_b4e09e5b13a4d4 421-423
+  s_0fe2a34442d62f::t_d03f8652999cba 264,266,271,277
+  s_d4631cbeb8a60a::t_4b46adb9849582 8-9,79-86,104,147-150,171-173,222,224,240-242,249-257,334-341,346,348-349,412-414,424-427,453-455
+  s_d4631cbeb8a60a::t_99cca450c4a4a9 19,63,67-74,246,260,278-307,309-315,344-345,347,419-420
+  s_0fe2a34442d62f::t_5e0910352aa438 267,272-276
+stockdata/provider_export.py
+  s_2bc64ce835ca64::t_1d832c138c83bd 483-492,498-505
+  s_93b541d0ca87df::t_8c5adf0e9186c6 199
+  s_0fe2a34442d62f::t_0e59b80962f9b6 261-271,426,435,437,439,469-471,479-481,531-536,539-540,542-553,575-577,589,646,680-689
+  s_f6de264746c8df::t_89d08863a133c1 39-46,64-69,1185-1186,1191-1194,1197,1206,1209-1210,1217-1225,1227-1283
+  s_0fe2a34442d62f::t_e3ad7e015b9d30 583-586
+  s_0fe2a34442d62f::t_f71cccab317e9b 38,282-319,415-416,418-421,427,442-465,587-588,590-591,627-628,630-631,648-651,656,671-673,697
+  s_0fe2a34442d62f::t_8c8a7225c7eeb5 20,63,70,254-260,273-276,278-281,592-613,618-625,629,633-645,657-670,674-679,690-696,698-720,725-726,941,948-949,951-965,972-975,987-995
+  s_c823b3a8f14ac5::t_3b01ebb6ada566 223-242,244-253
+  s_0fe2a34442d62f::t_48fc5be12cf875 272,277,614-617
+  s_93b541d0ca87df::t_b0b8acffe96cb8 60,191-198,200-202,206-222,915-916
+  s_0fe2a34442d62f::t_0756ec59a49a5f 541,558
+  s_2bc64ce835ca64::t_4b2c0324e81e13 493-497
+  s_0fe2a34442d62f::t_7035a9e7344bc7 30
+  s_0fe2a34442d62f::t_4df5f9984388e1 1132-1184
+  s_0fe2a34442d62f::t_89d1cf7d6868ab 9-10,22
+  s_f6de264746c8df::t_48783fc7d834de 1187-1190,1195-1196,1198-1205,1207-1208,1211-1216,1226
+  s_206ee7ffc1b070::t_329d244b646258 56,155,157-158,817
+  s_93b541d0ca87df::t_6b8a4dddb3e346 57-59,203-205
+  s_c823b3a8f14ac5::t_9592751014df69 243,879-884
+  s_0fe2a34442d62f::t_8bd7e66905c55c 950,966-968
+  s_0fe2a34442d62f::t_b08738747be74b 11,320-414,417,422-425,428-434,436,438,440-441,466-468,472-478,482,506-530,537-538,554-557,559-574,578-582,647,652-655
+  s_0fe2a34442d62f::t_7fbe429f5798ee 626
+  s_0fe2a34442d62f::t_24f8c8a7172009 632
+docs/qmt-readonly-probe.md
+  s_192209869065c0::t_0d969668c9bdba 10-11,16-17,48-51
+  s_192209869065c0::t_2b4f5963777ff8 1-9,12-15,18-47,52-61
+tests/test_trusted_local_research_replay_export.py
+  s_3704ecb5e182c6::t_52cd8895fae514 157,176-177
+  s_3704ecb5e182c6::t_d3c1e10f9c5f0e 1-3,5,7-9,11-16,22-25,48-57,59,61-86,156,158-175,178-186,188-202,204-215,228-229,322-327,329-351,355-361,365-376,378,388,398-401,514-581,583-630,632-668,670-722
+  s_3704ecb5e182c6::t_f517b46aedd0bf 91-100,150,203,216-219,222-226,377,379-387,389-397,432-443
+  s_3704ecb5e182c6::t_bea9326c7f7e82 446-491,631
+  s_3704ecb5e182c6::t_a450cb5baf830b 103-108,122-133,402-413,444-445,492-513
+  s_3704ecb5e182c6::t_ba90e3d3634578 10
+  s_3704ecb5e182c6::t_88f4d99b43bf09 6
+  s_3704ecb5e182c6::t_ebafa3ba30ef73 58,87-90,134,187,414-431,669
+  s_2097cfda980fd3::t_366f6a198868c1 4,19,230-293,295-298,302-321
+  s_2097cfda980fd3::t_76a9890a1e1b7a 294,299-301
+  s_3704ecb5e182c6::t_df22fe754eda9a 101-102,109-121,135-149,151-155,220-221,227,352-354,362-364,582
+  s_3704ecb5e182c6::t_af988dda06fbc4 60
+  s_3704ecb5e182c6::t_34cd693d4df1cd 26-47,328
+  s_3704ecb5e182c6::t_b2991cfc650760 17-18,20-21
+tests/test_registered_provider_bundle_bridge.py
+  s_2097cfda980fd3::t_f350adf3d392be 162
+  s_2097cfda980fd3::t_495c77c537b549 15
+  s_d3cc42ec630411::t_dcf07b9ace59e2 682-688
+  s_2097cfda980fd3::t_f8033d01cf782c 10-11
+  s_d3cc42ec630411::t_6d56abf18d3229 114
+  s_d3cc42ec630411::t_ebd2f44b0c462c 1215-1340
+  s_d3cc42ec630411::t_afead2e5184b86 802
+  s_d3cc42ec630411::t_2c3ce6d3e3e437 601-603,607,613,624
+  s_2097cfda980fd3::t_1be15990dc03f8 1-6,8-9,12-13,23,25-113,115-161,163-205,244-480,485,490-491,719-801,803-855
+  s_d3cc42ec630411::t_e87952af8ca28e 856-883,885-996,998-1065,1067-1164,1166-1214
+  s_d3cc42ec630411::t_5b8b1dcf92bb8d 7,17,24
+  s_d3cc42ec630411::t_9b06650f4072d6 884,1066
+  s_d3cc42ec630411::t_798074ab1f3cd1 481-484,486-489
+  s_d3cc42ec630411::t_50be867f84be44 18-20,22,206-243
+  s_d3cc42ec630411::t_99cc679cd43905 536-537
+  s_d3cc42ec630411::t_f0cdc8213c9b4b 569-585,587,589,604-606,608-612,614-617,623,625-632,636-640,642-650
+  s_d3cc42ec630411::t_bd8e5da3e6080b 997,1165
+  s_2097cfda980fd3::t_b4957868f63109 14,21
+  s_d3cc42ec630411::t_62b86ddb46f7e2 568,586,588,590-600,618-622,633-635,641
+  s_d3cc42ec630411::t_b015c3282a86e8 492-535,538-567,651-681,689-718
+  s_2097cfda980fd3::t_96e217c0ed0203 16
+stockdata/provider_intrinsic.py
+  s_0fe2a34442d62f::t_fd0af1131138a4 550
+  s_0fe2a34442d62f::t_44e74ea4fa3bee 28,31-32,35,38-39,41,47-50,60-64,84-85
+  s_0fe2a34442d62f::t_bb86459db3f9a4 592
+  s_0fe2a34442d62f::t_56032103b3d5a5 1154,1158,1160,1162
+  s_0fe2a34442d62f::t_690d9c757fd96c 240-270
+  s_0fe2a34442d62f::t_e36b5253d61554 9-12,20-24,33-34,36-37,40,42-46
+  s_0fe2a34442d62f::t_d8ad03dd23e57f 502-517,522-549,551-561,563-591,593-802,808-854,860-861,863-982
+  s_0fe2a34442d62f::t_cddbdbcdfcde5a 518-521,562,803-807,855-859,862
+  s_15c58fc8169e24::t_df44447c0442c4 86-89,271-272,983-984
+tests/test_qmt_readonly_probe.py
+  s_192209869065c0::t_9d3a73d657e1e5 6-7,101-118
+  s_192209869065c0::t_9b383ffab50840 1-5,8-81,83,87-100,119-149,185-210,215-261
+  s_192209869065c0::t_0d969668c9bdba 82,84-86,150-184,211-214
+openspec/changes/add-trusted-local-forward-registration/design.md
+  s_e20fdf4518143f::t_e4cfafb5ecf632 108-111,128-132
+  s_d95e6e27e50afb::t_067cb8e86b1cbe 265-291
+  s_206ee7ffc1b070::t_9054be17b2e770 1-21,27-32,35-41,292-296
+  s_1e2dfa62979172::t_adee70184f4def 67,69-70,72-74,88-89,115,124-125
+  s_1e2dfa62979172::t_261954011123a5 68,71,86-87,116-119,121-123
+  s_e20fdf4518143f::t_baad608f6a10ba 42-66,83-85,90-102,126-127,133-138,297
+  s_206ee7ffc1b070::t_f405e1682084a7 149-159
+  s_206ee7ffc1b070::t_d60048c14152d6 139-148,170-175,298-299
+  s_4c7a5178dcee6d::t_1ef5f5f8d39967 103-107,112-114,120
+  s_0fe2a34442d62f::t_8c793f8eed3ff0 196-207,214-226
+  s_206ee7ffc1b070::t_3bd1879efc4d2d 160-169
+  s_206ee7ffc1b070::t_a5a37d73137f2d 75-82
+  s_206ee7ffc1b070::t_2f1b42c62fa4c6 176-195,227-235
+  s_ae39ddc7bb7417::t_196bc00a228443 236-264
+  s_206ee7ffc1b070::t_2e9a6d1348059b 22-26,33-34
+  s_0fe2a34442d62f::t_69eae4c8f08103 208-213
+stockdata/trusted_local_research_replay_materialization.py
+  s_d4631cbeb8a60a::t_14e2eb1b95aa50 8,104-107,130-132,136-141,150-153,164-169,176-179,184-186,190,194,199,204-211,256,259,276-278,295
+  s_d4631cbeb8a60a::t_428a6d1dd394e8 1-7,9-103,108-129,133-135,142-149,154-163,170-175,180-183,187-189,191-193,195-198,200-203,212-255,257-258,260-275,279-294,296-339
+stockdata/trusted_local_prerequisites.py
+  s_6a0407fef96ff2::t_13853d4839659b 31-34,213
+  s_c823b3a8f14ac5::t_bd587357a83a56 94,102-109,201-210,249-252
+  s_6a0407fef96ff2::t_7052e65721bda3 1-7,12-21,25-30,35-77,131,151-185,190-193,211-212,247,253,266-275,278-279,281-283,286-288,292-308,322,326-375
+  s_c823b3a8f14ac5::t_d362a2dee359cb 9-11
+  s_c823b3a8f14ac5::t_6e7e0bbce330fa 8,22-24,78-93,95-101,110-130,132-150
+  s_c823b3a8f14ac5::t_55b3c25e0db885 186-189,194-200,214-246,248,254-265,276-277,280,284-285,289-291,309-321,323-325
+openspec/changes/add-trusted-local-forward-registration/tasks.md
+  s_206ee7ffc1b070::t_9054be17b2e770 1-2,6-8,12-14
+  s_206ee7ffc1b070::t_c6382f8dec3189 27-31
+  s_f6de264746c8df::t_4e5b7550a31849 32
+  s_e20fdf4518143f::t_baad608f6a10ba 17,19-20,34,43
+  s_206ee7ffc1b070::t_aeffae2660696a 25
+  s_206ee7ffc1b070::t_c49bc8f43903a5 26
+  s_d95e6e27e50afb::t_067cb8e86b1cbe 33
+  s_e20fdf4518143f::t_b1b5d42b931206 38
+  s_206ee7ffc1b070::t_4312145c5c869d 3-5,9-11,15-16,18,35-36
+  s_206ee7ffc1b070::t_3b77c8d9bdaf74 21-24
+  s_206ee7ffc1b070::t_2e9a6d1348059b 37,39-42
+tests/test_trusted_local_research_replay_materialization.py
+  s_ec44743eb6fa6d::t_446896c1a584e3 11
+  s_3704ecb5e182c6::t_182001ea606e43 513
+  s_ec44743eb6fa6d::t_cb7dc07cc57e26 10
+  s_3704ecb5e182c6::t_157e2c13d6ee5b 96-101,104-109
+  s_3704ecb5e182c6::t_df91a67249c2b8 250-281,470-500
+  s_2097cfda980fd3::t_f090f79150456e 12-15,20,138,187,203-209
+  s_3704ecb5e182c6::t_e3aba9bf6d0246 1-9,16-19,21-95,102-103,110-137,139-186,188-202,210-249,282-469,501-512,514-519
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a314289a3224967707de0ca6c322aaa4a7c062ab",
+  "prompts": {},
+  "sessions": {
+    "s_0fc46762078e91": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03e4e-82ab-7951-b1c2-8e3159a141a6",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_0fe2a34442d62f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03f68-edbd-7b72-acba-72c2af5dd094",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_15c58fc8169e24": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a02d59-810d-75c2-9740-236ba02d6a37",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_192209869065c0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a04932-a016-7683-8116-37480cd04d16",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_1e2dfa62979172": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03ef1-9016-7da0-98c5-fa3dd6c5814c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_206ee7ffc1b070": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03d43-472e-7341-8023-547ea481a994",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_2097cfda980fd3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03f87-05a9-7ee1-b929-7545a7e32a1a",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_2bc64ce835ca64": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a040ec-d649-7940-adbf-ccf54bafa720",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_3704ecb5e182c6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03ed0-9a07-7f70-a8c0-f81378086ab4",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_438456103ebcde": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03e75-cf36-7263-bf15-5621b8d759d5",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_4c7a5178dcee6d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03f18-3ebd-7252-bc9a-c4345bdb6f6c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_5464beefdb15fb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03e32-0fb4-7c92-a1b3-3ce039904f34",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_6a0407fef96ff2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03e5c-f6a9-7223-b01e-2820dec8bbc0",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_93b541d0ca87df": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03e4e-9d15-7c83-9f63-bda6d89d9f90",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_a2350370dd4250": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a04275-1bc7-7c10-bfdf-c6346f9b4168",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_ae39ddc7bb7417": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03ffc-af7f-76d1-85f5-2271b1986bbd",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_c823b3a8f14ac5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03e84-64af-7a33-b0f1-3319543efd75",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_d3cc42ec630411": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0412d-2123-7513-a794-6101fa9162d1",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_d4631cbeb8a60a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03ee4-3643-7e93-84ab-cbd8fc641cb1",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_d95e6e27e50afb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a04144-0dd6-7672-8695-3320eb8386e7",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_d98bda93092fc7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a043af-e380-7552-ae48-49c349b0bbbe",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_e20fdf4518143f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03eb4-06a4-7870-9ab0-b66aac41ad77",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_ec44743eb6fa6d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a04220-c7b4-7bc2-ac07-8ef7a82f5575",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_f07f0c0a4b98fb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03e5c-ba68-7900-972c-c75aa89a989c",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_f6de264746c8df": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a04168-c793-7113-b6a7-e7d93f96c6cb",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
