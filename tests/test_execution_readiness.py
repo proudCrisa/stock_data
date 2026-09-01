@@ -232,7 +232,9 @@ def test_load_panel_accepts_existing_split_overlay_shape(tmp_path):
 
 
 def _make_v4_collector(tmp_path):
-    """Create a fresh collector and downgrade it to v4 (no trading_calendar)."""
+    """Create a genuine v4 collector (no trading_calendar, user_version=4)."""
+    from stockdata import future_panel_registration as fpr
+
     symbols = [
         "000001.SZ", "000002.SZ", "000333.SZ",
         "600000.SH", "600519.SH", "601318.SH",
@@ -247,16 +249,19 @@ def _make_v4_collector(tmp_path):
         encoding="ascii",
     )
     database = tmp_path / "evidence.sqlite"
-    prepare_future_collector_database(
-        database_file=database, panel_file=panel_file
-    )
-    conn = sqlite3.connect(database)
+    # v4 没有 trading_calendar；临时屏蔽该表安装与版本号，让 schema hash、
+    # genesis、ledger 从开始就一致，从而模拟真实的不可变 v4 collector。
+    original_calendar_schema = fpr._CALENDAR_SCHEMA
+    original_schema_version = fpr._SCHEMA_VERSION
+    fpr._CALENDAR_SCHEMA = ""
+    fpr._SCHEMA_VERSION = 4
     try:
-        conn.execute("DROP TABLE trading_calendar")
-        conn.execute("PRAGMA user_version=4")
-        conn.commit()
+        prepare_future_collector_database(
+            database_file=database, panel_file=panel_file
+        )
     finally:
-        conn.close()
+        fpr._CALENDAR_SCHEMA = original_calendar_schema
+        fpr._SCHEMA_VERSION = original_schema_version
     return database
 
 
@@ -268,6 +273,24 @@ def test_legacy_v4_collector_is_not_blocked_by_schema_version_mismatch(tmp_path)
     assert report["schema_version"] == 4
     assert report["schema"]["legacy_v4_collector_accepted"] is True
     assert "schema_version_mismatch" not in _codes(report)
+
+
+def test_empty_genesis_table_is_not_accepted_as_legacy_v4(tmp_path):
+    """仅有空 forward_collector_genesis 表不能冒充 frozen v4 collector。"""
+    database = tmp_path / "fake.sqlite"
+    connection = sqlite3.connect(database)
+    connection.execute(
+        "CREATE TABLE forward_collector_genesis (singleton INTEGER PRIMARY KEY)"
+    )
+    connection.execute("PRAGMA user_version=4")
+    connection.commit()
+    connection.close()
+
+    report = check_execution_readiness(database)
+
+    assert report["schema_version"] == 4
+    assert report["schema"]["legacy_v4_collector_accepted"] is False
+    assert "schema_version_mismatch" in _codes(report)
 
 
 def test_readiness_cli_does_not_migrate_or_modify_database(tmp_path):

@@ -98,46 +98,45 @@ def _normalized_sql(value: str) -> str:
     return " ".join(value.split()).rstrip(";").lower()
 
 
-def _is_legacy_v4_collector(connection: sqlite3.Connection, version: int) -> bool:
+def _is_legacy_v4_collector(
+    connection: sqlite3.Connection, version: int, database: Path | None
+) -> bool:
     """Accept a frozen v4 collector whose immutable identity forbids migration.
 
     The calendar schema bump to v5 only added ``trading_calendar``; the collector
-    contract binds the exact SQL of the remaining tables/triggers.  A v4
-    collector is therefore structurally valid if it carries the genesis marker
-    and satisfies the daily/receipt schema contract.  Missing ``trading_calendar``
-    is handled as "no calendar data" by ``TradingCalendar`` downstream.
+    contract binds the exact SQL of the remaining tables/triggers.  We therefore
+    reuse the prepared-collector verifier to prove that this is a real,
+    immutable collector: genesis claim, cohort, schema hash, guard triggers and
+    ledger binding must all be valid.  Missing ``trading_calendar`` is handled as
+    "no calendar data" by ``TradingCalendar`` downstream.
     """
-    if version != 4:
+    if version != 4 or database is None:
         return False
     tables = _tables(connection)
-    if "forward_collector_genesis" not in tables:
+    if "forward_collector_genesis" not in tables or "forward_capture_cohort" not in tables:
         return False
-    if {"daily", "collection_receipts"} - tables:
-        return False
-    if _columns(connection, "daily") != DAILY_COLUMNS:
-        return False
-    if _columns(connection, "collection_receipts") != RECEIPT_COLUMNS:
-        return False
-    if _primary_key(connection) != DAILY_PRIMARY_KEY:
-        return False
-    triggers = {
-        str(row[0]): str(row[1])
-        for row in connection.execute(
-            "SELECT name,sql FROM sqlite_master WHERE type='trigger'"
-        )
-    }
-    invalid = any(
-        name not in triggers
-        or _normalized_sql(triggers[name]) != _normalized_sql(expected_sql)
-        for name, expected_sql in RECEIPT_TRIGGER_SQL.items()
+    from .collector_continuity import (
+        CollectorContinuityError,
+        default_collector_ledger_path,
+        load_verified_prepared_collector,
     )
-    return not invalid
+
+    try:
+        load_verified_prepared_collector(
+            database_path=str(database),
+            ledger_path=default_collector_ledger_path(str(database)),
+        )
+    except (CollectorContinuityError, OSError, sqlite3.Error, ValueError):
+        return False
+    return True
 
 
-def _structural_status(connection: sqlite3.Connection) -> tuple[dict[str, object], list[dict[str, object]]]:
+def _structural_status(
+    connection: sqlite3.Connection, database: Path | None = None
+) -> tuple[dict[str, object], list[dict[str, object]]]:
     tables = _tables(connection)
     version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-    legacy_v4_collector = _is_legacy_v4_collector(connection, version)
+    legacy_v4_collector = _is_legacy_v4_collector(connection, version, database)
     triggers = {
         str(row[0]): str(row[1])
         for row in connection.execute(
@@ -234,7 +233,7 @@ def check_execution_readiness(
         return _empty_result(database, "database_unreadable")
 
     try:
-        schema, blockers = _structural_status(connection)
+        schema, blockers = _structural_status(connection, database)
         result: dict[str, object] = {
             "database": str(database),
             "schema_version": schema["version"],
