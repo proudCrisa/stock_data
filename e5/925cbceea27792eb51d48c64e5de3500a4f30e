@@ -1,0 +1,19 @@
+stockdata/provider_intrinsic.py
+  s_192209869065c0::t_e3c8d8f0446059 201-207,921,1058
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "e5925cbceea27792eb51d48c64e5de3500a4f30e",
+  "prompts": {},
+  "sessions": {
+    "s_192209869065c0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a04932-a016-7683-8116-37480cd04d16",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
