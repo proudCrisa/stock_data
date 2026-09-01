@@ -181,9 +181,9 @@ def _connect(database: str | Path | bytes) -> _BoundConnection:
             connection.execute("PRAGMA query_only=ON")
             connection.row_factory = sqlite3.Row
             return _BoundConnection(connection=connection, identity=None)
-        from .execution_readiness import open_readonly_identity_bound
+        from .execution_readiness import open_verified_readonly_snapshot
 
-        return _BoundConnection(bound=open_readonly_identity_bound(database))
+        return _BoundConnection(bound=open_verified_readonly_snapshot(database))
     except IntrinsicEvidenceError:
         raise
     except Exception as exc:

@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
+import tempfile
 from collections.abc import Iterable
 from datetime import date, datetime
 from pathlib import Path
@@ -99,49 +101,69 @@ def _normalized_sql(value: str) -> str:
     return " ".join(value.split()).rstrip(";").lower()
 
 
-class IdentityBoundReadConnection:
-    """A read-only SQLite connection bound to a verified physical file identity.
+class VerifiedReadonlySnapshot:
+    """A read-only SQLite connection opened against a private, verified snapshot.
 
-    The file is opened with no-follow to capture its (dev, inode) identity.
-    SQLite is then opened by pathname so WAL sidecar discovery works normally.
-    The identity is re-verified immediately after opening and again when the
-    caller closes the wrapper; any mismatch raises ``CollectorContinuityError``.
+    The original database file and any WAL sidecars are opened through a
+    no-follow descriptor, their physical identity is verified, and their
+    contents are copied into a private temporary directory.  SQLite then opens
+    the temporary copy by ordinary pathname, so WAL sidecar discovery works
+    without polluting or relying on the source directory.  The snapshot is
+    destroyed on close.
     """
 
     def __init__(
         self,
         connection: sqlite3.Connection,
-        opened: object,
-        path: Path,
+        identity: object,
+        source_path: Path,
+        snapshot_dir: str,
     ) -> None:
         self.connection = connection
-        self._opened = opened
-        self._path = path
-        self.identity = opened.identity
+        self.identity = identity
+        self.source_path = source_path
+        self._snapshot_dir = snapshot_dir
 
-    def close(self) -> None:
+    def verify_identity_unchanged(self) -> None:
         from .collector_continuity import verify_file_identity
 
-        try:
-            verify_file_identity(str(self._path), self._opened.identity)
-        finally:
-            self.connection.close()
-            self._opened.close()
+        verify_file_identity(str(self.source_path), self.identity)
 
-    def __enter__(self) -> "IdentityBoundReadConnection":
+    def close(self) -> None:
+        try:
+            self.connection.close()
+        finally:
+            try:
+                shutil.rmtree(self._snapshot_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+    def __enter__(self) -> "VerifiedReadonlySnapshot":
         return self
 
     def __exit__(self, *exc: object) -> None:
         self.close()
 
 
-def open_readonly_identity_bound(
-    database: str | Path,
-) -> IdentityBoundReadConnection:
-    """Open a read-only SQLite connection bound to the file's physical identity.
+def _copy_fd_to_file(source_fd: int, destination: Path) -> None:
+    """Copy all readable bytes from ``source_fd`` into ``destination``.
 
-    WAL sidecars are discovered through the pathname while the actual identity
-    is anchored by a held no-follow descriptor.
+    The source descriptor is left open so the caller can continue to rely on
+    its anchored file identity.
+    """
+    with os.fdopen(source_fd, "rb", closefd=False) as source, open(destination, "wb") as sink:
+        shutil.copyfileobj(source, sink)
+
+
+def open_verified_readonly_snapshot(
+    database: str | Path,
+) -> VerifiedReadonlySnapshot:
+    """Open a read-only SQLite connection against a verified private snapshot.
+
+    The source database is captured under its current physical identity; any
+    ``-wal``/``-shm`` sidecars that exist at open time are copied as well.
+    SQLite reads from the temporary copy, so the source directory is never
+    modified by WAL discovery and the evidence cannot be altered after opening.
     """
     from .collector_continuity import (
         CollectorContinuityError,
@@ -149,24 +171,42 @@ def open_readonly_identity_bound(
         verify_file_identity,
     )
 
-    path = Path(database).expanduser().resolve()
-    opened = open_nofollow_regular(str(path))
+    source_path = Path(database).expanduser().resolve()
+    source_str = str(source_path)
+    main_opened = open_nofollow_regular(source_str)
     try:
-        verify_file_identity(str(path), opened.identity)
-        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-        connection.row_factory = sqlite3.Row
-        # Re-verify the path still resolves to the same inode after SQLite
-        # opened it (catches atomic replacement between our open and SQLite's).
-        current = open_nofollow_regular(str(path))
-        try:
-            if current.identity != opened.identity:
-                raise CollectorContinuityError("database identity changed while opening")
-        finally:
-            current.close()
-        return IdentityBoundReadConnection(connection, opened, path)
+        verify_file_identity(source_str, main_opened.identity)
     except BaseException:
-        opened.close()
+        main_opened.close()
         raise
+
+    snapshot_dir = tempfile.mkdtemp(prefix="stockdata_readonly_snapshot_")
+    try:
+        snapshot_path = Path(snapshot_dir) / source_path.name
+        _copy_fd_to_file(main_opened.descriptor, snapshot_path)
+        for suffix in ("-wal", "-shm"):
+            sidecar_path = Path(f"{source_str}{suffix}")
+            if sidecar_path.is_file():
+                sidecar_opened = open_nofollow_regular(str(sidecar_path))
+                try:
+                    verify_file_identity(str(sidecar_path), sidecar_opened.identity)
+                    _copy_fd_to_file(
+                        sidecar_opened.descriptor,
+                        Path(snapshot_dir) / f"{source_path.name}{suffix}",
+                    )
+                finally:
+                    sidecar_opened.close()
+        connection = sqlite3.connect(str(snapshot_path))
+        connection.execute("PRAGMA query_only=ON")
+        connection.row_factory = sqlite3.Row
+        return VerifiedReadonlySnapshot(
+            connection, main_opened.identity, source_path, snapshot_dir
+        )
+    except BaseException:
+        shutil.rmtree(snapshot_dir, ignore_errors=True)
+        raise
+    finally:
+        main_opened.close()
 
 
 def _is_legacy_v4_collector(
@@ -330,21 +370,22 @@ def check_execution_readiness(
     from .collector_continuity import CollectorContinuityError
 
     try:
-        bound = open_readonly_identity_bound(database)
+        bound = open_verified_readonly_snapshot(database)
     except CollectorContinuityError:
         database_path = Path(database).expanduser().resolve()
         if not database_path.is_file():
             return _empty_result(database_path, "database_missing")
         return _empty_result(database_path, "database_unreadable")
 
-    database = bound._path
+    source_path = bound.source_path
     connection = bound.connection
-    try:
+
+    def _check() -> dict[str, object]:
         schema, blockers = _structural_status(
-            connection, database, bound.identity
+            connection, source_path, bound.identity
         )
         result: dict[str, object] = {
-            "database": str(database),
+            "database": str(source_path),
             "schema_version": schema["version"],
             "ready": False,
             "schema": schema,
@@ -490,9 +531,18 @@ def check_execution_readiness(
         result["blockers"] = blockers
         result["ready"] = not blockers
         return result
-    except CollectorContinuityError:
-        return _empty_result(database, "database_identity_changed")
-    except sqlite3.Error as exc:
-        return _empty_result(database, f"database_error:{exc.__class__.__name__}")
+
+    try:
+        try:
+            result = _check()
+        except CollectorContinuityError:
+            result = _empty_result(source_path, "database_identity_changed")
+        except sqlite3.Error as exc:
+            result = _empty_result(source_path, f"database_error:{exc.__class__.__name__}")
+        try:
+            bound.verify_identity_unchanged()
+        except CollectorContinuityError:
+            result = _empty_result(source_path, "database_identity_changed")
+        return result
     finally:
         bound.close()
