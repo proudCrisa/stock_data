@@ -4,6 +4,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from pathlib import Path
 
 from stockdata.cache import Cache
 from stockdata.execution_readiness import check_execution_readiness, load_panel
@@ -231,7 +232,7 @@ def test_load_panel_accepts_existing_split_overlay_shape(tmp_path):
     assert load_panel(path) == {("000001.SZ", "2025-07-01")}
 
 
-def _make_v4_collector(tmp_path):
+def _make_v4_collector(tmp_path, filename="evidence.sqlite"):
     """Create a genuine v4 collector (no trading_calendar, user_version=4)."""
     from stockdata import future_panel_registration as fpr
 
@@ -248,7 +249,7 @@ def _make_v4_collector(tmp_path):
         json.dumps(panel, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
         encoding="ascii",
     )
-    database = tmp_path / "evidence.sqlite"
+    database = tmp_path / filename
     # v4 没有 trading_calendar；临时屏蔽该表安装与版本号，让 schema hash、
     # genesis、ledger 从开始就一致，从而模拟真实的不可变 v4 collector。
     original_calendar_schema = fpr._CALENDAR_SCHEMA
@@ -291,6 +292,73 @@ def test_empty_genesis_table_is_not_accepted_as_legacy_v4(tmp_path):
     assert report["schema_version"] == 4
     assert report["schema"]["legacy_v4_collector_accepted"] is False
     assert "schema_version_mismatch" in _codes(report)
+
+
+def test_verify_collector_capability_accepts_legacy_v4(tmp_path):
+    """注册前置路径 verify_collector_capability 必须能识别真正的 v4 collector。"""
+    from stockdata.future_panel_registration import verify_collector_capability
+
+    database = _make_v4_collector(tmp_path)
+    symbols = sorted([
+        "000001.SZ", "000002.SZ", "000333.SZ",
+        "600000.SH", "600519.SH", "601318.SH",
+        "000858.SZ", "002415.SZ", "300750.SZ",
+        "600036.SH", "601166.SH", "000725.SZ",
+    ])
+
+    result = verify_collector_capability(
+        database, symbols=symbols, first_session="2099-01-06"
+    )
+
+    assert result["schema_version"] == "stockdata-forward-collector-capability/2"
+    assert result["database_path"] == str(database)
+
+
+def test_provider_intrinsic_path_based_accepts_legacy_v4(tmp_path):
+    """provider_intrinsic 路径型调用方也必须把路径传进结构检查。"""
+    from stockdata.provider_intrinsic import _validate_database_structure
+
+    database = _make_v4_collector(tmp_path)
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    try:
+        _validate_database_structure(connection, database)
+    finally:
+        connection.close()
+
+
+def test_relative_path_to_legacy_v4_collector_is_accepted(tmp_path, monkeypatch):
+    """STOCKDATA_DB/API 传入相对路径时,应先 canonicalize 再定位 ledger。"""
+    database = _make_v4_collector(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    report = check_execution_readiness(Path("evidence.sqlite"))
+
+    assert report["schema_version"] == 4
+    assert report["schema"]["legacy_v4_collector_accepted"] is True
+    assert "schema_version_mismatch" not in _codes(report)
+
+
+def test_legacy_v4_identity_mismatch_rejects_different_file(tmp_path):
+    """连接指向文件 A 但验证路径指向文件 B 时,不能冒充同一 v4 collector。"""
+    from stockdata.collector_continuity import open_nofollow_regular
+    from stockdata.execution_readiness import _is_legacy_v4_collector
+
+    a = _make_v4_collector(tmp_path, "a.sqlite")
+    b = _make_v4_collector(tmp_path, "b.sqlite")
+
+    opened = open_nofollow_regular(str(a))
+    try:
+        connection = sqlite3.connect(
+            f"file:/dev/fd/{opened.descriptor}?mode=ro&cache=private",
+            uri=True,
+        )
+        try:
+            assert _is_legacy_v4_collector(connection, 4, a) is True
+            assert _is_legacy_v4_collector(connection, 4, b) is False
+        finally:
+            connection.close()
+    finally:
+        opened.close()
 
 
 def test_readiness_cli_does_not_migrate_or_modify_database(tmp_path):

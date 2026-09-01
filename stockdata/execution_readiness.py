@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 from collections.abc import Iterable
 from datetime import date, datetime
@@ -98,6 +99,30 @@ def _normalized_sql(value: str) -> str:
     return " ".join(value.split()).rstrip(";").lower()
 
 
+def _locator_identity(locator: str) -> tuple[int, int] | None:
+    """Return (st_dev, st_ino) for a SQLite main-database locator.
+
+    Handles both normal paths and ``/dev/fd/N`` descriptors used for
+    identity-bound, no-follow connections.
+    """
+    if locator.startswith("/dev/fd/"):
+        try:
+            fd = int(locator[len("/dev/fd/"):])
+            st = os.fstat(fd)
+        except (ValueError, OSError):
+            return None
+        return (st.st_dev, st.st_ino)
+    from .collector_continuity import CollectorContinuityError, open_nofollow_regular
+
+    try:
+        opened = open_nofollow_regular(locator)
+        identity = opened.identity
+        opened.close()
+    except (CollectorContinuityError, OSError):
+        return None
+    return (identity.device, identity.inode)
+
+
 def _is_legacy_v4_collector(
     connection: sqlite3.Connection, version: int, database: Path | None
 ) -> bool:
@@ -107,8 +132,9 @@ def _is_legacy_v4_collector(
     contract binds the exact SQL of the remaining tables/triggers.  We therefore
     reuse the prepared-collector verifier to prove that this is a real,
     immutable collector: genesis claim, cohort, schema hash, guard triggers and
-    ledger binding must all be valid.  Missing ``trading_calendar`` is handled as
-    "no calendar data" by ``TradingCalendar`` downstream.
+    ledger binding must all be valid, and the file being verified is the same
+    file the caller's connection is reading.  Missing ``trading_calendar`` is
+    handled as "no calendar data" by ``TradingCalendar`` downstream.
     """
     if version != 4 or database is None:
         return False
@@ -119,20 +145,52 @@ def _is_legacy_v4_collector(
         CollectorContinuityError,
         default_collector_ledger_path,
         load_verified_prepared_collector,
+        open_nofollow_regular,
+        verify_file_identity,
     )
 
+    rows = connection.execute("PRAGMA database_list").fetchall()
+    connection_locator = str(rows[0][2]) if len(rows) == 1 else ""
+    connection_identity = _locator_identity(connection_locator)
+
+    opened_before: object | None = None
+    opened_after: object | None = None
     try:
+        opened_before = open_nofollow_regular(str(database))
+        path_identity = (opened_before.identity.device, opened_before.identity.inode)
+        verify_file_identity(str(database), opened_before.identity)
+        if connection_identity is not None and connection_identity != path_identity:
+            return False
         load_verified_prepared_collector(
             database_path=str(database),
             ledger_path=default_collector_ledger_path(str(database)),
         )
+        opened_after = open_nofollow_regular(str(database))
+        path_identity_after = (
+            opened_after.identity.device,
+            opened_after.identity.inode,
+        )
+        verify_file_identity(str(database), opened_after.identity)
+        if path_identity_after != path_identity:
+            return False
+        return True
     except (CollectorContinuityError, OSError, sqlite3.Error, ValueError):
         return False
-    return True
+    finally:
+        if opened_before is not None:
+            try:
+                opened_before.close()
+            except Exception:
+                pass
+        if opened_after is not None:
+            try:
+                opened_after.close()
+            except Exception:
+                pass
 
 
 def _structural_status(
-    connection: sqlite3.Connection, database: Path | None = None
+    connection: sqlite3.Connection, database: Path | None
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
     tables = _tables(connection)
     version = int(connection.execute("PRAGMA user_version").fetchone()[0])
@@ -207,7 +265,7 @@ def check_execution_readiness(
     panel: Iterable[tuple[str, str]] | None = None,
 ) -> dict[str, object]:
     """Return a machine-readable, fail-closed readiness report without writes."""
-    database = Path(database).expanduser()
+    database = Path(database).expanduser().resolve()
     identity = (source, adjustment_mode, adjustment_version)
     if any(value is not None for value in identity) and not all(identity):
         raise ValueError(
@@ -224,15 +282,31 @@ def check_execution_readiness(
     if not database.is_file():
         return _empty_result(database, "database_missing")
 
+    from .collector_continuity import (
+        CollectorContinuityError,
+        open_nofollow_regular,
+        verify_file_identity,
+    )
+
+    opened: object | None = None
+    connection: sqlite3.Connection | None = None
     try:
-        connection = sqlite3.connect(
-            f"file:{database.resolve()}?mode=ro", uri=True
-        )
-        connection.row_factory = sqlite3.Row
-    except sqlite3.Error:
+        opened = open_nofollow_regular(str(database))
+    except CollectorContinuityError:
         return _empty_result(database, "database_unreadable")
 
     try:
+        locator = f"/dev/fd/{opened.descriptor}"
+        connection = sqlite3.connect(
+            f"file:{locator}?mode=ro&cache=private",
+            uri=True,
+            check_same_thread=True,
+            isolation_level=None,
+        )
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=1")
+        verify_file_identity(str(database), opened.identity)
+
         schema, blockers = _structural_status(connection, database)
         result: dict[str, object] = {
             "database": str(database),
@@ -380,8 +454,14 @@ def check_execution_readiness(
         result_counts["selected_rows"] = len(selected_rows)
         result["blockers"] = blockers
         result["ready"] = not blockers
+        verify_file_identity(str(database), opened.identity)
         return result
+    except CollectorContinuityError:
+        return _empty_result(database, "database_identity_changed")
     except sqlite3.Error as exc:
         return _empty_result(database, f"database_error:{exc.__class__.__name__}")
     finally:
-        connection.close()
+        if connection is not None:
+            connection.close()
+        if opened is not None:
+            opened.close()

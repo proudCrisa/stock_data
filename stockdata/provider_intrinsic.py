@@ -198,8 +198,13 @@ def _database_receipt(row: sqlite3.Row) -> tuple[str, Mapping[str, object]]:
     return identifier, value
 
 
-def _validate_database_structure(connection: sqlite3.Connection) -> None:
-    _, blockers = _structural_status(connection)
+def _validate_database_structure(
+    connection: sqlite3.Connection, database: str | Path | bytes | None = None
+) -> None:
+    database_path: Path | None = None
+    if database is not None and not isinstance(database, bytes):
+        database_path = Path(database).expanduser().resolve()
+    _, blockers = _structural_status(connection, database_path)
     if blockers:
         raise IntrinsicEvidenceError(
             "intrinsic_database_structure_invalid",
@@ -913,7 +918,7 @@ def reconstruct_forward_component_evidence(
         )
     connection = _connect(database)
     try:
-        _validate_database_structure(connection)
+        _validate_database_structure(connection, database)
         _validate_forward_component_structure(connection)
         universe, universe_receipts, context = _forward_universe_artifact(
             connection, panel=canonical_panel, decision_cutoffs=decision_cutoffs
@@ -1050,7 +1055,7 @@ def reconstruct_intrinsic_evidence(
 
     connection = _connect(database)
     try:
-        _validate_database_structure(connection)
+        _validate_database_structure(connection, database)
         execution, execution_receipts = _price_artifact(
             connection,
             component="execution_prices",
