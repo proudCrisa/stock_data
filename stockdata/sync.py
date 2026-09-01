@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from datetime import date, timedelta
-from typing import Callable, Iterable
+from typing import Callable
 
 from .cache import Cache
 from .fetch_baostock import fetch_baostock
@@ -347,6 +348,11 @@ def sync_symbols(
             empty_collector_response = False
             for fetch_start, fetch_end in gaps:
                 response = fetch(code, fetch_start, fetch_end)
+                if getattr(response, "dropped", 0) > 0:
+                    raise ValueError(
+                        f"fetcher dropped {response.dropped} row(s) for {code} "
+                        f"{fetch_start}..{fetch_end}; refusing partial batch"
+                    )
                 response_bars = [
                     bar for bar in response
                     if fetch_start <= bar.get("date", "") <= fetch_end

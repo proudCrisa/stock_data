@@ -5,13 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Iterable
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterable
+
 from .availability import price_availability_error
 from .rqgm_execution_export import _receipt_covers_bar
 from .ticker import normalize
-
 
 SCHEMA_VERSION = 5
 DAILY_PRIMARY_KEY = (
@@ -98,9 +98,46 @@ def _normalized_sql(value: str) -> str:
     return " ".join(value.split()).rstrip(";").lower()
 
 
+def _is_legacy_v4_collector(connection: sqlite3.Connection, version: int) -> bool:
+    """Accept a frozen v4 collector whose immutable identity forbids migration.
+
+    The calendar schema bump to v5 only added ``trading_calendar``; the collector
+    contract binds the exact SQL of the remaining tables/triggers.  A v4
+    collector is therefore structurally valid if it carries the genesis marker
+    and satisfies the daily/receipt schema contract.  Missing ``trading_calendar``
+    is handled as "no calendar data" by ``TradingCalendar`` downstream.
+    """
+    if version != 4:
+        return False
+    tables = _tables(connection)
+    if "forward_collector_genesis" not in tables:
+        return False
+    if {"daily", "collection_receipts"} - tables:
+        return False
+    if _columns(connection, "daily") != DAILY_COLUMNS:
+        return False
+    if _columns(connection, "collection_receipts") != RECEIPT_COLUMNS:
+        return False
+    if _primary_key(connection) != DAILY_PRIMARY_KEY:
+        return False
+    triggers = {
+        str(row[0]): str(row[1])
+        for row in connection.execute(
+            "SELECT name,sql FROM sqlite_master WHERE type='trigger'"
+        )
+    }
+    invalid = any(
+        name not in triggers
+        or _normalized_sql(triggers[name]) != _normalized_sql(expected_sql)
+        for name, expected_sql in RECEIPT_TRIGGER_SQL.items()
+    )
+    return not invalid
+
+
 def _structural_status(connection: sqlite3.Connection) -> tuple[dict[str, object], list[dict[str, object]]]:
     tables = _tables(connection)
     version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    legacy_v4_collector = _is_legacy_v4_collector(connection, version)
     triggers = {
         str(row[0]): str(row[1])
         for row in connection.execute(
@@ -129,7 +166,7 @@ def _structural_status(connection: sqlite3.Connection) -> tuple[dict[str, object
         )
     blockers = []
     for code, values in (
-        ("schema_version_mismatch", [] if version == SCHEMA_VERSION else [str(version)]),
+        ("schema_version_mismatch", [] if version == SCHEMA_VERSION or legacy_v4_collector else [str(version)]),
         ("missing_tables", missing_tables),
         ("missing_columns", missing_columns),
         ("daily_primary_key_mismatch", [] if pk == DAILY_PRIMARY_KEY else [",".join(pk)]),
@@ -141,6 +178,7 @@ def _structural_status(connection: sqlite3.Connection) -> tuple[dict[str, object
     return {
         "version": version,
         "expected_version": SCHEMA_VERSION,
+        "legacy_v4_collector_accepted": legacy_v4_collector,
         "daily_primary_key": list(pk),
         "missing_tables": missing_tables,
         "missing_columns": missing_columns,

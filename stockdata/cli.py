@@ -433,6 +433,7 @@ def _run_cache_command(params: dict, database: Path, writer_token: object | None
 
         return api.get_realtime(params["code"])
     if params["kind"] == "update":
+        from .finalization import latest_finalized_date
         from .sync import default_final_date, sync_symbols
 
         if params["codes_file"]:
@@ -442,11 +443,17 @@ def _run_cache_command(params: dict, database: Path, writer_token: object | None
             ]
         else:
             codes = [c.strip() for c in params["codes"].split(",") if c.strip()]
+        calendar = cache.trading_calendar
+        end = params["end_date"] or (
+            latest_finalized_date(calendar=calendar)
+            if calendar.has_data()
+            else default_final_date()
+        )
         return sync_symbols(
             cache,
             codes,
             params["start_date"],
-            params["end_date"] or default_final_date(),
+            end,
             adjustment_mode=params["adjustment_mode"],
         )
     if params["kind"] == "snapshot_create":
@@ -661,6 +668,11 @@ def main(argv=None):
         )
         json.dump(out, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
+        if isinstance(out, list) and any(
+            item.get("terminal_event_type") != "ATTEMPT_COMPLETED"
+            for item in out
+        ):
+            return 1
         return 0
     if params["kind"] == "jqdata_bootstrap":
         from .execution_readiness import load_panel

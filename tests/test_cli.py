@@ -343,6 +343,72 @@ class TestBuildParams:
         }
 
 
+class TestUpdateDefaultEnd:
+    def test_default_end_uses_cached_calendar_on_holiday(
+        self, monkeypatch, tmp_path, capsys
+    ):
+
+        from stockdata import cli
+
+        database = tmp_path / "calendar.sqlite"
+        from stockdata.cache import Cache
+
+        cache = Cache(database)
+        cache.refresh_trading_calendar(
+            "2023-12-25", "2024-01-05",
+            fetcher=lambda start, end: [
+                {"date": "2023-12-25", "is_trading_day": False},
+                {"date": "2023-12-26", "is_trading_day": True},
+                {"date": "2023-12-27", "is_trading_day": True},
+                {"date": "2023-12-28", "is_trading_day": True},
+                {"date": "2023-12-29", "is_trading_day": True},
+                {"date": "2024-01-01", "is_trading_day": False},
+                {"date": "2024-01-02", "is_trading_day": True},
+            ],
+        )
+        cache.close()
+
+        captured = {}
+
+        def fake_sync(cache, codes, start, end, *, adjustment_mode="qfq"):
+            captured.update(
+                codes=codes, start=start, end=end, adjustment_mode=adjustment_mode
+            )
+            return {
+                "start": start,
+                "end": end,
+                "source": "baostock",
+                "adjustment_mode": adjustment_mode,
+                "adjustment_version": "baostock-adjustflag-2",
+                "symbols": [{"code": codes[0], "status": "synced", "written": 1}],
+                "synced": 1,
+                "up_to_date": 0,
+                "errors": 0,
+            }
+
+        captured_latest = {}
+
+        def fake_latest_finalized_date(*, calendar):
+            captured_latest["calendar"] = calendar
+            return "2023-12-29"
+
+        monkeypatch.setattr("stockdata.sync.sync_symbols", fake_sync)
+        monkeypatch.setattr(
+            "stockdata.finalization.latest_finalized_date",
+            fake_latest_finalized_date,
+        )
+        monkeypatch.setenv("STOCKDATA_DB", str(database))
+
+        rc = cli.main([
+            "update", "--codes", "000001.SZ",
+            "--start", "2023-12-29",
+        ])
+        assert rc == 0
+        assert captured["end"] == "2023-12-29"
+        assert captured["start"] == "2023-12-29"
+        assert captured_latest["calendar"] is not None
+
+
 class TestWriteCommandExitCode:
     def test_update_returns_nonzero_when_sync_reports_errors(
         self, monkeypatch, tmp_path, capsys
@@ -418,3 +484,61 @@ class TestWriteCommandExitCode:
         assert rc == 0
         out = json.loads(capsys.readouterr().out)
         assert out["errors"] == 0
+
+    def test_registered_panel_capture_returns_nonzero_on_attempt_failed(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        from stockdata import cli
+
+        monkeypatch.setenv("STOCKDATA_DB", str(tmp_path / "cli.sqlite"))
+        monkeypatch.setattr(
+            "stockdata.registered_panel_capture.capture_registered_panel",
+            lambda *args, **kwargs: [
+                {
+                    "step_id": "post_close_prices",
+                    "terminal_event_type": "ATTEMPT_FAILED",
+                    "classification": "child_launch_failed",
+                    "returncode": None,
+                }
+            ],
+        )
+
+        rc = cli.main([
+            "registered-panel-capture",
+            "--registration-file", str(tmp_path / "reg.json"),
+            "--database", str(tmp_path / "db.sqlite"),
+            "--date", "2026-08-12",
+            "--phase", "post_close",
+        ])
+        assert rc == 1
+        out = json.loads(capsys.readouterr().out)
+        assert out[0]["terminal_event_type"] == "ATTEMPT_FAILED"
+
+    def test_registered_panel_capture_returns_zero_on_attempt_completed(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        from stockdata import cli
+
+        monkeypatch.setenv("STOCKDATA_DB", str(tmp_path / "cli.sqlite"))
+        monkeypatch.setattr(
+            "stockdata.registered_panel_capture.capture_registered_panel",
+            lambda *args, **kwargs: [
+                {
+                    "step_id": "post_close_prices",
+                    "terminal_event_type": "ATTEMPT_COMPLETED",
+                    "classification": "complete",
+                    "returncode": 0,
+                }
+            ],
+        )
+
+        rc = cli.main([
+            "registered-panel-capture",
+            "--registration-file", str(tmp_path / "reg.json"),
+            "--database", str(tmp_path / "db.sqlite"),
+            "--date", "2026-08-12",
+            "--phase", "post_close",
+        ])
+        assert rc == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out[0]["terminal_event_type"] == "ATTEMPT_COMPLETED"

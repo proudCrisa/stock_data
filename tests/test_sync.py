@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
+
 import stockdata.sync as sync_module
 from stockdata.cache import Cache
 from stockdata.fetch_baostock import CapturedBars
@@ -229,6 +230,38 @@ def test_sync_no_data_range_is_not_marked_as_covered(tmp_path):
         ("600519.SH", "2024-01-06", "2024-01-07"),
         ("600519.SH", "2024-01-06", "2024-01-07"),
     ]
+
+
+def test_partial_dropped_rows_reject_batch_and_record_error(tmp_path):
+    # fail-closed：部分有效行 + 部分坏行时整段拒收，不推进 coverage。
+    cache = Cache(tmp_path / "dropped.sqlite")
+    receipt = {
+        "observed_at": "2024-01-02T16:00:00+08:00",
+        "source": "baostock",
+        "request": {"code": "sh.600519"},
+        "response": {"fields": "date", "rows": []},
+    }
+
+    def fetch(code, start, end):
+        return CapturedBars(
+            [_bar("2024-01-02", 1.0)], receipt, dropped=1
+        )
+
+    result = sync_symbols(
+        cache,
+        ["600519.SH"],
+        "2024-01-02",
+        "2024-01-03",
+        fetcher=fetch,
+    )
+
+    assert result["errors"] == 1
+    assert result["symbols"][0]["status"] == "error"
+    assert "dropped" in result["symbols"][0]["error"].lower()
+    assert cache.get_range("600519.SH", "2024-01-02", "2024-01-03") == []
+    assert cache.sync_coverage(
+        "600519.SH", "baostock", "qfq", "baostock-adjustflag-2"
+    ) is None
 
 
 def test_no_data_does_not_record_coverage(tmp_path):

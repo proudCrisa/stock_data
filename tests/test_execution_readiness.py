@@ -7,7 +7,7 @@ import sys
 
 from stockdata.cache import Cache
 from stockdata.execution_readiness import check_execution_readiness, load_panel
-
+from stockdata.future_panel_registration import prepare_future_collector_database
 
 IDENTITY = {
     "source": "baostock",
@@ -229,6 +229,45 @@ def test_load_panel_accepts_existing_split_overlay_shape(tmp_path):
     }))
 
     assert load_panel(path) == {("000001.SZ", "2025-07-01")}
+
+
+def _make_v4_collector(tmp_path):
+    """Create a fresh collector and downgrade it to v4 (no trading_calendar)."""
+    symbols = [
+        "000001.SZ", "000002.SZ", "000333.SZ",
+        "600000.SH", "600519.SH", "601318.SH",
+        "000858.SZ", "002415.SZ", "300750.SZ",
+        "600036.SH", "601166.SH", "000725.SZ",
+    ]
+    sessions = ["2099-01-06", "2099-01-07", "2099-01-08"]
+    panel = sorted(f"{symbol}@{day}" for symbol in symbols for day in sessions)
+    panel_file = tmp_path / "panel.json"
+    panel_file.write_text(
+        json.dumps(panel, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+        encoding="ascii",
+    )
+    database = tmp_path / "evidence.sqlite"
+    prepare_future_collector_database(
+        database_file=database, panel_file=panel_file
+    )
+    conn = sqlite3.connect(database)
+    try:
+        conn.execute("DROP TABLE trading_calendar")
+        conn.execute("PRAGMA user_version=4")
+        conn.commit()
+    finally:
+        conn.close()
+    return database
+
+
+def test_legacy_v4_collector_is_not_blocked_by_schema_version_mismatch(tmp_path):
+    database = _make_v4_collector(tmp_path)
+
+    report = check_execution_readiness(database)
+
+    assert report["schema_version"] == 4
+    assert report["schema"]["legacy_v4_collector_accepted"] is True
+    assert "schema_version_mismatch" not in _codes(report)
 
 
 def test_readiness_cli_does_not_migrate_or_modify_database(tmp_path):
