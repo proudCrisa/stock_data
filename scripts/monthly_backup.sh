@@ -26,12 +26,18 @@ trap 'rmdir "$LOCK"' EXIT
     exit 1
   fi
   cd "$BACKUP_DIR"
+  # backup_encrypt.py 产物为固定文件名且拒绝覆盖;先把上一期改名归档,再跑新备份
+  if [ -f stockdata-backup-1files.zip ]; then
+    prev="stockdata-backup-$(date -r stockdata-backup-1files.zip +%F).zip"
+    mv stockdata-backup-1files.zip "$prev"
+    echo "archive previous -> $prev"
+  fi
   STOCKDATA_BACKUP_PASSWORD_FD=3 "$ROOT/.venv/bin/python" "$ROOT/scripts/backup_encrypt.py" \
     "$HOME/.stockdata/cache.sqlite" 3<<<"$pw"
   rc=$?
   unset pw
   if [ "$rc" -eq 0 ]; then
-    # 轮转:只保留最近 3 份
+    # 轮转:所有 stockdata-backup-*.zip 合计只保留最近 3 份
     ls -t stockdata-backup-*.zip 2>/dev/null | tail -n +4 | while read -r f; do
       echo "rotate: remove $f"; rm -f "$f"
     done
