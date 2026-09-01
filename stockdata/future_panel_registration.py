@@ -276,8 +276,10 @@ def verify_collector_capability(
         )
         with open_exact_collector_sqlite(
             database_path=str(path), ledger_path=ledger_path
-        ) as (connection, _):
-            structure, blockers = _structural_status(connection, path)
+        ) as (connection, opened):
+            structure, blockers = _structural_status(
+                connection, path, opened.database.identity
+            )
             if blockers:
                 raise FuturePanelRegistrationError("collector database price schema is invalid")
             cohort_rows = connection.execute(

@@ -142,7 +142,32 @@ def _panel(values: Sequence[str]) -> tuple[str, ...]:
     return result
 
 
-def _connect(database: str | Path | bytes) -> sqlite3.Connection:
+class _BoundConnection:
+    """SQLite connection plus the physical identity used to open it, if any."""
+
+    def __init__(
+        self,
+        *,
+        bound: object | None = None,
+        connection: sqlite3.Connection | None = None,
+        identity: object | None = None,
+    ) -> None:
+        self._bound = bound
+        if bound is not None:
+            self.connection = bound.connection
+            self.identity = bound.identity
+        else:
+            self.connection = connection  # type: ignore[assignment]
+            self.identity = identity
+
+    def close(self) -> None:
+        if self._bound is not None:
+            self._bound.close()
+        else:
+            self.connection.close()
+
+
+def _connect(database: str | Path | bytes) -> _BoundConnection:
     try:
         if isinstance(database, bytes):
             connection = sqlite3.connect(":memory:")
@@ -154,12 +179,14 @@ def _connect(database: str | Path | bytes) -> sqlite3.Connection:
                 )
             connection.deserialize(database)
             connection.execute("PRAGMA query_only=ON")
-        else:
-            path = Path(database).expanduser().resolve()
-            connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-        connection.row_factory = sqlite3.Row
-        return connection
-    except sqlite3.Error as exc:
+            connection.row_factory = sqlite3.Row
+            return _BoundConnection(connection=connection, identity=None)
+        from .execution_readiness import open_readonly_identity_bound
+
+        return _BoundConnection(bound=open_readonly_identity_bound(database))
+    except IntrinsicEvidenceError:
+        raise
+    except Exception as exc:
         raise IntrinsicEvidenceError(
             "intrinsic_database_unreadable", "intrinsic database is unreadable"
         ) from exc
@@ -199,12 +226,16 @@ def _database_receipt(row: sqlite3.Row) -> tuple[str, Mapping[str, object]]:
 
 
 def _validate_database_structure(
-    connection: sqlite3.Connection, database: str | Path | bytes | None = None
+    connection: sqlite3.Connection,
+    database: str | Path | bytes | None = None,
+    expected_identity: object | None = None,
 ) -> None:
     database_path: Path | None = None
     if database is not None and not isinstance(database, bytes):
         database_path = Path(database).expanduser().resolve()
-    _, blockers = _structural_status(connection, database_path)
+    _, blockers = _structural_status(
+        connection, database_path, expected_identity
+    )
     if blockers:
         raise IntrinsicEvidenceError(
             "intrinsic_database_structure_invalid",
@@ -916,28 +947,30 @@ def reconstruct_forward_component_evidence(
         raise IntrinsicEvidenceError(
             "intrinsic_forward_cutoff_mismatch", "calendar cutoffs do not cover panel"
         )
-    connection = _connect(database)
+    bound = _connect(database)
     try:
-        _validate_database_structure(connection, database)
-        _validate_forward_component_structure(connection)
+        _validate_database_structure(
+            bound.connection, database, bound.identity
+        )
+        _validate_forward_component_structure(bound.connection)
         universe, universe_receipts, context = _forward_universe_artifact(
-            connection, panel=canonical_panel, decision_cutoffs=decision_cutoffs
+            bound.connection, panel=canonical_panel, decision_cutoffs=decision_cutoffs
         )
         status, status_receipts = _forward_status_artifact(
-            connection,
+            bound.connection,
             panel=canonical_panel,
             decision_cutoffs=decision_cutoffs,
             context=context,
         )
         actions, action_receipts = _forward_corporate_actions_artifact(
-            connection, panel=canonical_panel, decision_cutoffs=decision_cutoffs
+            bound.connection, panel=canonical_panel, decision_cutoffs=decision_cutoffs
         )
     except sqlite3.Error as exc:
         raise IntrinsicEvidenceError(
             "intrinsic_database_schema_mismatch", "forward component database schema is incomplete"
         ) from exc
     finally:
-        connection.close()
+        bound.close()
     receipts = {**universe_receipts, **status_receipts, **action_receipts}
     return ReconstructedForwardEvidence(
         components={
@@ -1053,30 +1086,32 @@ def reconstruct_intrinsic_evidence(
                 f"decision context readiness failed: {','.join(sorted(context_codes))}",
             )
 
-    connection = _connect(database)
+    bound = _connect(database)
     try:
-        _validate_database_structure(connection, database)
+        _validate_database_structure(
+            bound.connection, database, bound.identity
+        )
         execution, execution_receipts = _price_artifact(
-            connection,
+            bound.connection,
             component="execution_prices",
             panel=canonical_panel,
             adjustment=execution_adjustment,
         )
         signal, signal_receipts = _price_artifact(
-            connection,
+            bound.connection,
             component="signal_prices",
             panel=canonical_panel,
             adjustment=signal_adjustment,
         )
         context, context_receipts = _context_artifact(
-            connection, panel=canonical_panel, decision_cutoffs=decision_cutoffs
+            bound.connection, panel=canonical_panel, decision_cutoffs=decision_cutoffs
         )
     except sqlite3.Error as exc:
         raise IntrinsicEvidenceError(
             "intrinsic_database_schema_mismatch", "intrinsic database schema is incomplete"
         ) from exc
     finally:
-        connection.close()
+        bound.close()
     receipts = {**execution_receipts, **signal_receipts, **context_receipts}
     return ReconstructedIntrinsicEvidence(
         components={

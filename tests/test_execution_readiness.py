@@ -316,14 +316,17 @@ def test_verify_collector_capability_accepts_legacy_v4(tmp_path):
 
 def test_provider_intrinsic_path_based_accepts_legacy_v4(tmp_path):
     """provider_intrinsic 路径型调用方也必须把路径传进结构检查。"""
+    from stockdata.execution_readiness import open_readonly_identity_bound
     from stockdata.provider_intrinsic import _validate_database_structure
 
     database = _make_v4_collector(tmp_path)
-    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    bound = open_readonly_identity_bound(database)
     try:
-        _validate_database_structure(connection, database)
+        _validate_database_structure(
+            bound.connection, database, bound.identity
+        )
     finally:
-        connection.close()
+        bound.close()
 
 
 def test_relative_path_to_legacy_v4_collector_is_accepted(tmp_path, monkeypatch):
@@ -340,25 +343,63 @@ def test_relative_path_to_legacy_v4_collector_is_accepted(tmp_path, monkeypatch)
 
 def test_legacy_v4_identity_mismatch_rejects_different_file(tmp_path):
     """连接指向文件 A 但验证路径指向文件 B 时,不能冒充同一 v4 collector。"""
-    from stockdata.collector_continuity import open_nofollow_regular
-    from stockdata.execution_readiness import _is_legacy_v4_collector
+    from stockdata.execution_readiness import (
+        _is_legacy_v4_collector,
+        open_readonly_identity_bound,
+    )
 
     a = _make_v4_collector(tmp_path, "a.sqlite")
     b = _make_v4_collector(tmp_path, "b.sqlite")
 
-    opened = open_nofollow_regular(str(a))
+    bound = open_readonly_identity_bound(a)
+    connection = bound.connection
     try:
-        connection = sqlite3.connect(
-            f"file:/dev/fd/{opened.descriptor}?mode=ro&cache=private",
-            uri=True,
-        )
-        try:
-            assert _is_legacy_v4_collector(connection, 4, a) is True
-            assert _is_legacy_v4_collector(connection, 4, b) is False
-        finally:
-            connection.close()
+        assert _is_legacy_v4_collector(connection, 4, a, bound.identity) is True
+        assert _is_legacy_v4_collector(connection, 4, b, bound.identity) is False
     finally:
-        opened.close()
+        bound.close()
+
+
+def test_attached_database_rejects_legacy_v4(tmp_path):
+    """ATTACH 后 database_list 不再单一,legacy v4 接受必须 fail-closed。"""
+    from stockdata.execution_readiness import (
+        _is_legacy_v4_collector,
+        open_readonly_identity_bound,
+    )
+
+    database = _make_v4_collector(tmp_path)
+    bound = open_readonly_identity_bound(database)
+    try:
+        identity = bound.identity
+    finally:
+        bound.close()
+
+    connection = sqlite3.connect(str(database))
+    try:
+        connection.execute("ATTACH ':memory:' AS aux")
+        assert _is_legacy_v4_collector(connection, 4, database, identity) is False
+    finally:
+        connection.close()
+
+
+def test_wal_mode_with_uncheckpointed_frames_is_readable(tmp_path):
+    """身份绑定打开必须保留 WAL 边车发现,不能误报 unreadable。"""
+    database = tmp_path / "wal.sqlite"
+    cache = Cache(database)
+    _add_bar(cache, "2025-07-01")
+    cache._conn.execute("PRAGMA journal_mode=WAL")
+    _add_bar(cache, "2025-07-02")
+    cache.close()
+
+    report = check_execution_readiness(
+        database,
+        source=IDENTITY["source"],
+        adjustment_mode=IDENTITY["adjustment_mode"],
+        adjustment_version=IDENTITY["adjustment_version"],
+        panel={("000001.SZ", "2025-07-01"), ("000001.SZ", "2025-07-02")},
+    )
+
+    assert report["ready"] is True
 
 
 def test_readiness_cli_does_not_migrate_or_modify_database(tmp_path):

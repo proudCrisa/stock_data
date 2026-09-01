@@ -99,32 +99,81 @@ def _normalized_sql(value: str) -> str:
     return " ".join(value.split()).rstrip(";").lower()
 
 
-def _locator_identity(locator: str) -> tuple[int, int] | None:
-    """Return (st_dev, st_ino) for a SQLite main-database locator.
+class IdentityBoundReadConnection:
+    """A read-only SQLite connection bound to a verified physical file identity.
 
-    Handles both normal paths and ``/dev/fd/N`` descriptors used for
-    identity-bound, no-follow connections.
+    The file is opened with no-follow to capture its (dev, inode) identity.
+    SQLite is then opened by pathname so WAL sidecar discovery works normally.
+    The identity is re-verified immediately after opening and again when the
+    caller closes the wrapper; any mismatch raises ``CollectorContinuityError``.
     """
-    if locator.startswith("/dev/fd/"):
-        try:
-            fd = int(locator[len("/dev/fd/"):])
-            st = os.fstat(fd)
-        except (ValueError, OSError):
-            return None
-        return (st.st_dev, st.st_ino)
-    from .collector_continuity import CollectorContinuityError, open_nofollow_regular
 
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        opened: object,
+        path: Path,
+    ) -> None:
+        self.connection = connection
+        self._opened = opened
+        self._path = path
+        self.identity = opened.identity
+
+    def close(self) -> None:
+        from .collector_continuity import verify_file_identity
+
+        try:
+            verify_file_identity(str(self._path), self._opened.identity)
+        finally:
+            self.connection.close()
+            self._opened.close()
+
+    def __enter__(self) -> "IdentityBoundReadConnection":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+
+def open_readonly_identity_bound(
+    database: str | Path,
+) -> IdentityBoundReadConnection:
+    """Open a read-only SQLite connection bound to the file's physical identity.
+
+    WAL sidecars are discovered through the pathname while the actual identity
+    is anchored by a held no-follow descriptor.
+    """
+    from .collector_continuity import (
+        CollectorContinuityError,
+        open_nofollow_regular,
+        verify_file_identity,
+    )
+
+    path = Path(database).expanduser().resolve()
+    opened = open_nofollow_regular(str(path))
     try:
-        opened = open_nofollow_regular(locator)
-        identity = opened.identity
+        verify_file_identity(str(path), opened.identity)
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        # Re-verify the path still resolves to the same inode after SQLite
+        # opened it (catches atomic replacement between our open and SQLite's).
+        current = open_nofollow_regular(str(path))
+        try:
+            if current.identity != opened.identity:
+                raise CollectorContinuityError("database identity changed while opening")
+        finally:
+            current.close()
+        return IdentityBoundReadConnection(connection, opened, path)
+    except BaseException:
         opened.close()
-    except (CollectorContinuityError, OSError):
-        return None
-    return (identity.device, identity.inode)
+        raise
 
 
 def _is_legacy_v4_collector(
-    connection: sqlite3.Connection, version: int, database: Path | None
+    connection: sqlite3.Connection,
+    version: int,
+    database: Path | None,
+    expected_identity: object | None,
 ) -> bool:
     """Accept a frozen v4 collector whose immutable identity forbids migration.
 
@@ -132,11 +181,15 @@ def _is_legacy_v4_collector(
     contract binds the exact SQL of the remaining tables/triggers.  We therefore
     reuse the prepared-collector verifier to prove that this is a real,
     immutable collector: genesis claim, cohort, schema hash, guard triggers and
-    ledger binding must all be valid, and the file being verified is the same
-    file the caller's connection is reading.  Missing ``trading_calendar`` is
-    handled as "no calendar data" by ``TradingCalendar`` downstream.
+    ledger binding must all be valid, and the file being verified matches the
+    ``expected_identity`` supplied by the caller's identity-bound open.
+    Missing ``trading_calendar`` is handled as "no calendar data" by
+    ``TradingCalendar`` downstream.
     """
-    if version != 4 or database is None:
+    if version != 4 or database is None or expected_identity is None:
+        return False
+    # Reject ATTACHed or otherwise non-simple connections.
+    if len(connection.execute("PRAGMA database_list").fetchall()) != 1:
         return False
     tables = _tables(connection)
     if "forward_collector_genesis" not in tables or "forward_capture_cohort" not in tables:
@@ -149,30 +202,21 @@ def _is_legacy_v4_collector(
         verify_file_identity,
     )
 
-    rows = connection.execute("PRAGMA database_list").fetchall()
-    connection_locator = str(rows[0][2]) if len(rows) == 1 else ""
-    connection_identity = _locator_identity(connection_locator)
-
     opened_before: object | None = None
     opened_after: object | None = None
     try:
         opened_before = open_nofollow_regular(str(database))
-        path_identity = (opened_before.identity.device, opened_before.identity.inode)
-        verify_file_identity(str(database), opened_before.identity)
-        if connection_identity is not None and connection_identity != path_identity:
+        if opened_before.identity != expected_identity:
             return False
+        verify_file_identity(str(database), opened_before.identity)
         load_verified_prepared_collector(
             database_path=str(database),
             ledger_path=default_collector_ledger_path(str(database)),
         )
         opened_after = open_nofollow_regular(str(database))
-        path_identity_after = (
-            opened_after.identity.device,
-            opened_after.identity.inode,
-        )
-        verify_file_identity(str(database), opened_after.identity)
-        if path_identity_after != path_identity:
+        if opened_after.identity != expected_identity:
             return False
+        verify_file_identity(str(database), opened_after.identity)
         return True
     except (CollectorContinuityError, OSError, sqlite3.Error, ValueError):
         return False
@@ -190,11 +234,15 @@ def _is_legacy_v4_collector(
 
 
 def _structural_status(
-    connection: sqlite3.Connection, database: Path | None
+    connection: sqlite3.Connection,
+    database: Path | None,
+    expected_identity: object | None = None,
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
     tables = _tables(connection)
     version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-    legacy_v4_collector = _is_legacy_v4_collector(connection, version, database)
+    legacy_v4_collector = _is_legacy_v4_collector(
+        connection, version, database, expected_identity
+    )
     triggers = {
         str(row[0]): str(row[1])
         for row in connection.execute(
@@ -265,7 +313,6 @@ def check_execution_readiness(
     panel: Iterable[tuple[str, str]] | None = None,
 ) -> dict[str, object]:
     """Return a machine-readable, fail-closed readiness report without writes."""
-    database = Path(database).expanduser().resolve()
     identity = (source, adjustment_mode, adjustment_version)
     if any(value is not None for value in identity) and not all(identity):
         raise ValueError(
@@ -279,35 +326,23 @@ def check_execution_readiness(
         raise ValueError("an exact panel requires an explicit price identity")
     if expected == set():
         raise ValueError("panel must not be empty")
-    if not database.is_file():
-        return _empty_result(database, "database_missing")
 
-    from .collector_continuity import (
-        CollectorContinuityError,
-        open_nofollow_regular,
-        verify_file_identity,
-    )
+    from .collector_continuity import CollectorContinuityError
 
-    opened: object | None = None
-    connection: sqlite3.Connection | None = None
     try:
-        opened = open_nofollow_regular(str(database))
+        bound = open_readonly_identity_bound(database)
     except CollectorContinuityError:
-        return _empty_result(database, "database_unreadable")
+        database_path = Path(database).expanduser().resolve()
+        if not database_path.is_file():
+            return _empty_result(database_path, "database_missing")
+        return _empty_result(database_path, "database_unreadable")
 
+    database = bound._path
+    connection = bound.connection
     try:
-        locator = f"/dev/fd/{opened.descriptor}"
-        connection = sqlite3.connect(
-            f"file:{locator}?mode=ro&cache=private",
-            uri=True,
-            check_same_thread=True,
-            isolation_level=None,
+        schema, blockers = _structural_status(
+            connection, database, bound.identity
         )
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA query_only=1")
-        verify_file_identity(str(database), opened.identity)
-
-        schema, blockers = _structural_status(connection, database)
         result: dict[str, object] = {
             "database": str(database),
             "schema_version": schema["version"],
@@ -454,14 +489,10 @@ def check_execution_readiness(
         result_counts["selected_rows"] = len(selected_rows)
         result["blockers"] = blockers
         result["ready"] = not blockers
-        verify_file_identity(str(database), opened.identity)
         return result
     except CollectorContinuityError:
         return _empty_result(database, "database_identity_changed")
     except sqlite3.Error as exc:
         return _empty_result(database, f"database_error:{exc.__class__.__name__}")
     finally:
-        if connection is not None:
-            connection.close()
-        if opened is not None:
-            opened.close()
+        bound.close()
