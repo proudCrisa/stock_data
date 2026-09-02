@@ -1,0 +1,30 @@
+tests/test_verified_provider_readiness.py
+  s_851c4e64069aa9::t_547e6dca889d41 914
+  s_851c4e64069aa9::t_ca77cc871f982f 14,968-996
+  s_851c4e64069aa9::t_a811977caafaa0 45-48,903-904,910-913,915-918,925-927,940,947-967
+  s_851c4e64069aa9::t_cc64b37d39fee7 919-924
+  s_851c4e64069aa9::t_9bd651d10329a4 928-939,941-946
+tests/test_registered_provider_bundle_bridge.py
+  s_851c4e64069aa9::t_9bd651d10329a4 30,345-348
+stockdata/provider_export.py
+  s_851c4e64069aa9::t_547e6dca889d41 965
+  s_851c4e64069aa9::t_cc64b37d39fee7 1037-1045
+  s_851c4e64069aa9::t_a811977caafaa0 54,728,950-964,966-995,1024,1131-1132,1152-1154,1195-1212
+  s_851c4e64069aa9::t_65dc76fac72069 1213-1214
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "463e48192f19e30950751f7b216025bc3738501a",
+  "prompts": {},
+  "sessions": {
+    "s_851c4e64069aa9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0636b-1323-7bb1-9120-9b451798320e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
