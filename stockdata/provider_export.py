@@ -51,6 +51,7 @@ _BaseExceptionGroup = getattr(builtins, "BaseExceptionGroup", None)
 
 BUNDLE_SCHEMA = "stockdata-rqgm-provider-bundle/2"
 EXPORT_SCHEMA = "stockdata-rqgm-provider-export/1"
+PROVIDER_DATA_MANIFEST_SCHEMA = "stockdata-rqgm-provider-data-manifest/1"
 REGISTRATION_REFERENCE_KIND = "stock-data-forward-panel-registration"
 REGISTRATION_SCHEMA = "rqgm-forward-panel-registration/4"
 TRUSTED_LOCAL_REGISTRATION_SCHEMA = "rqgm-forward-panel-registration/5"
@@ -724,6 +725,7 @@ def _verify_provider_bundle_core(
     retained_artifacts: list[_RetainedArtifact],
     *,
     replay_policy_binding: object = _NO_RESEARCH_POLICY,
+    project_data_manifest: bool = False,
 ) -> dict[str, object]:
     """Verify one unpublished or published canonical bundle mapping and bytes."""
 
@@ -945,6 +947,52 @@ def _verify_provider_bundle_core(
         "companion_snapshot": companion.to_dict(),
         "readiness_report": report,
     }
+    if project_data_manifest:
+        if replay_policy_binding is not _NO_RESEARCH_POLICY:
+            raise ValueError("provider data manifest cannot use research replay mode")
+        if registration.schema_version != REGISTRATION_SCHEMA:
+            raise ValueError("provider data manifest requires regular registration")
+        if ready is not True:
+            raise ValueError("provider data manifest requires ready provider bundle")
+
+        def projection(reference: ProviderArtifactReference, field: str) -> dict:
+            payload = _research_json(content_reader(reference), field)
+            return {"reference": reference.to_dict(), "payload": payload}
+
+        provider_export_sha256 = hashlib.sha256(_canonical(receipt)).hexdigest()
+        manifest = {
+            "schema_version": PROVIDER_DATA_MANIFEST_SCHEMA,
+            "authority_grade": "formal",
+            "decision_eligible": True,
+            "decision_authority": False,
+            "source_id": "stockdata.provider_export",
+            "provider_bundle_sha256": hashlib.sha256(bundle_raw).hexdigest(),
+            "provider_export_sha256": provider_export_sha256,
+            "provider_contract_sha256": contract.contract_sha256,
+            "provider_snapshot_sha256": companion.snapshot_sha256,
+            "coverage": {
+                "start": companion.coverage_start,
+                "end": companion.coverage_end,
+            },
+            "provider_export": receipt,
+            "exact_panel": projection(exact_panel, "exact panel"),
+            "adjustment_identities": {
+                "execution": projection(
+                    execution_adjustment, "execution adjustment identity"
+                ),
+                "signal": projection(signal_adjustment, "signal adjustment identity"),
+            },
+            "components": {
+                component: projection(
+                    components[component], f"component {component}"
+                )
+                for component in REQUIRED_COMPONENTS
+            },
+        }
+        manifest["manifest_sha256"] = hashlib.sha256(_canonical(manifest)).hexdigest()
+        for reference in paths:
+            content_reader(reference)
+        return manifest
     if replay_policy_binding is _NO_RESEARCH_POLICY:
         return receipt
     resolved = _resolve_research_inputs(
@@ -973,6 +1021,7 @@ def _collect_provider_bundle_verification(
     bundle_raw: bytes,
     *,
     replay_policy_binding: object = _NO_RESEARCH_POLICY,
+    project_data_manifest: bool = False,
 ) -> tuple[
     dict[str, object] | None,
     BaseException | None,
@@ -985,7 +1034,15 @@ def _collect_provider_bundle_verification(
     result: dict[str, object] | None = None
     try:
         if replay_policy_binding is _NO_RESEARCH_POLICY:
-            result = _verify_provider_bundle_core(bundle, bundle_raw, retained)
+            if project_data_manifest:
+                result = _verify_provider_bundle_core(
+                    bundle,
+                    bundle_raw,
+                    retained,
+                    project_data_manifest=True,
+                )
+            else:
+                result = _verify_provider_bundle_core(bundle, bundle_raw, retained)
         else:
             result = _verify_provider_bundle_core(
                 bundle,
@@ -1071,6 +1128,8 @@ def _verify_provider_bundle(
 
 def _export_verified_provider_receipt(
     bundle_file: str | Path,
+    *,
+    project_data_manifest: bool = False,
 ) -> dict[str, object]:
     """Read one unpublished or published bundle and delegate verification."""
 
@@ -1090,7 +1149,9 @@ def _export_verified_provider_receipt(
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError("provider bundle is unreadable or invalid JSON") from exc
         result, body_error, close_errors = _collect_provider_bundle_verification(
-            bundle, retained.raw
+            bundle,
+            retained.raw,
+            project_data_manifest=project_data_manifest,
         )
         if body_error is None and not close_errors:
             if _read_retained(retained.opened, retained.field) != retained.raw:
@@ -1129,6 +1190,26 @@ def export_verified_provider_receipt(bundle_file: str | Path) -> dict[str, objec
     if os.path.basename(bundle_path) != "bundle.json":
         raise ValueError("public provider export requires formal bundle.json")
     return _export_verified_provider_receipt(bundle_path)
+
+
+def export_verified_provider_data_manifest(
+    bundle_file: str | Path,
+) -> dict[str, object]:
+    """Project a regular ready bundle into verified values without any writes."""
+
+    try:
+        supplied = os.path.expanduser(os.fspath(bundle_file))
+        bundle_path = os.path.abspath(supplied)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("provider bundle path is invalid") from exc
+    if supplied != bundle_path:
+        raise ValueError("public provider bundle path must be lexical absolute")
+    if os.path.basename(bundle_path) != "bundle.json":
+        raise ValueError("public provider export requires formal bundle.json")
+    return _export_verified_provider_receipt(
+        bundle_path,
+        project_data_manifest=True,
+    )
 
 
 def resolve_trusted_local_research_replay_inputs(

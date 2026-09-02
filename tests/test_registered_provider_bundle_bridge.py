@@ -27,6 +27,7 @@ from stockdata.collector_continuity import (
     freeze_collector_step_schedule,
 )
 from stockdata.provider_export import (
+    export_verified_provider_data_manifest,
     export_verified_provider_receipt,
     resolve_trusted_local_research_replay_inputs,
 )
@@ -341,6 +342,10 @@ def test_completed_v5_snapshot_materializes_exact_bundle_and_downstream_handoff(
     bundle = _assert_bundle(bundle_file)
     regular = export_verified_provider_receipt(bundle_file)
     assert regular["ready"] is False
+    with pytest.raises(
+        ValueError, match="provider data manifest requires regular registration"
+    ):
+        export_verified_provider_data_manifest(bundle_file)
     policy = replay_fixture._policy_binding(bundle)
     resolved = resolve_trusted_local_research_replay_inputs(
         bundle_file, replay_policy_binding=policy
