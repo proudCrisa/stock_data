@@ -124,19 +124,19 @@ class VerifiedReadonlySnapshot:
         self.source_path = source_path
         self._snapshot_dir = snapshot_dir
 
-    def verify_identity_unchanged(self) -> None:
+    def close(self) -> None:
         from .collector_continuity import verify_file_identity
 
-        verify_file_identity(str(self.source_path), self.identity)
-
-    def close(self) -> None:
         try:
-            self.connection.close()
+            verify_file_identity(str(self.source_path), self.identity)
         finally:
             try:
-                shutil.rmtree(self._snapshot_dir, ignore_errors=True)
-            except Exception:
-                pass
+                self.connection.close()
+            finally:
+                try:
+                    shutil.rmtree(self._snapshot_dir, ignore_errors=True)
+                except Exception:
+                    pass
 
     def __enter__(self) -> "VerifiedReadonlySnapshot":
         return self
@@ -145,14 +145,66 @@ class VerifiedReadonlySnapshot:
         self.close()
 
 
+MAX_SNAPSHOT_CAPTURE_RETRIES = 3
+
+
 def _copy_fd_to_file(source_fd: int, destination: Path) -> None:
     """Copy all readable bytes from ``source_fd`` into ``destination``.
 
-    The source descriptor is left open so the caller can continue to rely on
-    its anchored file identity.
+    The descriptor is seeked to 0 first so repeated reads from the same
+    anchored file produce a full, consistent copy.  The descriptor itself is
+    left open for the caller.
     """
+    os.lseek(source_fd, 0, os.SEEK_SET)
     with os.fdopen(source_fd, "rb", closefd=False) as source, open(destination, "wb") as sink:
         shutil.copyfileobj(source, sink)
+
+
+def _hash_fd_content(fd: int) -> str:
+    """Return SHA-256 of all bytes reachable through ``fd`` from its start."""
+    os.lseek(fd, 0, os.SEEK_SET)
+    hasher = hashlib.sha256()
+    while True:
+        chunk = os.read(fd, 1_048_576)
+        if not chunk:
+            break
+        hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _hash_file(path: Path) -> str:
+    """Return SHA-256 of the file at ``path``."""
+    hasher = hashlib.sha256()
+    with open(path, "rb") as source:
+        while True:
+            chunk = source.read(1_048_576)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _verify_copy_stable(source_fd: int, destination: Path) -> None:
+    """Raise ``CollectorContinuityError`` if source drifted during copy."""
+    from .collector_continuity import CollectorContinuityError
+
+    copied_hash = _hash_file(destination)
+    current_hash = _hash_fd_content(source_fd)
+    if copied_hash != current_hash:
+        raise CollectorContinuityError("snapshot source changed during copy")
+
+
+def _close_snapshot_files(opened_files: Iterable[object]) -> None:
+    first_error: BaseException | None = None
+    for opened in opened_files:
+        try:
+            getattr(opened, "close")()
+        except BaseException as exc:
+            if first_error is not None:
+                exc.__cause__ = first_error
+            first_error = exc
+    if first_error is not None:
+        raise first_error
 
 
 def open_verified_readonly_snapshot(
@@ -160,10 +212,13 @@ def open_verified_readonly_snapshot(
 ) -> VerifiedReadonlySnapshot:
     """Open a read-only SQLite connection against a verified private snapshot.
 
-    The source database is captured under its current physical identity; any
-    ``-wal``/``-shm`` sidecars that exist at open time are copied as well.
-    SQLite reads from the temporary copy, so the source directory is never
-    modified by WAL discovery and the evidence cannot be altered after opening.
+    The source database and any WAL sidecars are captured through held,
+    identity-verified file descriptors.  After copying, each component is
+    re-read from the same descriptor and hashed; if any component changed
+    during the copy (checkpoint, writer, truncation, replacement), the entire
+    snapshot is discarded and retried.  This guarantees the temporary copy is
+    point-in-time consistent without ever falling back to a pathname-based
+    reopen, which would reintroduce A→B→A swap races.
     """
     from .collector_continuity import (
         CollectorContinuityError,
@@ -180,31 +235,102 @@ def open_verified_readonly_snapshot(
         main_opened.close()
         raise
 
-    snapshot_dir = tempfile.mkdtemp(prefix="stockdata_readonly_snapshot_")
+    snapshot_dir: str | None = None
     try:
-        snapshot_path = Path(snapshot_dir) / source_path.name
-        _copy_fd_to_file(main_opened.descriptor, snapshot_path)
-        for suffix in ("-wal", "-shm"):
-            sidecar_path = Path(f"{source_str}{suffix}")
-            if sidecar_path.is_file():
-                sidecar_opened = open_nofollow_regular(str(sidecar_path))
-                try:
-                    verify_file_identity(str(sidecar_path), sidecar_opened.identity)
-                    _copy_fd_to_file(
-                        sidecar_opened.descriptor,
-                        Path(snapshot_dir) / f"{source_path.name}{suffix}",
+        last_error: BaseException | None = None
+        for attempt in range(MAX_SNAPSHOT_CAPTURE_RETRIES):
+            snapshot_dir = tempfile.mkdtemp(prefix="stockdata_readonly_snapshot_")
+            sidecars: list[tuple[Path, object, Path]] = []
+            connection: sqlite3.Connection | None = None
+            snapshot: VerifiedReadonlySnapshot | None = None
+            primary_error: BaseException | None = None
+            try:
+                snapshot_path = Path(snapshot_dir) / source_path.name
+                _copy_fd_to_file(main_opened.descriptor, snapshot_path)
+                verify_file_identity(source_str, main_opened.identity)
+                _verify_copy_stable(main_opened.descriptor, snapshot_path)
+
+                for suffix in ("-wal", "-shm"):
+                    sidecar_path = Path(f"{source_str}{suffix}")
+                    if not os.path.lexists(sidecar_path):
+                        continue
+                    sidecar_opened = open_nofollow_regular(str(sidecar_path))
+                    sidecar_destination = (
+                        Path(snapshot_dir) / f"{source_path.name}{suffix}"
                     )
-                finally:
-                    sidecar_opened.close()
-        connection = sqlite3.connect(str(snapshot_path))
-        connection.execute("PRAGMA query_only=ON")
-        connection.row_factory = sqlite3.Row
-        return VerifiedReadonlySnapshot(
-            connection, main_opened.identity, source_path, snapshot_dir
-        )
-    except BaseException:
-        shutil.rmtree(snapshot_dir, ignore_errors=True)
-        raise
+                    sidecars.append((sidecar_path, sidecar_opened, sidecar_destination))
+                    verify_file_identity(str(sidecar_path), sidecar_opened.identity)
+                    _copy_fd_to_file(sidecar_opened.descriptor, sidecar_destination)
+
+                # Validate the complete main/sidecar set only after every copy.
+                # This closes the checkpoint window between the first main-file
+                # validation and WAL discovery.
+                verify_file_identity(source_str, main_opened.identity)
+                _verify_copy_stable(main_opened.descriptor, snapshot_path)
+                captured_paths = {path for path, _, _ in sidecars}
+                for sidecar_path, sidecar_opened, sidecar_destination in sidecars:
+                    verify_file_identity(str(sidecar_path), sidecar_opened.identity)
+                    _verify_copy_stable(
+                        sidecar_opened.descriptor, sidecar_destination
+                    )
+                for suffix in ("-wal", "-shm"):
+                    sidecar_path = Path(f"{source_str}{suffix}")
+                    if (
+                        sidecar_path not in captured_paths
+                        and os.path.lexists(sidecar_path)
+                    ):
+                        raise CollectorContinuityError(
+                            "snapshot sidecar set changed during copy"
+                        )
+
+                connection = sqlite3.connect(str(snapshot_path))
+                connection.execute("PRAGMA query_only=ON")
+                connection.row_factory = sqlite3.Row
+                snapshot = VerifiedReadonlySnapshot(
+                    connection, main_opened.identity, source_path, snapshot_dir
+                )
+            except BaseException as exc:
+                primary_error = exc
+
+            cleanup_error: BaseException | None = None
+            try:
+                _close_snapshot_files(opened for _, opened, _ in sidecars)
+            except BaseException as exc:
+                cleanup_error = exc
+
+            if primary_error is None and cleanup_error is None:
+                if snapshot is None:
+                    raise AssertionError("verified snapshot is unavailable")
+                return snapshot
+
+            if connection is not None:
+                try:
+                    connection.close()
+                except BaseException as exc:
+                    if cleanup_error is not None:
+                        exc.__cause__ = cleanup_error
+                    cleanup_error = exc
+            shutil.rmtree(snapshot_dir, ignore_errors=True)
+            snapshot_dir = None
+
+            if primary_error is not None and cleanup_error is not None:
+                raise primary_error from cleanup_error
+            if cleanup_error is not None:
+                raise cleanup_error
+            if isinstance(primary_error, CollectorContinuityError):
+                last_error = primary_error
+                if attempt == MAX_SNAPSHOT_CAPTURE_RETRIES - 1:
+                    raise CollectorContinuityError(
+                        f"unable to capture stable snapshot after "
+                        f"{MAX_SNAPSHOT_CAPTURE_RETRIES} attempts"
+                    ) from primary_error
+                continue
+            if primary_error is None:
+                raise AssertionError("snapshot attempt failed without an error")
+            raise primary_error
+        raise CollectorContinuityError(
+            f"unable to capture stable snapshot after {MAX_SNAPSHOT_CAPTURE_RETRIES} attempts"
+        ) from last_error
     finally:
         main_opened.close()
 
@@ -532,17 +658,27 @@ def check_execution_readiness(
         result["ready"] = not blockers
         return result
 
+    result: dict[str, object] | None = None
+    body_exc: BaseException | None = None
+    close_identity_changed = False
     try:
-        try:
-            result = _check()
-        except CollectorContinuityError:
-            result = _empty_result(source_path, "database_identity_changed")
-        except sqlite3.Error as exc:
-            result = _empty_result(source_path, f"database_error:{exc.__class__.__name__}")
-        try:
-            bound.verify_identity_unchanged()
-        except CollectorContinuityError:
-            result = _empty_result(source_path, "database_identity_changed")
-        return result
+        result = _check()
+    except CollectorContinuityError:
+        result = _empty_result(source_path, "database_identity_changed")
+    except sqlite3.Error as exc:
+        result = _empty_result(source_path, f"database_error:{exc.__class__.__name__}")
+    except BaseException as exc:
+        body_exc = exc
     finally:
-        bound.close()
+        try:
+            bound.close()
+        except CollectorContinuityError:
+            result = _empty_result(source_path, "database_identity_changed")
+            close_identity_changed = True
+    if close_identity_changed:
+        return result
+    if body_exc is not None:
+        raise body_exc
+    if result is None:
+        raise AssertionError("execution readiness result is unavailable")
+    return result

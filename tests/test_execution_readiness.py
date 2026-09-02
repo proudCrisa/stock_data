@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from stockdata.cache import Cache
 from stockdata.execution_readiness import (
     check_execution_readiness,
@@ -476,22 +478,184 @@ def test_readiness_with_percent_encoded_and_special_filenames(tmp_path):
         assert report["ready"] is True, name
 
 
-def test_close_phase_identity_failure_returns_blocker(tmp_path, monkeypatch):
-    """最终身份核对失败应返回 blocker,而不是在 close 时抛出异常。"""
+def test_snapshot_rejects_checkpoint_race_between_main_and_wal(tmp_path, monkeypatch):
+    """主库复制后、-wal 复制前发生 checkpoint 时,不一致副本必须被拒。"""
+    from stockdata.collector_continuity import CollectorContinuityError
+    from stockdata.execution_readiness import _verify_copy_stable
+
+    database = tmp_path / "wal.sqlite"
+    cache = Cache(database)
+    _add_bar(cache, "2025-07-01")
+    cache._conn.execute("PRAGMA journal_mode=WAL")
+    _add_bar(cache, "2025-07-02")
+    # 保持 cache 连接打开,SQLite 才不会自动 checkpoint 并删除 -wal。
+    wal_path = tmp_path / "wal.sqlite-wal"
+    assert wal_path.exists()
+    main_hash_before_checkpoint = hashlib.sha256(database.read_bytes()).hexdigest()
+
+    original_verify = _verify_copy_stable
+    checkpointed = False
+
+    def _verify_and_checkpoint(source_fd, destination):
+        nonlocal checkpointed
+        original_verify(source_fd, destination)
+        if destination.name == database.name and not checkpointed:
+            conn = sqlite3.connect(str(database))
+            try:
+                checkpoint_result = tuple(
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                )
+            finally:
+                conn.close()
+            assert checkpoint_result[0] == 0
+            assert hashlib.sha256(database.read_bytes()).hexdigest() != (
+                main_hash_before_checkpoint
+            )
+            assert wal_path.stat().st_size == 0
+            checkpointed = True
+
+    monkeypatch.setattr(
+        "stockdata.execution_readiness._verify_copy_stable", _verify_and_checkpoint
+    )
+    monkeypatch.setattr(
+        "stockdata.execution_readiness.MAX_SNAPSHOT_CAPTURE_RETRIES", 1
+    )
+
+    try:
+        with pytest.raises(CollectorContinuityError):
+            open_verified_readonly_snapshot(database)
+        assert checkpointed is True
+    finally:
+        cache.close()
+
+
+def test_snapshot_connection_initialization_failure_closes_once_and_cleans_tempdir(
+    tmp_path, monkeypatch
+):
+    import stockdata.execution_readiness as readiness
+
+    database = tmp_path / "source.sqlite"
+    database.write_bytes(b"source")
+    Path(f"{database}-wal").write_bytes(b"wal")
+    snapshot_dir = tmp_path / "snapshot"
+    cleanup_order = []
+
+    class FailingConnection:
+        close_calls = 0
+
+        def execute(self, _sql):
+            raise sqlite3.OperationalError("initialization failed")
+
+        def close(self):
+            self.close_calls += 1
+            cleanup_order.append("connection")
+
+    connection = FailingConnection()
+
+    def make_snapshot_dir(*, prefix):
+        assert prefix == "stockdata_readonly_snapshot_"
+        snapshot_dir.mkdir()
+        return str(snapshot_dir)
+
+    original_close_snapshot_files = readiness._close_snapshot_files
+
+    def close_snapshot_files(opened_files):
+        opened_files = list(opened_files)
+        assert len(opened_files) == 1
+        original_close_snapshot_files(opened_files)
+        cleanup_order.append("sidecar")
+
+    original_rmtree = readiness.shutil.rmtree
+
+    def remove_snapshot(path, *, ignore_errors):
+        cleanup_order.append("rmtree")
+        assert cleanup_order == ["sidecar", "connection", "rmtree"]
+        return original_rmtree(path, ignore_errors=ignore_errors)
+
+    monkeypatch.setattr(readiness.tempfile, "mkdtemp", make_snapshot_dir)
+    monkeypatch.setattr(readiness.sqlite3, "connect", lambda _path: connection)
+    monkeypatch.setattr(readiness, "_close_snapshot_files", close_snapshot_files)
+    monkeypatch.setattr(readiness.shutil, "rmtree", remove_snapshot)
+
+    with pytest.raises(sqlite3.OperationalError, match="initialization failed"):
+        open_verified_readonly_snapshot(database)
+
+    assert connection.close_calls == 1
+    assert cleanup_order == ["sidecar", "connection", "rmtree"]
+    assert not snapshot_dir.exists()
+
+
+def test_snapshot_integrity_error_remains_primary_when_sidecar_close_fails(
+    tmp_path, monkeypatch
+):
     from stockdata.collector_continuity import CollectorContinuityError
 
+    import stockdata.execution_readiness as readiness
+
+    database = tmp_path / "source.sqlite"
+    database.write_bytes(b"source")
+    Path(f"{database}-wal").write_bytes(b"wal")
+    snapshot_dir = tmp_path / "snapshot"
+    original_verify = readiness._verify_copy_stable
+    original_close_snapshot_files = readiness._close_snapshot_files
+
+    def fail_sidecar_verification(source_fd, destination):
+        if destination.name.endswith("-wal"):
+            raise CollectorContinuityError("sidecar integrity changed")
+        original_verify(source_fd, destination)
+
+    def close_then_fail(opened_files):
+        original_close_snapshot_files(opened_files)
+        raise OSError("sidecar close failed")
+
+    def make_snapshot_dir(*, prefix):
+        assert prefix == "stockdata_readonly_snapshot_"
+        snapshot_dir.mkdir()
+        return str(snapshot_dir)
+
+    monkeypatch.setattr(readiness, "_verify_copy_stable", fail_sidecar_verification)
+    monkeypatch.setattr(readiness, "_close_snapshot_files", close_then_fail)
+    monkeypatch.setattr(readiness.tempfile, "mkdtemp", make_snapshot_dir)
+
+    with pytest.raises(
+        CollectorContinuityError, match="sidecar integrity changed"
+    ) as raised:
+        open_verified_readonly_snapshot(database)
+
+    assert isinstance(raised.value.__cause__, OSError)
+    assert str(raised.value.__cause__) == "sidecar close failed"
+    assert not snapshot_dir.exists()
+
+
+def test_close_phase_identity_failure_returns_blocker(tmp_path, monkeypatch):
+    """close 阶段身份核对失败应被捕获并翻译成 database_identity_changed blocker。"""
     database = tmp_path / "db.sqlite"
     cache = Cache(database)
     _add_bar(cache)
     cache.close()
+    replacement = tmp_path / "replacement.sqlite"
+    replacement_cache = Cache(replacement)
+    _add_bar(replacement_cache, "2025-07-02")
+    replacement_cache.close()
 
-    def _raise(_self):
-        raise CollectorContinuityError("simulated identity drift")
+    import stockdata.execution_readiness as readiness
 
-    monkeypatch.setattr(
-        "stockdata.execution_readiness.VerifiedReadonlySnapshot.verify_identity_unchanged",
-        _raise,
-    )
+    original_open = readiness.open_verified_readonly_snapshot
+    original_structural_status = readiness._structural_status
+    opened = {}
+
+    def capture_open(path):
+        bound = original_open(path)
+        opened["bound"] = bound
+        return bound
+
+    def structural_status_and_swap(connection, path, expected_identity=None):
+        result = original_structural_status(connection, path, expected_identity)
+        replacement.replace(database)
+        return result
+
+    monkeypatch.setattr(readiness, "open_verified_readonly_snapshot", capture_open)
+    monkeypatch.setattr(readiness, "_structural_status", structural_status_and_swap)
 
     report = check_execution_readiness(
         database, panel={("000001.SZ", "2025-07-01")}, **IDENTITY
@@ -502,3 +666,62 @@ def test_close_phase_identity_failure_returns_blocker(tmp_path, monkeypatch):
         blocker["code"] == "database_identity_changed"
         for blocker in report["blockers"]
     )
+    bound = opened["bound"]
+    assert not Path(bound._snapshot_dir).exists()
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        bound.connection.execute("SELECT 1")
+
+
+def test_close_identity_drift_wins_over_unexpected_body_failure(tmp_path, monkeypatch):
+    database = tmp_path / "db.sqlite"
+    cache = Cache(database)
+    _add_bar(cache)
+    cache.close()
+    replacement = tmp_path / "replacement.sqlite"
+    replacement_cache = Cache(replacement)
+    _add_bar(replacement_cache, "2025-07-02")
+    replacement_cache.close()
+
+    import stockdata.execution_readiness as readiness
+
+    def fail_after_swap(_connection, _path, _expected_identity=None):
+        replacement.replace(database)
+        raise RuntimeError("unexpected readiness failure")
+
+    monkeypatch.setattr(readiness, "_structural_status", fail_after_swap)
+
+    report = check_execution_readiness(
+        database, panel={("000001.SZ", "2025-07-01")}, **IDENTITY
+    )
+
+    assert report["ready"] is False
+    assert report["blockers"] == [
+        {
+            "code": "database_identity_changed",
+            "count": 1,
+            "examples": [str(database)],
+        }
+    ]
+
+
+def test_snapshot_file_cleanup_continues_after_first_close_failure():
+    from stockdata.execution_readiness import _close_snapshot_files
+
+    closed = []
+
+    class Opened:
+        def __init__(self, name, *, fails=False):
+            self.name = name
+            self.fails = fails
+
+        def close(self):
+            closed.append(self.name)
+            if self.fails:
+                raise OSError("close failed")
+
+    with pytest.raises(OSError, match="close failed"):
+        _close_snapshot_files(
+            [Opened("first", fails=True), Opened("second"), Opened("third")]
+        )
+
+    assert closed == ["first", "second", "third"]

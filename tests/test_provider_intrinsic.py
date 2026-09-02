@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import datetime
 import hashlib
 import json
+import sqlite3
 from zoneinfo import ZoneInfo
+
+import pytest
 
 from stockdata.adjustment_identity import verify_adjustment_identity
 from stockdata.cache import Cache
@@ -256,3 +259,26 @@ def test_component_or_source_receipt_drift_fails_closed(tmp_path) -> None:
     assert any(
         not receipt_drift[component]["ready"] for component in INTRINSIC_COMPONENTS
     )
+
+
+def test_close_rejects_source_swap(tmp_path):
+    """provider 路径打开后源文件被原子替换,close 必须 fail-closed。"""
+    from stockdata.collector_continuity import CollectorContinuityError
+    from stockdata.provider_intrinsic import _connect
+
+    database = _database(tmp_path)
+    other = tmp_path / "other.sqlite"
+    other.write_bytes(database.read_bytes())
+    # 让 other 与 database 内容不同,确保身份一定不同
+    conn_other = sqlite3.connect(str(other))
+    try:
+        conn_other.execute("INSERT INTO daily(code,date) VALUES ('999999.SZ','2099-01-01')")
+        conn_other.commit()
+    finally:
+        conn_other.close()
+
+    bound = _connect(database)
+    # 在连接仍打开时原子替换源文件
+    other.replace(database)
+    with pytest.raises(CollectorContinuityError):
+        bound.close()
