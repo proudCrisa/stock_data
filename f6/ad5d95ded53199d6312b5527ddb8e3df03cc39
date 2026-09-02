@@ -1,0 +1,21 @@
+scripts/run_registered_panel_capture_v7.sh
+  s_e4e4e3cd861db9::t_57f19de93a08ac 1-2,4-40,42-72,74-78
+  s_e4e4e3cd861db9::t_d4baf099b9d97f 3
+  s_e4e4e3cd861db9::t_57dd3c60eb4222 41,73
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "f6ad5d95ded53199d6312b5527ddb8e3df03cc39",
+  "prompts": {},
+  "sessions": {
+    "s_e4e4e3cd861db9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a05b91-afff-73f1-a9db-3db9a372f396",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}
