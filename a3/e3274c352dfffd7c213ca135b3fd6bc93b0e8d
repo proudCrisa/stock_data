@@ -1,0 +1,34 @@
+openspec/changes/add-trusted-local-forward-registration/tasks.md
+  s_e4e4e3cd861db9::t_7e0feffa579f3b 33,43
+stockdata/execution_readiness.py
+  s_e4e4e3cd861db9::t_79fb3a4c0a9f74 197-202,206-209,244,663,677-678,682-683
+  s_e4e4e3cd861db9::t_402124438df654 278-281
+  s_e4e4e3cd861db9::t_7e0feffa579f3b 131,134-139,148-150,154-156,158,163-194,215-221,238,240-243,247-261,263-274,276-277,282-288,290-291,322-325,327,331-333,661-662,665-672,674,680-681,684
+  s_e4e4e3cd861db9::t_5ec997e7f219ab 203-205,245-246,289,292-321,326,328-330
+  s_e4e4e3cd861db9::t_786101468592ea 195-196
+  s_e4e4e3cd861db9::t_2b5de21c4d3d70 127
+tests/test_execution_readiness.py
+  s_e4e4e3cd861db9::t_79fb3a4c0a9f74 492-494,505-507,510-515,530-534,537-538,540,542-550,552-558,574,579-583,627-629,636-639,641,643-658,669-727
+  s_e4e4e3cd861db9::t_7e0feffa579f3b 9-10,481-482,485-491,495-504,508-509,516-529,631
+  s_e4e4e3cd861db9::t_5ec997e7f219ab 535-536,539,541,551,559-573,575-578,584-600,602-626
+  s_e4e4e3cd861db9::t_402124438df654 484
+  s_e4e4e3cd861db9::t_ff10249d5ba91a 630
+tests/test_provider_intrinsic.py
+  s_e4e4e3cd861db9::t_3c55facb1aeca6 6,9-10,262-284
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a3e3274c352dfffd7c213ca135b3fd6bc93b0e8d",
+  "prompts": {},
+  "sessions": {
+    "s_e4e4e3cd861db9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a05b91-afff-73f1-a9db-3db9a372f396",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
