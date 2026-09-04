@@ -1,0 +1,40 @@
+tests/test_liquidity_amount_product.py
+  s_502062ccc37035::t_5778b87d21e682 60-61,63,66-71,78,80,95,115,134,146,149,153,158,166,171,179,182,186,189,229
+  s_94dc23cc2246e9::t_84b30c796ffb2d 192-216
+  s_502062ccc37035::t_6e0c667af0a3ee 1-59,62,64-65,72-77,79,81-94,96-114,116-133,135-145,147-148,150-152,154-157,159-165,167-170,172-178,180-181,183-185,187-188,190-191,217-228,230-248
+stockdata/fetch_baostock.py
+  s_94dc23cc2246e9::t_a3d09f3392366c 72-73
+  s_502062ccc37035::t_7e52400db1bad2 16-17,124,139
+stockdata/liquidity_amount_product.py
+  s_94dc23cc2246e9::t_152701db303752 92-95,135-136
+  s_94dc23cc2246e9::t_a3d09f3392366c 1-91,96-134,137-203
+docs/liquidity-amount-product.md
+  s_94dc23cc2246e9::t_84b30c796ffb2d 1-32
+tests/test_fetch_baostock.py
+  s_94dc23cc2246e9::t_152701db303752 111
+  s_502062ccc37035::t_6e0c667af0a3ee 15,35-36,47,51,61,68-69,77-78,86-87,99,133-134
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "1267d71ac01f1fd5ebeed37b94ca6ac0e55c737c",
+  "prompts": {},
+  "sessions": {
+    "s_502062ccc37035": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a06318-6df1-76d0-9c4c-2645e2e04d5f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_94dc23cc2246e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a06e94-4de3-7853-a1e2-6d68e39842b1",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
