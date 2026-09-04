@@ -60,7 +60,7 @@ def _reference(component, rows, *, observed="2026-08-28T16:05:00+08:00"):
             "source_receipts": {receipt_id: receipt}}
 
 
-def make_supplement(*, asof=ASOF, snapshot=None):
+def make_supplement(*, asof=ASOF, snapshot=None, rule_overrides=None):
     from stockdata.authority import TRUST_REGISTRY_SCHEMA
 
     root = Ed25519PrivateKey.from_private_bytes(bytes([1]) * 32)
@@ -111,6 +111,7 @@ def make_supplement(*, asof=ASOF, snapshot=None):
                  security_type="ETF", board="ETF", exchange="SH", instrument_id=SYMBOL,
                  price_tick=0.001, effective_from=asof, effective_until=asof,
                  **{key: value for key, value in ETF_RULE_SCOPES[SYMBOL].items() if key != "effective_from"})
+    rule.update(rule_overrides or {})
     reference_rows = {
         "instrument_status": {"is_st": False, "is_suspended": False, "listing_status": "listed"},
         "market_rules": rule,

@@ -13,7 +13,7 @@ from .finalization import latest_finalized_date
 
 from .ticker import to_baostock
 
-_NUMERIC = ("open", "high", "low", "close", "volume", "amount")
+_NUMERIC = ("open", "high", "low", "close", "volume")
 _DAILY_FIELDS = "date,open,high,low,close,volume,amount"
 _ADJUST_FLAGS = {"hfq": "1", "qfq": "2", "raw": "3"}
 _ADJUST_MODES = {value: key for key, value in _ADJUST_FLAGS.items()}
@@ -69,14 +69,15 @@ def _parse_rows(fields: str, rows: list) -> CapturedBars:
         bar = {"date": rec["date"]}
         valid = True
         for k in _NUMERIC:
-            if k == "amount" and k not in cols:
-                continue
             value = _to_float(rec.get(k, ""))
             if value is None:
                 valid = False
                 break
             bar[k] = value
         if valid:
+            amount = _to_float(rec.get("amount", ""))
+            if amount is not None:
+                bar["amount"] = amount
             out.append(bar)
         else:
             dropped += 1

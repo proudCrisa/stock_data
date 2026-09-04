@@ -89,6 +89,13 @@ class TestParseRows:
         assert bar["close"] == 10.8
         assert bar["open"] == 10.5
 
+    def test_missing_amount_does_not_change_legacy_price_acceptance(self):
+        fields = "date,open,high,low,close,volume"
+        rows = [["2024-01-02", "10", "11", "9", "10.5", "100"]]
+        assert len(_parse_rows(fields, rows)) == 1
+        assert "amount" not in _parse_rows(fields, rows)[0]
+        assert len(_parse_rows(FIELDS, [rows[0] + [""]])) == 1
+
 
 def test_fetch_attaches_requested_adjustment_metadata(monkeypatch):
     class Result:

@@ -23,10 +23,9 @@ SIGNED_COMPONENTS = frozenset(
         "instrument_status",
         "corporate_actions",
         "market_rules",
-        "liquidity_amounts",
-        "global_signals",
     }
 )
+SUPPORTED_SIGNED_COMPONENTS = SIGNED_COMPONENTS | {"liquidity_amounts", "global_signals"}
 SOURCE_RECEIPT_SCHEMA = "stockdata-provider-component-source-receipt/1"
 GENERIC_MARKET_RULEBOOK_PREREQUISITE_SCHEMA = (
     "stockdata-preregistered-generic-market-rulebook/1"
@@ -289,7 +288,7 @@ def _receipt_bindings(
             "record_sha256",
         }:
             raise ValueError("provider authority source receipt binding is incomplete")
-        if binding["component"] not in SIGNED_COMPONENTS:
+        if binding["component"] not in SUPPORTED_SIGNED_COMPONENTS:
             raise ValueError("provider authority source receipt component is invalid")
         result.append(
             (
@@ -506,7 +505,7 @@ def admit_signed_component_authority(
 ) -> AdmittedProviderAuthority:
     """Verify semantic coverage and external authority for one signed component."""
 
-    if component not in SIGNED_COMPONENTS:
+    if component not in SUPPORTED_SIGNED_COMPONENTS:
         raise ValueError("component is not externally signed provider authority")
     if not isinstance(artifact_value, Mapping) or set(artifact_value) != {
         "schema_version",
