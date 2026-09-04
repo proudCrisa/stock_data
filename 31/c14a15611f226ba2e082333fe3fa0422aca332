@@ -1,0 +1,27 @@
+stockdata/provider_authority_admission.py
+  s_94dc23cc2246e9::t_403f124837854f 28,291,508
+tests/test_fetch_baostock.py
+  s_94dc23cc2246e9::t_2d87ba43d2096f 92-98
+docs/main-buy-publisher-runbook.md
+  s_94dc23cc2246e9::t_8b75c457b1b454 1-143
+stockdata/fetch_baostock.py
+  s_94dc23cc2246e9::t_2d87ba43d2096f 16,78-80
+tests/test_main_buy_supplement.py
+  s_94dc23cc2246e9::t_23f2fec645e892 63,114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "31c14a15611f226ba2e082333fe3fa0422aca332",
+  "prompts": {},
+  "sessions": {
+    "s_94dc23cc2246e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a06e94-4de3-7853-a1e2-6d68e39842b1",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
