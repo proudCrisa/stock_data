@@ -83,8 +83,11 @@ corporate-action artifacts. No v1 required-component set changes.
 
 `asof` is the final price session T. The amount product covers at least 20
 consecutive signed calendar sessions through T, including T. Calendar next-session
-links prove continuity, including holidays; T must have closed before the frozen
-supplement cutoff. A later caller cutoff may consume the same frozen supplement.
+links prove continuity, including holidays. The frozen supplement cutoff must be
+strictly after T's close and strictly before the signed next-session decision
+cutoff. Friday T may therefore freeze on Saturday with actual Saturday receipt
+availability; the price watermark remains Friday and no timestamps are backfilled.
+A later caller cutoff may consume the same frozen supplement.
 
 ## Exact ETF rule scope
 

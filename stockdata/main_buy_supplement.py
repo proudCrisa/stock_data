@@ -113,8 +113,6 @@ def verify_main_buy_supplement(
         raise ValueError("main BUY supplement differs external decision identity")
     decision_cutoff = payload["decision_cutoff"]
     cutoff = _timestamp(decision_cutoff)
-    if cutoff.date().isoformat() != asof:
-        raise ValueError("main BUY decision cutoff differs asof")
     symbols = payload["symbols"]
     if (not isinstance(symbols, list) or not symbols or symbols != sorted(set(symbols))
             or any(normalize(symbol) != symbol for symbol in symbols)):
@@ -142,8 +140,9 @@ def verify_main_buy_supplement(
                       panel=calendar_panel, registry=registry)
     for entry in current_panel:
         phases = calendar.signed_calendar_phases_by_panel[entry]
-        if _timestamp(phases["session_close_at"]) > cutoff:
-            raise ValueError("main BUY asof session is not final at decision cutoff")
+        if not (_timestamp(phases["session_close_at"]) < cutoff
+                < _timestamp(phases["next_session_decision_cutoff_at"])):
+            raise ValueError("main BUY cutoff is outside signed asof session finality window")
     session_days = sorted({entry.split("@")[1] for entry in calendar_panel})
     history_days = [day for day in session_days if day <= asof]
     if not history_days or history_days[-1] != asof or session_days != history_days:

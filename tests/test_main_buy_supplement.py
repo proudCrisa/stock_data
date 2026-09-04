@@ -60,7 +60,8 @@ def _reference(component, rows, *, observed="2026-08-28T16:05:00+08:00"):
             "source_receipts": {receipt_id: receipt}}
 
 
-def make_supplement(*, asof=ASOF, snapshot=None, rule_overrides=None):
+def make_supplement(*, asof=ASOF, snapshot=None, rule_overrides=None,
+                    decision_cutoff=None, observed_at=None):
     from stockdata.authority import TRUST_REGISTRY_SCHEMA
 
     root = Ed25519PrivateKey.from_private_bytes(bytes([1]) * 32)
@@ -77,8 +78,8 @@ def make_supplement(*, asof=ASOF, snapshot=None, rule_overrides=None):
             days.append(day.isoformat())
         day -= timedelta(days=1)
     days.reverse()
-    observed = f"{days[-1]}T16:05:00+08:00"
-    cutoff = f"{asof}T16:10:00+08:00"
+    observed = observed_at or f"{days[-1]}T16:05:00+08:00"
+    cutoff = decision_cutoff or f"{asof}T16:10:00+08:00"
     early = f"{(date.fromisoformat(days[0]) - timedelta(days=1)).isoformat()}T16:00:00+08:00"
     def sign(inputs, **kwargs):
         return _signed(inputs, root=root, signer=signer, registry_sha=registry_sha,
@@ -128,7 +129,7 @@ def make_supplement(*, asof=ASOF, snapshot=None, rule_overrides=None):
         "asof": asof, "decision_cutoff": cutoff, "symbols": [SYMBOL], "registry": registry,
         "liquidity": sign(build_liquidity_authority_inputs(product)),
         "global_signals": sign(build_global_signals_authority_inputs(
-            snapshot, panel=panel, available_at=f"{asof}T16:06:00+08:00")),
+            snapshot, panel=panel, available_at=observed)),
         "references": references,
     }
     return payload, registry_sha, signer
@@ -229,6 +230,41 @@ def test_later_caller_cutoff_retains_original_frozen_cutoff():
         payload, expected_registry_sha256=pin, provider_manifest_sha256="a" * 64,
         asof="2026-08-14", decision_cutoff="2026-08-14T17:00:00+08:00",
     ) == payload
+
+
+def test_friday_price_session_accepts_actual_saturday_evidence_freeze():
+    observed = "2026-09-05T07:00:00+08:00"
+    cutoff = "2026-09-05T08:00:00+08:00"
+    payload, pin, _ = make_supplement(
+        asof="2026-09-04", decision_cutoff=cutoff, observed_at=observed,
+    )
+    assert verify_main_buy_supplement(
+        payload, expected_registry_sha256=pin, provider_manifest_sha256="a" * 64,
+        asof="2026-09-04", decision_cutoff=cutoff,
+    ) == payload
+    assert payload["liquidity"]["product"]["panel"][-1] == f"{SYMBOL}@2026-09-04"
+    for component in ("liquidity", "global_signals"):
+        assert payload[component]["authority_envelope"]["payload"]["available_at"] == observed
+        assert all(row["available_at"] == observed for row in payload[component]["artifact"]["records"])
+    calendar = payload["references"]["trading_calendar"]["artifact"]["records"][-1]["payload"]
+    assert calendar["next_session_decision_cutoff_at"] == "2026-09-07T09:25:00+08:00"
+
+
+@pytest.mark.parametrize("cutoff", [
+    "2026-09-04T14:59:59+08:00", "2026-09-04T15:00:00+08:00",
+    "2026-09-07T09:25:00+08:00", "2026-09-07T09:25:01+08:00",
+])
+def test_frozen_cutoff_rejects_outside_signed_session_window(cutoff):
+    payload, pin, _ = make_supplement(
+        asof="2026-09-04", decision_cutoff="2026-09-05T08:00:00+08:00",
+        observed_at="2026-09-05T07:00:00+08:00",
+    )
+    payload["decision_cutoff"] = cutoff
+    with pytest.raises(ValueError, match="outside signed asof session finality window"):
+        verify_main_buy_supplement(
+            payload, expected_registry_sha256=pin, provider_manifest_sha256="a" * 64,
+            asof="2026-09-04", decision_cutoff=cutoff,
+        )
 
 
 def test_exact_etf_rule_publishes_after_signed_status_admission(tmp_path, monkeypatch):
