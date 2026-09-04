@@ -9,6 +9,16 @@ from datetime import date, timedelta
 from typing import cast
 
 MARKET_RULE_PAYLOAD_SCHEMA = "stockdata-market-rule-payload/1"
+ETF_MARKET_RULE_PAYLOAD_SCHEMA = "stockdata-etf-market-rule-payload/1"
+ETF_RULE_SCOPES = {
+    "561980.SH": {
+        "fund_type": "DOMESTIC_EQUITY",
+        "classification_source": "https://static.cmfchina.com/web/fundDetail/561980/index.html",
+        "rule_source": "https://www.sse.com.cn/lawandrules/sselawsrules2025/stocks/exchange/c/c_20260424_10816482.shtml",
+        "effective_from": "2026-07-06",
+    },
+}
+_ETF_FIELDS = frozenset({"instrument_id", "fund_type", "classification_source", "rule_source"})
 
 _FIELDS = frozenset(
     {
@@ -145,21 +155,35 @@ def validate_market_rule_payload(
 ) -> Mapping[str, object]:
     """Validate one complete rule regime and its inclusive panel-date coverage."""
 
-    if not isinstance(payload, Mapping) or set(payload) != _FIELDS:
+    is_etf = isinstance(payload, Mapping) and payload.get("security_type") == "ETF"
+    expected_fields = _FIELDS | _ETF_FIELDS if is_etf else _FIELDS
+    if not isinstance(payload, Mapping) or set(payload) != expected_fields:
         raise ValueError("market_rules record payload is incomplete")
-    if payload["schema_version"] != MARKET_RULE_PAYLOAD_SCHEMA:
+    expected_schema = ETF_MARKET_RULE_PAYLOAD_SCHEMA if is_etf else MARKET_RULE_PAYLOAD_SCHEMA
+    if payload["schema_version"] != expected_schema:
         raise ValueError("market_rules payload schema version is invalid")
     _non_empty(payload["policy_id"], "policy_id")
     _non_empty(payload["source"], "source")
     _sha256(payload["source_sha256"], "source_sha256")
-    if payload["security_type"] != "A_SHARE":
+    if payload["security_type"] not in {"A_SHARE", "ETF"}:
         raise ValueError("market_rules security_type must be A_SHARE")
+
+    if is_etf:
+        scope = ETF_RULE_SCOPES.get(payload["instrument_id"])
+        if scope is None or any(payload[field] != scope[field] for field in
+                                ("fund_type", "classification_source", "rule_source")):
+            raise ValueError("market_rules ETF classification lacks approved primary sources")
+        if (payload["board"] != "ETF" or payload["exchange"] != "SH"
+                or payload["effective_from"] < scope["effective_from"]
+                or payload["price_limit_up"] != 0.10 or payload["price_limit_down"] != 0.10
+                or payload["is_st"] is not False):
+            raise ValueError("market_rules ETF regime differs official rule scope")
 
     board = payload["board"]
     exchange = payload["exchange"]
     if not isinstance(board, str) or not isinstance(exchange, str):
         raise ValueError("market_rules board/exchange scope is invalid")
-    if board not in _BOARD_EXCHANGES or exchange not in _BOARD_EXCHANGES[board]:
+    if not is_etf and (board not in _BOARD_EXCHANGES or exchange not in _BOARD_EXCHANGES[board]):
         raise ValueError("market_rules board/exchange scope is invalid")
     effective_from = _canonical_date(payload["effective_from"], "effective_from")
     effective_until = _canonical_date(payload["effective_until"], "effective_until")
@@ -206,7 +230,7 @@ def validate_market_rule_payload(
             _number(value, field, upper=1.0)
     if (
         payload["price_limit_reference"] != "RECORD_OR_PREVIOUS_CLOSE"
-        or payload["price_tick"] != 0.01
+        or payload["price_tick"] != (0.001 if is_etf else 0.01)
         or isinstance(payload["price_tick"], bool)
         or payload["price_rounding"] != "HALF_UP"
         or payload["locked_limit_order_policy"] != "REJECT_SIDE"
@@ -242,7 +266,9 @@ def validate_market_rule_payload(
         symbol_exchange = symbol.rsplit(".", 1)[-1].upper()
         if symbol_exchange != exchange:
             raise ValueError("market_rules exchange does not match panel symbol")
-        if board != _symbol_board(symbol):
+        if is_etf and symbol != payload["instrument_id"]:
+            raise ValueError("market_rules ETF instrument differs panel symbol")
+        if not is_etf and board != _symbol_board(symbol):
             raise ValueError("market_rules board does not match panel symbol")
         if instrument_status is not None:
             if payload["is_st"] is None:
@@ -288,6 +314,8 @@ def validate_market_rule_regimes(
 
     for index, first in enumerate(unique_payloads):
         for second in unique_payloads[index + 1 :]:
+            if first.get("instrument_id") != second.get("instrument_id"):
+                continue
             if any(
                 first[field] != second[field]
                 for field in ("security_type", "board", "exchange")
@@ -323,6 +351,7 @@ def validate_market_rule_regimes(
     for payload in unique_payloads:
         policy_id = str(payload["policy_id"])
         scope = (
+            payload.get("instrument_id"),
             payload["security_type"],
             payload["board"],
             payload["exchange"],

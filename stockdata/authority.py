@@ -32,6 +32,8 @@ AUTHORITY_COMPONENT_ROLES = frozenset(
         "instrument_status",
         "corporate_actions",
         "market_rules",
+        "liquidity_amounts",
+        "global_signals",
     }
 )
 _VERIFIED_REGISTRY_TOKEN = object()
@@ -216,11 +218,18 @@ def load_enrolled_trust_registry(
 ) -> EnrolledTrustRegistry:
     """Load and verify an Ed25519 registry selected by an external SHA-256 pin."""
 
-    expected_sha256 = _sha256(expected_sha256, "expected_sha256")
     try:
         raw = Path(path).read_bytes()
     except OSError as exc:
         raise ValueError("trust registry is unreadable") from exc
+    return load_enrolled_trust_registry_bytes(raw, expected_sha256=expected_sha256)
+
+
+def load_enrolled_trust_registry_bytes(
+    raw: bytes, *, expected_sha256: str,
+) -> EnrolledTrustRegistry:
+    """Verify portable registry bytes against a caller-owned trust anchor."""
+    expected_sha256 = _sha256(expected_sha256, "expected_sha256")
     registry_sha256 = hashlib.sha256(raw).hexdigest()
     if registry_sha256 != expected_sha256:
         raise ValueError("trust registry SHA-256 does not match the expected pin")

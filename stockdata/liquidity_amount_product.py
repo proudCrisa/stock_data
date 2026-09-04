@@ -201,3 +201,58 @@ def load_liquidity_amounts_product(path: str | Path) -> dict:
     if raw != _canonical(value):
         raise LiquidityAmountProductError("product bytes are not canonical")
     return verify_liquidity_amounts_product(value)
+
+
+def build_liquidity_authority_inputs(product: dict) -> dict:
+    """Project a replayed product into the existing signed component protocol."""
+    from .provider_authority_admission import SOURCE_RECEIPT_SCHEMA
+
+    verify_liquidity_amounts_product(product)
+    receipt = {
+        "schema_version": SOURCE_RECEIPT_SCHEMA,
+        "source": "baostock-native-amount:CNY:raw",
+        "observed_at": max(product["source_receipts"],
+                           key=lambda item: _timestamp(item["observed_at"]))["observed_at"],
+        "response_sha256": _hash(product),
+        "bindings": [{"component": "liquidity_amounts", "panel_entry": row["panel_entry"],
+                      "record_sha256": row["record_sha256"]} for row in product["records"]],
+    }
+    receipt_id = _hash(receipt)
+    records = []
+    for row in product["records"]:
+        records.append({
+            **{key: deepcopy(row[key]) for key in
+               ("panel_entry", "payload", "record_sha256", "effective_at", "available_at")},
+            "source_receipt_ids": [receipt_id],
+        })
+    return {
+        "artifact": {"schema_version": "stockdata-liquidity-amounts/1",
+                     "component": "liquidity_amounts", "panel": product["panel"],
+                     "records": records},
+        "source_receipts": {receipt_id: receipt},
+        "product": deepcopy(product),
+    }
+
+
+def admit_liquidity_amounts_authority(
+    *, product: dict, artifact_value: dict, authority_envelope: dict,
+    bound_source_receipts: dict, registry, expected_panel,
+    decision_cutoff: str, expected_watermark: str,
+):
+    """Replay raw evidence and verify enrolled signature before granting authority."""
+    from .provider_authority_admission import admit_signed_component_authority
+
+    verify_liquidity_amounts_product(
+        product, expected_panel=expected_panel, decision_cutoff=decision_cutoff,
+        expected_watermark=expected_watermark,
+    )
+    inputs = build_liquidity_authority_inputs(product)
+    if (artifact_value != inputs["artifact"]
+            or bound_source_receipts != inputs["source_receipts"]):
+        raise LiquidityAmountProductError("signed liquidity native amount closure drifted")
+    return admit_signed_component_authority(
+        component="liquidity_amounts", artifact_value=artifact_value,
+        authority_envelope=authority_envelope, expected_panel=product["panel"],
+        bound_source_receipts=bound_source_receipts, registry=registry,
+        decision_cutoff_by_panel={entry: decision_cutoff for entry in product["panel"]},
+    )

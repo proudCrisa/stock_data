@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -22,6 +23,8 @@ SIGNED_COMPONENTS = frozenset(
         "instrument_status",
         "corporate_actions",
         "market_rules",
+        "liquidity_amounts",
+        "global_signals",
     }
 )
 SOURCE_RECEIPT_SCHEMA = "stockdata-provider-component-source-receipt/1"
@@ -239,6 +242,19 @@ def _component_payload(
                 raise ValueError("corporate_actions event_type is invalid")
     elif component == "market_rules":
         validate_market_rule_payload(payload, panel_entry=panel_entry)
+    elif component == "liquidity_amounts":
+        if set(payload) != {"amount", "amount_unit"} or payload["amount_unit"] != "CNY":
+            raise ValueError("liquidity_amounts requires native CNY amount")
+        amount = payload["amount"]
+        if (isinstance(amount, bool) or not isinstance(amount, (int, float))
+                or not math.isfinite(amount) or amount <= 0):
+            raise ValueError("liquidity_amounts amount must be finite and positive")
+    elif component == "global_signals":
+        from .main_buy_supplement import validate_global_snapshot
+
+        validate_global_snapshot(payload)
+        if panel_entry is None or payload["asof"] != panel_entry.split("@")[1]:
+            raise ValueError("global_signals asof differs panel date")
     return payload
 
 
