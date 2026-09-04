@@ -1,0 +1,24 @@
+stockdata/main_buy_supplement.py
+  s_94dc23cc2246e9::t_27e64f9efbd5f6 143-145
+tests/test_main_buy_supplement.py
+  s_94dc23cc2246e9::t_27e64f9efbd5f6 63-64,81-82,132,235-267
+  s_94dc23cc2246e9::t_215d2f52756dc2 268-269
+docs/liquidity-amount-product.md
+  s_94dc23cc2246e9::t_5ff5cd776dc5b5 86-90
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "599115fc4d06ed335c77a3660e33ebae4ea526da",
+  "prompts": {},
+  "sessions": {
+    "s_94dc23cc2246e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a06e94-4de3-7853-a1e2-6d68e39842b1",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
