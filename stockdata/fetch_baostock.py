@@ -13,7 +13,8 @@ from .finalization import latest_finalized_date
 
 from .ticker import to_baostock
 
-_NUMERIC = ("open", "high", "low", "close", "volume")
+_NUMERIC = ("open", "high", "low", "close", "volume", "amount")
+_DAILY_FIELDS = "date,open,high,low,close,volume,amount"
 _ADJUST_FLAGS = {"hfq": "1", "qfq": "2", "raw": "3"}
 _ADJUST_MODES = {value: key for key, value in _ADJUST_FLAGS.items()}
 
@@ -68,6 +69,8 @@ def _parse_rows(fields: str, rows: list) -> CapturedBars:
         bar = {"date": rec["date"]}
         valid = True
         for k in _NUMERIC:
+            if k == "amount" and k not in cols:
+                continue
             value = _to_float(rec.get(k, ""))
             if value is None:
                 valid = False
@@ -77,7 +80,6 @@ def _parse_rows(fields: str, rows: list) -> CapturedBars:
             out.append(bar)
         else:
             dropped += 1
-    fields_list = "date,open,high,low,close,volume"
     receipt = {
         "observed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source": "baostock",
@@ -119,7 +121,7 @@ def fetch_baostock(
         try:
             rs = bs.query_history_k_data_plus(
                 bs_code,
-                "date,open,high,low,close,volume",
+                _DAILY_FIELDS,
                 start_date=start,
                 end_date=end,
                 frequency="d",
@@ -134,7 +136,7 @@ def fetch_baostock(
             bs.logout()
     retrieved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     version = f"baostock-adjustflag-{adjustflag}"
-    fields = "date,open,high,low,close,volume"
+    fields = _DAILY_FIELDS
     parsed = _parse_rows(fields, rows)
     bars = list(parsed)
     receipt = {
