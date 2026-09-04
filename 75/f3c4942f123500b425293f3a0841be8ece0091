@@ -1,0 +1,42 @@
+stockdata/main_buy_supplement.py
+  s_94dc23cc2246e9::t_c00d016dbb21b7 1-35,37-40,42-111,113,115-143,147,151,153-191
+  s_94dc23cc2246e9::t_50698286a9c4d0 36,41,144-146,148-150,152
+  s_94dc23cc2246e9::t_1145f69c74818d 112,114
+stockdata/provider_authority_admission.py
+  s_94dc23cc2246e9::t_c00d016dbb21b7 27,252-257
+  s_94dc23cc2246e9::t_4d4a6e3f9e50e0 7,26,245-251
+stockdata/liquidity_amount_product.py
+  s_94dc23cc2246e9::t_4d4a6e3f9e50e0 204-258
+docs/liquidity-amount-product.md
+  s_94dc23cc2246e9::t_21b564ed7549f0 33-117
+tests/test_main_buy_supplement.py
+  s_94dc23cc2246e9::t_50698286a9c4d0 1-2,23,74,81,103,130,187
+  s_94dc23cc2246e9::t_cec3af846a178d 3-5,7-16,18-22,24-38,40-62,64-65,68-72,88,91-92,99,104-111,113-119,121-122,124-126,128-129,131-157,159-186,188-196
+  s_94dc23cc2246e9::t_526ccdacb19091 6,39
+  s_94dc23cc2246e9::t_fa5f86e5ed0d82 17,63,66-67,73,75-80,82-87,89-90,93-98,100-102,112,120,123,127
+  s_94dc23cc2246e9::t_16e9ef66eb7bfb 158,197-230
+stockdata/authority.py
+  s_94dc23cc2246e9::t_c00d016dbb21b7 36,225-232
+  s_94dc23cc2246e9::t_4d4a6e3f9e50e0 35
+stockdata/market_rules.py
+  s_94dc23cc2246e9::t_1145f69c74818d 12-21,158-160,162-163,168,171-181,186,233,269-271,317-318,354
+stockdata/rqgm_provider_contract.py
+  s_94dc23cc2246e9::t_c00d016dbb21b7 58
+  s_94dc23cc2246e9::t_4d4a6e3f9e50e0 57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "75f3c4942f123500b425293f3a0841be8ece0091",
+  "prompts": {},
+  "sessions": {
+    "s_94dc23cc2246e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a06e94-4de3-7853-a1e2-6d68e39842b1",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
