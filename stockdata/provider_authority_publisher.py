@@ -244,6 +244,7 @@ def publish_authority_envelope(
     available_at: str,
     publisher_key_id: str | None = None,
     decision_cutoff_by_panel: Mapping[str, str] | None = None,
+    instrument_status_authority: AdmittedProviderAuthority | None = None,
 ) -> PublishedEnvelope:
     """Build, sign, production-admit, and write one authority envelope."""
 
@@ -287,7 +288,7 @@ def publish_authority_envelope(
         "payload": payload,
         "signature_base64": _base64(signer_key.sign(_canonical(payload))),
     }
-    if component == "market_rules":
+    if component == "market_rules" and instrument_status_authority is None:
         if decision_cutoff_by_panel is None:
             raise ValueError("generic market-rule publication requires calendar cutoffs")
         preregistered = preregister_generic_market_rulebook(
@@ -308,6 +309,7 @@ def publish_authority_envelope(
         bound_source_receipts=receipts,
         registry=registry,
         decision_cutoff_by_panel=decision_cutoff_by_panel,
+        instrument_status_authority=instrument_status_authority,
     )
     _write_canonical_json(output_file, envelope)
     return PublishedEnvelope(envelope=envelope, admitted=admitted)

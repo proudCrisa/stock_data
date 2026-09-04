@@ -105,6 +105,15 @@ Other ETFs, including 159980's commodity-futures settlement regime, are not yet
 admitted by the market-rule validator. Their independent amount identity does
 not imply trading permission. Unknown identities and missing sources fail closed.
 
+For exact ETF publication, first publish the instrument-status artifact and pass
+its `PublishedEnvelope.admitted` result to
+`publish_authority_envelope(component='market_rules',
+instrument_status_authority=status, ...)`. This admits and signs an exact
+status-bound rule. Omitting status preserves the existing generic A-share
+rulebook prerequisite flow. The publisher requires actual canonical artifacts,
+binding receipts, an external registry pin and the enrolled private-key
+environment variable; the input builders do not invent any of these authorities.
+
 ## Remaining real-run inputs
 
 The checkout's `stockdata/enrolled_trust_registry.json` has zero roots and zero

@@ -228,3 +228,32 @@ def test_later_caller_cutoff_retains_original_frozen_cutoff():
         payload, expected_registry_sha256=pin, provider_manifest_sha256="a" * 64,
         asof="2026-08-14", decision_cutoff="2026-08-14T17:00:00+08:00",
     ) == payload
+
+
+def test_exact_etf_rule_publishes_after_signed_status_admission(tmp_path, monkeypatch):
+    payload, pin, signer = make_supplement()
+    registry_file = tmp_path / "registry.json"
+    registry_file.write_bytes(_canonical(payload["registry"]))
+    monkeypatch.setenv("TEST_ETF_RULE_KEY", _b64(_private_raw(signer)))
+    status = None
+    for component in ("instrument_status", "market_rules"):
+        inputs = payload["references"][component]
+        artifact_file = tmp_path / f"{component}.json"
+        artifact_file.write_bytes(_canonical(inputs["artifact"]))
+        receipt_files = []
+        for receipt_id, receipt in inputs["source_receipts"].items():
+            path = tmp_path / f"{receipt_id}.json"
+            path.write_bytes(_canonical(receipt))
+            receipt_files.append(path)
+        result = publish_authority_envelope(
+            component=component, registry_file=registry_file, registry_sha256=pin,
+            artifact_file=artifact_file, source_receipt_files=receipt_files,
+            signer_private_key_env="TEST_ETF_RULE_KEY", output_file=tmp_path / f"signed-{component}.json",
+            effective_at=f"{ASOF}T16:05:00+08:00", available_at=f"{ASOF}T16:05:00+08:00",
+            decision_cutoff_by_panel={f"{SYMBOL}@{ASOF}": CUTOFF},
+            instrument_status_authority=status,
+        )
+        if component == "instrument_status":
+            status = result.admitted
+        payload["references"][component]["authority_envelope"] = result.envelope
+    assert _verify(payload, pin) == payload
