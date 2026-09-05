@@ -242,8 +242,10 @@ def admit_liquidity_amounts_authority(
     """Replay raw evidence and verify enrolled signature before granting authority."""
     from .provider_authority_admission import admit_signed_component_authority
 
+    if _timestamp(product["decision_cutoff"]) > _timestamp(decision_cutoff):
+        raise LiquidityAmountProductError("liquidity product freeze is after authority cutoff")
     verify_liquidity_amounts_product(
-        product, expected_panel=expected_panel, decision_cutoff=decision_cutoff,
+        product, expected_panel=expected_panel,
         expected_watermark=expected_watermark,
     )
     inputs = build_liquidity_authority_inputs(product)

@@ -160,8 +160,34 @@ verify_main_buy_supplement(
 )
 ```
 
-The production artifact builder is the API above; the test helper is only a
-synthetic fixture. A convenience CLI for file-descriptor composition is not yet
-provided and is not a requirement for using these callable APIs. All raw signed
-inputs must be retained inside the supplement so Trading can freeze and replay
-the same decision bundle without external data reads.
+For the reviewed 561980 facts package, the concrete publisher is:
+
+```bash
+python -m stockdata.local_main_buy_publisher \
+  --evidence-dir /absolute/561980-reference-facts \
+  --liquidity-capture-file /absolute/native-amount/raw-capture.json \
+  --global-snapshot-file /absolute/engine-global-snapshot.json \
+  --publisher-dir /absolute/local-publisher \
+  --registry-sha256 EXTERNALLY_FIXED_REGISTRY_SHA256 \
+  --provider-manifest-sha256 TRADING_LOCAL_PROVIDER_MANIFEST_SHA256 \
+  --output-dir /absolute/new-supplement-directory
+```
+
+This recipe verifies the retained source files against the evidence index, binds
+their original bytes inside signed receipts, constructs the five reference
+components, preserves the June 26 split event and the original BaoStock ETF ST
+conflict, and signs all inputs. The stock ST flag is inapplicable to this exact
+SSE-listed ETF; its non-ST execution branch is derived from the official stock
+versus fund rule scope, not from BaoStock's conflicting raw field.
+
+The inner liquidity product freezes after collection. Signatures are issued
+after that product is built; the outer supplement freezes after the signatures.
+Admission therefore requires `product_cutoff <= supplement_cutoff`, replays the
+product at its own exact cutoff and checks signatures at the outer cutoff. No
+timestamps are backfilled. Direct product verification retains its original
+exact external-cutoff contract.
+
+Trading must first produce its local provider manifest hash after the stockdata
+source version is frozen. The CLI binds that supplied hash; it does not invent
+a ready price authority or compute trading actions. All raw signed inputs are
+retained so Trading can freeze and replay the decision without external reads.

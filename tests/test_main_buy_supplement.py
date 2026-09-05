@@ -344,3 +344,44 @@ def test_current_observation_cutoff_is_calendar_only():
             bound_source_receipts=inputs["source_receipts"],
             registry=load_enrolled_trust_registry_bytes(_canonical(payload["registry"]), expected_sha256=pin),
             current_decision_observation_cutoff=CUTOFF)
+
+
+def test_liquidity_product_can_freeze_before_final_signed_supplement():
+    payload, pin, _ = make_supplement()
+    original_product = _canonical(payload["liquidity"]["product"])
+    payload["decision_cutoff"] = f"{ASOF}T16:11:00+08:00"
+    assert verify_main_buy_supplement(payload, expected_registry_sha256=pin,
+        provider_manifest_sha256="a" * 64, asof=ASOF, decision_cutoff=payload["decision_cutoff"]) == payload
+    assert _canonical(payload["liquidity"]["product"]) == original_product
+    payload["decision_cutoff"] = f"{ASOF}T16:09:00+08:00"
+    with pytest.raises(ValueError, match="product freeze is after authority cutoff"):
+        verify_main_buy_supplement(payload, expected_registry_sha256=pin,
+            provider_manifest_sha256="a" * 64, asof=ASOF, decision_cutoff=payload["decision_cutoff"])
+
+
+def test_reference_raw_evidence_must_be_bound_to_each_signed_record():
+    payload, pin, _ = make_supplement()
+    inputs = payload["references"]["universe"]
+    rows = {row["panel_entry"]: row["payload"] for row in inputs["artifact"]["records"]}
+    inputs["source_evidence"] = rows
+    assert _verify(payload, pin) == payload
+    inputs["source_evidence"] = {"untrusted": "replacement"}
+    receipt = {**next(iter(inputs["source_receipts"].values())),
+               "response_sha256": _hash(inputs["source_evidence"])}
+    inputs["source_receipts"][_hash(receipt)] = receipt
+    with pytest.raises(ValueError, match="raw reference evidence is not receipt-bound"):
+        _verify(payload, pin)
+
+
+def test_global_raw_source_evidence_is_signed_and_replayed():
+    payload, pin, signer = make_supplement()
+    inputs = build_global_signals_authority_inputs(payload["global_signals"]["snapshot"],
+        panel=[f"{SYMBOL}@{ASOF}"], available_at=f"{ASOF}T16:05:00+08:00",
+        source_evidence={"source": "local-automation", "raw": "retained original bytes"})
+    payload["global_signals"] = _signed(inputs, registry_sha=pin,
+        root=Ed25519PrivateKey.from_private_bytes(bytes([1]) * 32), signer=signer,
+        observed=f"{ASOF}T16:05:00+08:00")
+    assert _verify(payload, pin) == payload
+    payload["global_signals"]["source_evidence"]["raw"] = "changed"
+    with pytest.raises(ValueError, match="global snapshot closure drifted"):
+        _verify(payload, pin)

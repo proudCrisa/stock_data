@@ -51,6 +51,7 @@ def validate_global_snapshot(snapshot: dict) -> dict:
 
 def build_global_signals_authority_inputs(
     snapshot: dict, *, panel: list[str], available_at: str,
+    source_evidence: dict | None = None,
 ) -> dict:
     """Retain the complete Trading snapshot under the existing signing protocol."""
     validate_global_snapshot(snapshot)
@@ -70,7 +71,7 @@ def build_global_signals_authority_inputs(
                       "record_sha256": _hash(snapshot)} for entry in panel],
     }
     receipt_id = _hash(receipt)
-    return {
+    inputs = {
         "snapshot": deepcopy(snapshot),
         "artifact": {
             "schema_version": "stockdata-global-signals/1", "component": "global_signals",
@@ -82,6 +83,15 @@ def build_global_signals_authority_inputs(
         },
         "source_receipts": {receipt_id: receipt},
     }
+    if source_evidence is not None:
+        evidence_receipt = {**receipt, "source": "local-publisher-source-evidence/1",
+                            "response_sha256": _hash(source_evidence)}
+        evidence_id = _hash(evidence_receipt)
+        inputs["source_receipts"][evidence_id] = evidence_receipt
+        for record in inputs["artifact"]["records"]:
+            record["source_receipt_ids"] = sorted([receipt_id, evidence_id])
+        inputs["source_evidence"] = deepcopy(source_evidence)
+    return inputs
 
 
 def _admit(component, inputs, *, panel, registry, cutoffs=None, status=None,
@@ -135,8 +145,14 @@ def verify_main_buy_supplement(
     if set(references) != set(REFERENCE_COMPONENTS):
         raise ValueError("main BUY reference authorities are incomplete")
     for inputs in references.values():
-        if set(inputs) != {"artifact", "source_receipts", "authority_envelope"}:
+        if set(inputs) - {"source_evidence"} != {"artifact", "source_receipts", "authority_envelope"}:
             raise ValueError("main BUY reference closure is incomplete")
+        if "source_evidence" in inputs:
+            evidence_ids = {receipt_id for receipt_id, receipt in inputs["source_receipts"].items()
+                            if receipt["response_sha256"] == _hash(inputs["source_evidence"])}
+            if not all(evidence_ids.intersection(record["source_receipt_ids"])
+                       for record in inputs["artifact"]["records"]):
+                raise ValueError("main BUY raw reference evidence is not receipt-bound")
     calendar_panel = sorted(set(liquidity_panel) | set(current_panel))
     calendar = _admit("trading_calendar", references["trading_calendar"],
                       panel=calendar_panel, registry=registry,
@@ -177,7 +193,7 @@ def verify_main_buy_supplement(
     _admit("corporate_actions", references["corporate_actions"], panel=current_panel,
            registry=registry, cutoffs=cutoffs)
     global_inputs = payload["global_signals"]
-    if set(global_inputs) != {"snapshot", "artifact", "source_receipts", "authority_envelope"}:
+    if set(global_inputs) - {"source_evidence"} != {"snapshot", "artifact", "source_receipts", "authority_envelope"}:
         raise ValueError("main BUY global closure is incomplete")
     global_artifact = global_inputs["artifact"]
     if not global_artifact.get("records"):
@@ -185,6 +201,7 @@ def verify_main_buy_supplement(
     available_at = global_artifact["records"][0]["available_at"]
     rebuilt_global = build_global_signals_authority_inputs(
         global_inputs["snapshot"], panel=current_panel, available_at=available_at,
+        source_evidence=global_inputs.get("source_evidence"),
     )
     if any(global_inputs[key] != value for key, value in rebuilt_global.items()):
         raise ValueError("main BUY global snapshot closure drifted")
