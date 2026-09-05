@@ -1,0 +1,37 @@
+tests/test_main_buy_supplement.py
+  s_94dc23cc2246e9::t_f070c558d54592 112-113
+stockdata/local_main_buy_publisher.py
+  s_94dc23cc2246e9::t_a5168671a68800 50
+  s_94dc23cc2246e9::t_720161104e19e4 98-99,119-135,275-276
+  s_94dc23cc2246e9::t_2e61ad53d17fe2 16,97,100-118,136-165,266,278-279,285,295
+  s_94dc23cc2246e9::t_96b36ed4b8e5cc 28-49,51-65,258,272,282
+  s_94dc23cc2246e9::t_8d16f24ceee8e9 1,190,254-257,259-265,267-271,273-274,277,280-281,283-284,286-294,296-315,317-318,332-338,342-344,360,376
+stockdata/market_rules.py
+  s_94dc23cc2246e9::t_4da9ecfc0cfce7 13-14,21-64,222,224-225,260
+tests/test_local_main_buy_publisher.py
+  s_94dc23cc2246e9::t_720161104e19e4 3-5,50-95
+  s_94dc23cc2246e9::t_a5168671a68800 96-118
+stockdata/liquidity_amount_product.py
+  s_94dc23cc2246e9::t_4da9ecfc0cfce7 13,22
+docs/main-buy-publisher-runbook.md
+  s_94dc23cc2246e9::t_a5168671a68800 194-216
+tests/test_main_etf_rule_profiles.py
+  s_94dc23cc2246e9::t_f070c558d54592 1-5,7-36
+  s_94dc23cc2246e9::t_a5704b960b3e9e 6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "1742388bdfed7353cf55fd23a97bf470d6e2d539",
+  "prompts": {},
+  "sessions": {
+    "s_94dc23cc2246e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a06e94-4de3-7853-a1e2-6d68e39842b1",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
