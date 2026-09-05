@@ -1,5 +1,8 @@
 from datetime import datetime, timedelta, timezone
 import json
+from copy import deepcopy
+
+import pytest
 
 from stockdata import local_main_buy_publisher as publisher
 from stockdata.liquidity_amount_product import _canonical
@@ -44,3 +47,72 @@ def test_publisher_freezes_after_signing_without_backdating_source_facts(tmp_pat
     freeze = datetime.fromisoformat(payload["decision_cutoff"])
     inputs = [payload["liquidity"], payload["global_signals"], *payload["references"].values()]
     assert all(datetime.fromisoformat(item["authority_envelope"]["payload"]["available_at"]) < freeze for item in inputs)
+
+
+def test_status_cannot_relabel_another_etfs_same_day_response():
+    captures = [
+        {"request": {"method": "query_stock_basic", "code": "sh.588730"},
+         "observed_at": "2026-09-05T04:00:00Z", "response": {"error_code": "0",
+            "fields": ["code", "type", "status"], "rows": [["sh.588730", "5", "1"]]}},
+        {"request": {"method": "query_history_k_data_plus", "code": "sh.588730",
+            "fields": "date,tradestatus,isST", "start_date": "2026-09-04", "end_date": "2026-09-04",
+            "frequency": "d", "adjustflag": "3"}, "observed_at": "2026-09-05T04:00:00Z",
+         "response": {"error_code": "0", "fields": ["date", "tradestatus", "isST"],
+            "rows": [["2026-09-04", "1", "1"]]}},
+    ]
+    args = ("588730.SH", "2026-09-04", "2026-09-05T05:00:00Z")
+    assert publisher._validate_status_capture(captures, *args)["isST"] == "1"
+    changed = deepcopy(captures)
+    changed[1]["request"]["code"] = "sh.560900"
+    with pytest.raises(ValueError, match="request identity"):
+        publisher._validate_status_capture(changed, *args)
+    changed = deepcopy(captures)
+    changed[1]["observed_at"] = args[-1]
+    with pytest.raises(ValueError, match="observation"):
+        publisher._validate_status_capture(changed, *args)
+
+
+def test_official_announcement_completeness_is_rebuilt_from_receipt(tmp_path):
+    import hashlib
+    name = "159350.SZ-szse-announcements.raw.json"
+    data = {"announceCount": 1, "data": [{"secCode": ["159350"]}]}
+    raw = _canonical(data)
+    receipt = {"observed_at": "2026-09-05T04:00:00Z", "request": {"method": "POST",
+        "url": "https://www.szse.cn/api/disc/announcement/annList", "body": {
+            "stock": ["159350"], "channelCode": ["fundinfoNotice_disc"],
+            "seDate": ["2025-07-11", "2026-09-05"], "pageSize": 50, "pageNum": 1}},
+        "response": {"status_code": 200, "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}}
+    (tmp_path / name).write_bytes(raw)
+    (tmp_path / (name + ".receipt.json")).write_bytes(_canonical(receipt))
+    args = (tmp_path, "159350.SZ", [name, name + ".receipt.json"], "2026-09-05T05:00:00Z")
+    publisher._validate_announcement_capture(*args)
+    data["announceCount"] = 51
+    raw = _canonical(data)
+    receipt["response"].update(sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw))
+    (tmp_path / name).write_bytes(raw)
+    (tmp_path / (name + ".receipt.json")).write_bytes(_canonical(receipt))
+    with pytest.raises(ValueError, match="page coverage"):
+        publisher._validate_announcement_capture(*args)
+
+
+def test_index_cannot_omit_reviewed_cash_dividends_or_invent_an_etf_event():
+    with pytest.raises(ValueError, match="corporate-action set"):
+        publisher._validate_reviewed_events({"events": [], "cash_dividend_identities": []}, "511010.SH")
+    with pytest.raises(ValueError, match="corporate-action set"):
+        publisher._validate_reviewed_events({"events": [{"event_type": "split"}]}, "588730.SH")
+    publisher._validate_reviewed_events({"events": []}, "588730.SH")
+
+
+def test_universe_is_recomputed_from_retained_config_bytes(tmp_path):
+    import hashlib
+    from stockdata.market_rules import ETF_RULE_SCOPES
+    symbols = sorted(ETF_RULE_SCOPES)
+    raw = _canonical({"holdings": [{"code": s[-2:].lower() + s[:6]} for s in symbols]})
+    universe = {"symbols": symbols, "source_sha256": hashlib.sha256(raw).hexdigest()}
+    (tmp_path / "local-main-config.json").write_bytes(raw)
+    (tmp_path / "local-main-universe.json").write_bytes(_canonical(universe))
+    args = (tmp_path, "588730.SH", ["local-main-config.json", "local-main-universe.json"])
+    assert publisher._validate_universe(*args) == universe
+    (tmp_path / "local-main-config.json").write_bytes(_canonical({"holdings": []}))
+    with pytest.raises(ValueError, match="source hash"):
+        publisher._validate_universe(*args)

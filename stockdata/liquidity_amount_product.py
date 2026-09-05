@@ -10,6 +10,7 @@ import math
 from pathlib import Path
 
 from .ticker import normalize
+from .market_rules import ETF_RULE_SCOPES
 
 
 IDENTITY = {
@@ -18,6 +19,7 @@ IDENTITY = {
 }
 # Exact issuer-confirmed ETF identities, not security-code prefix inference.
 ETF_SOURCES = {
+    **{symbol: scope["classification_source"] for symbol, scope in ETF_RULE_SCOPES.items()},
     "159980.SZ": "https://www.dcfund.com.cn/home/working/download/autoupload/1742473215380.pdf",
     "561980.SH": "https://static.cmfchina.com/web/noticedetails/225146/index.html",
 }

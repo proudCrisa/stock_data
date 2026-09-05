@@ -10,12 +10,58 @@ from typing import cast
 
 MARKET_RULE_PAYLOAD_SCHEMA = "stockdata-market-rule-payload/1"
 ETF_MARKET_RULE_PAYLOAD_SCHEMA = "stockdata-etf-market-rule-payload/1"
+_SSE_RULE_SOURCE = "https://www.sse.com.cn/lawandrules/sselawsrules2025/stocks/exchange/c/c_20260424_10816482.shtml"
+_SZSE_RULE_SOURCE = "https://docs.static.szse.cn/www/lawrules/rule/trade/current/W020260424690713155663.pdf"
 ETF_RULE_SCOPES = {
     "561980.SH": {
         "fund_type": "DOMESTIC_EQUITY",
         "classification_source": "https://static.cmfchina.com/web/fundDetail/561980/index.html",
         "rule_source": "https://www.sse.com.cn/lawandrules/sselawsrules2025/stocks/exchange/c/c_20260424_10816482.shtml",
         "effective_from": "2026-07-06",
+        "exchange": "SH", "t_plus_one": True, "price_limit_up": 0.10, "price_limit_down": 0.10,
+        "lot_size": 100, "price_tick": 0.001,
+    },
+    "588730.SH": {
+        "fund_type": "STAR_EQUITY", "classification_source": "https://etf.sse.com.cn/fundtrends/c/c_20250121_10770433.shtml",
+        "rule_source": _SSE_RULE_SOURCE, "effective_from": "2026-07-06",
+        "exchange": "SH", "t_plus_one": True, "price_limit_up": 0.20, "price_limit_down": 0.20,
+        "lot_size": 100, "price_tick": 0.001,
+    },
+    "560900.SH": {
+        "fund_type": "DOMESTIC_EQUITY", "classification_source": "https://www.sse.com.cn/disclosure/fund/announcement/c/new/2026-07-07/560900_20260707_0A9P.pdf",
+        "rule_source": _SSE_RULE_SOURCE, "effective_from": "2026-07-06",
+        "exchange": "SH", "t_plus_one": True, "price_limit_up": 0.10, "price_limit_down": 0.10,
+        "lot_size": 100, "price_tick": 0.001,
+    },
+    "159350.SZ": {
+        "fund_type": "DOMESTIC_EQUITY", "classification_source": "https://www.fullgoal.com.cn/upload/fck/userfiles/file/1702257742226-fgsz50jyxkfszszqtzjjssjytsxgg.pdf",
+        "rule_source": _SZSE_RULE_SOURCE, "effective_from": "2026-07-06",
+        "exchange": "SZ", "t_plus_one": True, "price_limit_up": 0.10, "price_limit_down": 0.10,
+        "lot_size": 100, "price_tick": 0.001,
+    },
+    "518880.SH": {
+        "fund_type": "GOLD", "classification_source": "https://www.sse.com.cn/disclosure/fund/announcement/c/new/2026-03-17/518880_20260317_QR4M.pdf",
+        "rule_source": _SSE_RULE_SOURCE, "effective_from": "2026-07-06",
+        "exchange": "SH", "t_plus_one": False, "price_limit_up": 0.10, "price_limit_down": 0.10,
+        "lot_size": 100, "price_tick": 0.001,
+    },
+    "511010.SH": {
+        "fund_type": "BOND", "classification_source": "https://www.sse.com.cn/disclosure/fund/announcement/c/new/2026-03-19/511010_20260319_W8OE.pdf",
+        "rule_source": _SSE_RULE_SOURCE, "effective_from": "2026-07-06",
+        "exchange": "SH", "t_plus_one": False, "price_limit_up": 0.10, "price_limit_down": 0.10,
+        "lot_size": 100, "price_tick": 0.001,
+    },
+    "513650.SH": {
+        "fund_type": "CROSS_BORDER_US_EQUITY", "classification_source": "https://www.sse.com.cn/disclosure/fund/announcement/c/new/2026-08-12/513650_20260812_2RI6.pdf",
+        "rule_source": _SSE_RULE_SOURCE, "effective_from": "2026-07-06",
+        "exchange": "SH", "t_plus_one": False, "price_limit_up": 0.10, "price_limit_down": 0.10,
+        "lot_size": 100, "price_tick": 0.001,
+    },
+    "159980.SZ": {
+        "fund_type": "COMMODITY_FUTURES", "classification_source": "https://www.szse.cn/www/disclosure/notice/fund/t20191219_572701.html",
+        "rule_source": _SZSE_RULE_SOURCE, "effective_from": "2026-07-06",
+        "exchange": "SZ", "t_plus_one": False, "price_limit_up": 0.10, "price_limit_down": 0.10,
+        "lot_size": 100, "price_tick": 0.001,
     },
 }
 _ETF_FIELDS = frozenset({"instrument_id", "fund_type", "classification_source", "rule_source"})
@@ -173,9 +219,10 @@ def validate_market_rule_payload(
         if scope is None or any(payload[field] != scope[field] for field in
                                 ("fund_type", "classification_source", "rule_source")):
             raise ValueError("market_rules ETF classification lacks approved primary sources")
-        if (payload["board"] != "ETF" or payload["exchange"] != "SH"
+        if (payload["board"] != "ETF"
                 or payload["effective_from"] < scope["effective_from"]
-                or payload["price_limit_up"] != 0.10 or payload["price_limit_down"] != 0.10
+                or any(type(payload[field]) is not type(scope[field]) or payload[field] != scope[field]
+                       for field in ("exchange", "t_plus_one", "price_limit_up", "price_limit_down", "lot_size", "price_tick"))
                 or payload["is_st"] is not False):
             raise ValueError("market_rules ETF regime differs official rule scope")
 
@@ -210,7 +257,7 @@ def validate_market_rule_payload(
         raise ValueError("market_rules is_st must be boolean or null")
     if payload["lot_size"] != 100 or isinstance(payload["lot_size"], bool):
         raise ValueError("market_rules A-share lot_size must be 100")
-    if payload["t_plus_one"] is not True:
+    if not is_etf and payload["t_plus_one"] is not True:
         raise ValueError("market_rules A-share settlement must be T+1")
     if (
         payload["reject_suspended"] is not True

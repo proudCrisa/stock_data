@@ -109,8 +109,8 @@ def make_supplement(*, asof=ASOF, snapshot=None, rule_overrides=None,
             "next_session_decision_cutoff_at": f"{next_day}T09:25:00+08:00",
         }
     rule = _rule(schema_version=ETF_MARKET_RULE_PAYLOAD_SCHEMA, policy_id="561980-etf-fixture",
-                 security_type="ETF", board="ETF", exchange="SH", instrument_id=SYMBOL,
-                 price_tick=0.001, effective_from=asof, effective_until=asof,
+                 security_type="ETF", board="ETF", instrument_id=SYMBOL,
+                 effective_from=asof, effective_until=asof,
                  **{key: value for key, value in ETF_RULE_SCOPES[SYMBOL].items() if key != "effective_from"})
     rule.update(rule_overrides or {})
     reference_rows = {

@@ -191,3 +191,26 @@ Trading must first produce its local provider manifest hash after the stockdata
 source version is frozen. The CLI binds that supplied hash; it does not invent
 a ready price authority or compute trading actions. All raw signed inputs are
 retained so Trading can freeze and replay the decision without external reads.
+# Eight Configured Main ETFs
+
+The current-observation publisher can add the seven other configured ETFs using
+`--additional-evidence-dir`. This reviewed slice is explicitly dated 2026-09-04;
+it cannot silently reuse that observation for a later decision date. The directory
+contains seven native amount captures and `evidence-index.json` with retained
+official source bytes, HTTP receipts, status captures, and the original configured
+membership bytes. The publisher rebuilds exact request identities, announcement
+pagination coverage, membership hashes, and the reviewed corporate-action set.
+
+The exact profiles are 588730.SH (STAR, 20%, T+1), 561980.SH, 560900.SH and
+159350.SZ (domestic equity, 10%, T+1), and 518880.SH, 511010.SH, 513650.SH and
+159980.SZ (respectively gold, bond, US cross-border equity and commodity futures,
+10%, T+0). T+0 describes the exchange rule; this does not add a same-day selling
+strategy. Each profile has an official classification URL and exchange rule URL.
+
+The signed corporate-action source evidence preserves the existing 561980 split
+and four 511010 cash dividends. Typed `cash_dividend_identities` are at the source
+evidence root; 511010 official PDF bytes and receipts are under
+`additional_instruments["511010.SH"].files`. No historical account entries or
+per-event cash receipts are inferred. All other no-event assessments combine the
+complete retained official announcement response with annual/interim reports and
+the native vendor response; an empty title search alone is insufficient.
