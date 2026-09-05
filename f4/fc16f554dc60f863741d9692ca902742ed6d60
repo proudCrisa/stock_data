@@ -1,0 +1,29 @@
+docs/main-buy-publisher-runbook.md
+  s_94dc23cc2246e9::t_e12171d1d551b5 197-200,205-222
+tests/test_local_main_buy_publisher.py
+  s_94dc23cc2246e9::t_e33be3da87c6d9 143
+  s_94dc23cc2246e9::t_55efa49d22596f 121-122,124,135,139,146,152-164,166-180,184-187,191-195,198-208
+  s_94dc23cc2246e9::t_b5c3e4ea30661a 233-240
+  s_94dc23cc2246e9::t_ca49361f79d341 165,181-183,188-190,196-197,209-232
+stockdata/local_main_buy_publisher.py
+  s_94dc23cc2246e9::t_fbf613e186a153 61-65,153,157-174,181-183,215-216,220-222,236,320-326,333
+  s_94dc23cc2246e9::t_e33be3da87c6d9 11,223-235,242,264-266,442
+  s_94dc23cc2246e9::t_a88ce714cff4bf 7,17,185-187,200,210,259,263,267-268,274-275,278-279,283,294,297,335,346,350,354-356,374,417,428-429,445,478-479
+  s_94dc23cc2246e9::t_b1b517a6438ffd 29-38,151-152,154-156,175-180,184,217-219,237-239,375-376
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "f4fc16f554dc60f863741d9692ca902742ed6d60",
+  "prompts": {},
+  "sessions": {
+    "s_94dc23cc2246e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a06e94-4de3-7853-a1e2-6d68e39842b1",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
