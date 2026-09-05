@@ -39,7 +39,7 @@ def _route(symbol, role):
     if symbol not in ETF_SYMBOLS | INDEX_SYMBOLS or role not in {"execution", "signal"}:
         raise ValueError("symbol or price role is outside the local daily profile")
     adjustment = "qfq" if symbol in ETF_SYMBOLS and role == "signal" else "raw"
-    sources = ["tencent.ifzq", "baostock"] if symbol in ETF_SYMBOLS else ["baostock", "tencent.ifzq"]
+    sources = ["tencent.ifzq"] if symbol in ETF_SYMBOLS else ["baostock", "tencent.ifzq"]
     return [(source, adjustment) for source in sources]
 
 

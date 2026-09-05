@@ -80,11 +80,21 @@ def test_snapshot_rejects_tampering_even_with_rehashed_outer_content(snapshot, f
         _verify(value, anchor)
 
 
-def test_eligible_primary_cannot_be_displaced_by_fallback():
+def test_etf_baostock_price_fallback_is_not_in_local_profile():
     start, asof = "2025-07-11", "2026-09-04"
     attempts = [{"source": source, "capture": _capture(source, "561980.SH", start, asof, "qfq"),
                  "observed_at": datetime.now(timezone.utc).isoformat(), "error": None}
                 for source in ("tencent.ifzq", "baostock")]
-    with pytest.raises(ValueError, match="higher-priority"):
+    with pytest.raises(ValueError, match="fixed route"):
         local.build_price_manifest(attempts, symbol="561980.SH", role="signal", start=start, asof=asof,
+                                    decision_cutoff=datetime.now(timezone.utc).isoformat())
+
+
+def test_index_eligible_primary_cannot_be_displaced_by_fallback():
+    start, asof = "2025-07-11", "2026-09-04"
+    attempts = [{"source": source, "capture": _capture(source, "000300.SH", start, asof, "raw"),
+                 "observed_at": datetime.now(timezone.utc).isoformat(), "error": None}
+                for source in ("baostock", "tencent.ifzq")]
+    with pytest.raises(ValueError, match="higher-priority"):
+        local.build_price_manifest(attempts, symbol="000300.SH", role="signal", start=start, asof=asof,
                                     decision_cutoff=datetime.now(timezone.utc).isoformat())

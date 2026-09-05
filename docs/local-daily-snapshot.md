@@ -16,10 +16,11 @@ python -m stockdata.local_daily_snapshot \
 
 Repeat `--symbol` for the exact symbols required by Trading's independently fixed
 request. The capture does not read or update shared caches. Raw captures and
-source failures are saved individually. ETF prices prefer Tencent and fall back
-to BaoStock; index prices prefer BaoStock and fall back to Tencent. Execution
+source failures are saved individually. This local profile uses Tencent only
+for ETF prices; index prices prefer BaoStock and fall back to Tencent. Execution
 requests raw prices; ETF signal requests qfq. If Tencent itself returns only
-`day`, its actual identity remains raw, matching the existing source behavior.
+`day`, its actual identity remains raw. Trading retains its existing signal-only
+fund-split normalization for that raw fallback; execution stays raw.
 Tencent volume is converted from hands to shares explicitly. A usable primary
 cannot be silently displaced by a fallback. Every selected source must cover T
 and at least 20 finalized bars; insufficient history remains blocked.
