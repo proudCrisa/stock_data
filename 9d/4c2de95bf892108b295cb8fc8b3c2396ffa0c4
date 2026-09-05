@@ -1,0 +1,21 @@
+tests/test_local_main_buy_publisher.py
+  s_94dc23cc2246e9::t_1ab668c0759a20 78,88-95
+stockdata/local_main_buy_publisher.py
+  s_94dc23cc2246e9::t_1ab668c0759a20 212-213,217
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "9d4c2de95bf892108b295cb8fc8b3c2396ffa0c4",
+  "prompts": {},
+  "sessions": {
+    "s_94dc23cc2246e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a06e94-4de3-7853-a1e2-6d68e39842b1",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
