@@ -1,0 +1,30 @@
+tests/test_local_main_buy_publisher.py
+  s_94dc23cc2246e9::t_8b9089e7afb31e 1-46
+stockdata/local_main_buy_publisher.py
+  s_94dc23cc2246e9::t_faa5ff30c29f8e 1-198
+tests/test_main_buy_supplement.py
+  s_94dc23cc2246e9::t_6170b5ee111af6 347-387
+stockdata/liquidity_amount_product.py
+  s_94dc23cc2246e9::t_faa5ff30c29f8e 245-246,248
+docs/main-buy-publisher-runbook.md
+  s_94dc23cc2246e9::t_8c15c1d0b94e8b 163-193
+stockdata/main_buy_supplement.py
+  s_94dc23cc2246e9::t_2a0472088042d0 54,74,86-94,148,196,204
+  s_94dc23cc2246e9::t_0afcd9afe98176 150-155
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "ba67ba97f8040574f84d1d3788c13d5a81454760",
+  "prompts": {},
+  "sessions": {
+    "s_94dc23cc2246e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a06e94-4de3-7853-a1e2-6d68e39842b1",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
