@@ -116,3 +116,35 @@ def test_universe_is_recomputed_from_retained_config_bytes(tmp_path):
     (tmp_path / "local-main-config.json").write_bytes(_canonical({"holdings": []}))
     with pytest.raises(ValueError, match="source hash"):
         publisher._validate_universe(*args)
+
+
+def test_extended_market_rules_bind_final_combined_source_receipt(tmp_path, monkeypatch):
+    from stockdata.market_rules import ETF_RULE_SCOPES
+    fixture, _, _ = make_supplement(asof="2026-09-04")
+    symbols = sorted(ETF_RULE_SCOPES)
+    references = {component: {**value, "source_evidence": {"files": []}}
+                  for component, value in fixture["references"].items()}
+    global_inputs = {**fixture["global_signals"], "source_evidence": {"files": []}}
+    instruments = {}
+    for symbol in symbols:
+        if symbol == "561980.SH":
+            continue
+        (tmp_path / f"{symbol}-status-ca.json").write_bytes(b"[]")
+        instruments[symbol] = {"events": [], "corporate_actions_coverage": {
+            "start_date": "2025-07-11", "end_date": "2026-09-04", "complete": True},
+            "source_files": {component: [f"{symbol}-status-ca.json"] for component in references},
+            "assessments": {component: "fixture" for component in references}}
+    (tmp_path / "evidence-index.json").write_bytes(_canonical({"schema_version": "stockdata-main-etf-reviewed-facts/1",
+        "asof": "2026-09-04", "instruments": instruments}))
+    monkeypatch.setattr(publisher, "_evidence", lambda *args: {"files": []})
+    monkeypatch.setattr(publisher, "_validate_reviewed_events", lambda *args: None)
+    monkeypatch.setattr(publisher, "_validate_status_capture", lambda *args: {"isST": "1"})
+    monkeypatch.setattr(publisher, "_validate_announcement_capture", lambda *args: None)
+    monkeypatch.setattr(publisher, "_validate_universe", lambda *args: {"source_sha256": "a" * 64})
+    refs, _ = publisher.extend_reference_inputs(references, global_inputs,
+        evidence_dir=tmp_path, symbols=symbols, asof="2026-09-04")
+    rules = refs["market_rules"]
+    assert len(rules["artifact"]["records"]) == 8
+    for row in rules["artifact"]["records"]:
+        receipt = rules["source_receipts"][row["source_receipt_ids"][0]]
+        assert row["payload"]["source_sha256"] == receipt["response_sha256"]

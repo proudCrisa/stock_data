@@ -306,6 +306,8 @@ def extend_reference_inputs(references, global_inputs, *, evidence_dir, symbols,
                 rows["trading_calendar"][symbol + "@" + panel_entry.split("@")[1]] = value
         for component in references:
             evidence[component]["additional_instruments"][symbol] = bound[component]
+    for rule in rows["market_rules"].values():
+        rule["source_sha256"] = _hash(evidence["market_rules"])
     references = {component: _reference(component, values, evidence[component], observed) for component, values in rows.items()}
     global_inputs = build_global_signals_authority_inputs(global_inputs["snapshot"],
         panel=[f"{symbol}@{asof}" for symbol in symbols], available_at=observed,
