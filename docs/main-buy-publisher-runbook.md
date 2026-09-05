@@ -194,12 +194,32 @@ retained so Trading can freeze and replay the decision without external reads.
 # Eight Configured Main ETFs
 
 The current-observation publisher can add the seven other configured ETFs using
-`--additional-evidence-dir`. This reviewed slice is explicitly dated 2026-09-04;
-it cannot silently reuse that observation for a later decision date. The directory
+`--additional-evidence-dir`, `--asof` and `--observation-end`. The requested asof
+must match the actual amount and status captures, both evidence indexes and the
+calendar session chain. The official announcement request must end on the explicit
+observation date. The directory
 contains seven native amount captures and `evidence-index.json` with retained
 official source bytes, HTTP receipts, status captures, and the original configured
 membership bytes. The publisher rebuilds exact request identities, announcement
 pagination coverage, membership hashes, and the reviewed corporate-action set.
+The base evidence index may provide `source_files`, with the same component-to-file
+mapping used in the retained index, to select current calendar, status, listing,
+universe, global and announcement files without date-based filename conventions.
+Each component keeps its documented file order. Amount captures remain named
+`<symbol>-amount.json` in the additional directory; status captures are named
+`<symbol>-status-ca.json`, with their actual request dates validated from content.
+
+The reviewed 2026-09-04 announcement responses are pinned by raw-byte hash. A new
+response must supply `reviewed_non_action_urls` in each instrument's index entry
+(at the base index root for 561980). Every official row must appear exactly once
+in that review partition or be linked to a retained event attachment. This is an
+explicit source review, not keyword-based automatic no-event classification.
+Previously reviewed events remain required. Additional events may be provided in
+the instrument's `events` list, or base `additional_events`; each requires its
+exact symbol's official announcement URL, retained attachment bytes and HTTP
+receipt. The publisher preserves them and Trading may block the affected BUY
+until its account/event proof exists. Missing or unreviewed facts stop publication
+with an error; the caller must not label a missing supplement as full authority.
 
 The exact profiles are 588730.SH (STAR, 20%, T+1), 561980.SH, 560900.SH and
 159350.SZ (domestic equity, 10%, T+1), and 518880.SH, 511010.SH, 513650.SH and

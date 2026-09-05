@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import argparse
 import base64
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import hashlib
 import json
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .authority import ALGORITHM, AUTHORITY_ENVELOPE_SCHEMA, load_enrolled_trust_registry_bytes
 from .liquidity_amount_product import (
-    _canonical, _hash, _timestamp, build_liquidity_amounts_product, build_liquidity_authority_inputs,
+    _canonical, _day, _hash, _timestamp, build_liquidity_amounts_product, build_liquidity_authority_inputs,
 )
 from .local_publisher import _write_private
 from .main_buy_supplement import (
@@ -25,6 +26,16 @@ from .provider_authority_publisher import _base64, _key_id, _public_key
 from .rqgm_provider_contract import COMPONENT_SCHEMAS
 
 SYMBOL = "561980.SH"
+_REVIEWED_ANNOUNCEMENT_HASHES = {
+    "561980.SH": "0523d84c018aec5bb4fd3c697737b184238ea8beca95100fe437d36ada19423f",
+    "159350.SZ": "e5613bd7c12cdbb69679e0e8e0acd3a5c041686a7136ce03621cf0c34d04d94e",
+    "159980.SZ": "6d8a7e46d5f84a9569ecd64dbd74ea7361779171688c69773e3666f437ca8959",
+    "511010.SH": "6cb4ffc2192511833ae3d635e0bf8078eaec0ab9aeccb702c153f20a96148cbb",
+    "513650.SH": "f3811c50ee36a608d4dc3c63dd14e133b1ffda4a0249f419e8bacecf2c7d6514",
+    "518880.SH": "cac432354808db589fa5439c1b2a1baf7764c4ba42f1244b0ddf79021bb01201",
+    "560900.SH": "bb8fdcdf6a7ff99017a19711e5626ff261132133a6ae4f6963138cd531fd68d4",
+    "588730.SH": "d22466d23c9c8d45390ab0307b1006bf3b45b17f51537b74013c0c150156ab75",
+}
 _REVIEWED_CASH_DIVIDENDS = (
     ("2025-09-18", "2025-09-22", "2025-09-23", "2025-09-26", 1.45,
      "ddfaac7c7097b0a15666d6e6787553be48613468e221564bccabfceceb5d0d02", "511010_20250918_FU3S.pdf"),
@@ -47,7 +58,11 @@ def _validate_reviewed_events(facts, symbol):
                 "source_url": f"https://www.sse.com.cn/disclosure/fund/announcement/c/new/{announcement}/{filename}"})
     expected = [{"event_type": "cash_dividend", "effective_date": value["ex_date"], "event_id": value["source_sha256"]}
                 for value in identities]
-    if _canonical(facts["events"]) != _canonical(expected) or _canonical(facts.get("cash_dividend_identities", [])) != _canonical(identities):
+    events = facts["events"]
+    if (not isinstance(events, list) or any(set(item) != {"event_type", "effective_date", "event_id"} for item in events)
+            or len({item["event_id"] for item in events}) != len(events)
+            or any(item not in events for item in expected)
+            or any(_canonical(item) not in [_canonical(value) for value in facts.get("cash_dividend_identities", [])] for item in identities)):
         raise ValueError("reviewed exact ETF corporate-action set differs")
 
 
@@ -133,7 +148,43 @@ def _validate_retained_times(evidence, observed):
             check(json.loads(base64.b64decode(entry["raw_base64"])))
 
 
-def _validate_announcement_capture(directory, symbol, source_files, observed):
+def _validate_event_attachments(announcements, evidence, events, *, allowed_notice_urls=(),
+                                reviewed_non_action_urls=None, known_baseline=False):
+    urls = {url for url, _ in announcements}
+    if len(urls) != len(announcements):
+        raise ValueError("official announcement row identities are duplicated")
+    covered = set(allowed_notice_urls) & urls
+    original_hashes = {row[5] for row in _REVIEWED_CASH_DIVIDENDS} | {"9c4c1d818bf62c3388c0cbaccf363c4dce6fec6409546cce06e377f95d9c4324"}
+    for event in events:
+        matches = [entry for entry in evidence["files"] if entry["sha256"] == event["event_id"]
+                   and (entry.get("source_url") or entry.get("source", {}).get("url")) in urls]
+        if len(matches) != 1:
+            raise ValueError("corporate action must match one exact official announcement attachment")
+        entry = matches[0]
+        url = entry.get("source_url") or entry["source"]["url"]
+        if event["event_id"] not in original_hashes:
+            receipt_entry = next((item for item in evidence["files"] if item["file"] == entry["file"] + ".receipt.json"), None)
+            if receipt_entry is None:
+                raise ValueError("new corporate action requires its original HTTP receipt")
+            receipt = json.loads(base64.b64decode(receipt_entry["raw_base64"]))
+            if (receipt["request"]["url"] != url or receipt["response"]["status_code"] != 200
+                    or receipt["response"]["sha256"] != event["event_id"]
+                    or receipt["response"]["bytes"] != len(base64.b64decode(entry["raw_base64"]))):
+                raise ValueError("new corporate action attachment receipt differs")
+        covered.add(url)
+    if reviewed_non_action_urls is None:
+        reviewed_non_action_urls = sorted(urls - covered) if known_baseline else []
+    non_actions = set(reviewed_non_action_urls)
+    if len(non_actions) != len(reviewed_non_action_urls) or non_actions & covered or non_actions | covered != urls:
+        raise ValueError("unreviewed official announcement rows block publication")
+    evidence["reviewed_non_action_urls"] = sorted(non_actions)
+
+
+def _validate_announcement_capture(directory, symbol, source_files, observed, *, observation_end=None,
+                                   evidence=None, events=(), reviewed_non_action_urls=None):
+    observation_end = _day(observation_end or _timestamp(observed).astimezone(timezone(timedelta(hours=8))).date().isoformat())
+    if observation_end > _timestamp(observed).astimezone(timezone(timedelta(hours=8))).date().isoformat():
+        raise ValueError("official announcement observation end is in the future")
     sh = symbol.endswith(".SH")
     name = symbol + ("-sse-announcements.json" if sh else "-szse-announcements.raw.json")
     if name not in source_files or name + ".receipt.json" not in source_files:
@@ -146,7 +197,7 @@ def _validate_announcement_capture(directory, symbol, source_files, observed):
             or response["bytes"] != len(raw) or _timestamp(receipt["observed_at"]) >= _timestamp(observed)):
         raise ValueError("official announcement receipt is invalid")
     if sh:
-        expected = {"END_DATE": "20260905", "SECURITY_CODE": symbol[:6], "START_DATE": "20250711",
+        expected = {"END_DATE": observation_end.replace("-", ""), "SECURITY_CODE": symbol[:6], "START_DATE": "20250711",
             "isPagination": "true", "pageHelp.pageSize": "1000", "sqlId": "COMMON_PL_JJXX_JJGG_L"}
         rows, page = data["result"], data["pageHelp"]
         valid = (request == {"method": "GET", "url": "https://query.sse.com.cn/commonQuery.do", "params": expected}
@@ -156,14 +207,39 @@ def _validate_announcement_capture(directory, symbol, source_files, observed):
         rows = data["data"]
         valid = (request["method"] == "POST" and request["url"] == "https://www.szse.cn/api/disc/announcement/annList"
                  and request["body"] == {"stock": [symbol[:6]], "channelCode": ["fundinfoNotice_disc"],
-                    "seDate": ["2025-07-11", "2026-09-05"], "pageSize": 50, "pageNum": 1}
+                    "seDate": ["2025-07-11", observation_end], "pageSize": 50, "pageNum": 1}
                  and data["announceCount"] == len(rows) and len(rows) <= 50
                  and all(row["secCode"] == [symbol[:6]] for row in rows))
     if not valid:
         raise ValueError("official announcement symbol/window/page coverage differs")
+    announcements = [("https://www.sse.com.cn" + row["URL"], row["TITLE"]) for row in rows] if sh else [
+        ("https://disc.static.szse.cn" + row["attachPath"], row.get("title", "")) for row in rows if "attachPath" in row]
+    _validate_event_attachments(announcements, evidence or {"files": []}, events,
+        reviewed_non_action_urls=reviewed_non_action_urls,
+        known_baseline=hashlib.sha256(raw).hexdigest() == _REVIEWED_ANNOUNCEMENT_HASHES[symbol])
 
 
-def prepare_reference_inputs(*, evidence_dir, liquidity_product, asof, global_snapshot):
+def _validate_base_announcements(directory, index, name, observation_end, evidence, events):
+    entry = next(item for item in index["files"] if item["file"] == name)
+    source = urlparse(entry["source_url"])
+    params = parse_qs(source.query)
+    raw = (directory / name).read_bytes()
+    data = json.loads(raw)
+    rows, page = data["result"], data["pageHelp"]
+    if (source.scheme != "https" or source.netloc != "query.sse.com.cn" or source.path != "/commonQuery.do"
+            or params.get("sqlId") != ["COMMON_PL_JJXX_JJGG_L"] or params.get("SECURITY_CODE") != ["561980"]
+            or params.get("END_DATE") != [observation_end.replace("-", "")]
+            or not params.get("START_DATE") or params["START_DATE"][0] > "20250622"
+            or page["pageCount"] != 1 or page["pageNo"] != 1 or page["total"] != len(rows)
+            or any(row["SECURITY_CODE"] != "561980" for row in rows)):
+        raise ValueError("561980 official announcement observation identity or completeness differs")
+    _validate_event_attachments([("https://www.sse.com.cn" + row["URL"], row["TITLE"]) for row in rows],
+        evidence, events, allowed_notice_urls={"https://www.sse.com.cn/disclosure/fund/announcement/c/new/2026-06-22/561980_20260622_1FQ0.pdf"},
+        reviewed_non_action_urls=index.get("reviewed_non_action_urls"),
+        known_baseline=hashlib.sha256(raw).hexdigest() == _REVIEWED_ANNOUNCEMENT_HASHES[SYMBOL])
+
+
+def prepare_reference_inputs(*, evidence_dir, liquidity_product, asof, global_snapshot, observation_end=None):
     directory = Path(evidence_dir)
     index = json.loads((directory / "evidence-index.json").read_bytes())
     if index["asof"] != asof or index["symbol"] != SYMBOL:
@@ -180,21 +256,31 @@ def prepare_reference_inputs(*, evidence_dir, liquidity_product, asof, global_sn
                          "trading-fee-policy-manifest.json", "trading-fee-policy-observation.json"],
         "global_signals": ["global_quotes.json", "global-quotes-local-observation.json"],
     }
+    evidence_names = index.get("source_files", evidence_names)
     assessments = {"trading_calendar": "calendar", "instrument_status": "status", "global_signals": "global"}
     evidence = {component: _evidence(directory, index, names,
                 index["assessments"][assessments.get(component, component)]) for component, names in evidence_names.items()}
+    observed = datetime.now(timezone.utc).isoformat()
+    observation_end = _day(observation_end or _timestamp(observed).astimezone(timezone(timedelta(hours=8))).date().isoformat())
+    if not asof <= observation_end <= _timestamp(observed).astimezone(timezone(timedelta(hours=8))).date().isoformat():
+        raise ValueError("base reference observation window is invalid")
+    for item in evidence.values():
+        _validate_retained_times(item, observed)
     calendar = read(evidence_names["trading_calendar"][0])
     if calendar["response"]["error_code"] != "0":
         raise ValueError("calendar source query failed")
     days = [row[0] for row in calendar["response"]["rows"] if row[1] == "1"]
     history = [entry.split("@")[1] for entry in liquidity_product["panel"] if entry.startswith(SYMBOL + "@")]
-    if days[:-1] != history or history[-1] != asof:
+    if (days[:-1] != history or history[-1] != asof
+            or calendar["request"] != {"method": "query_trade_dates", "start_date": history[0], "end_date": days[-1]}):
         raise ValueError("calendar does not cover the exact amount session chain")
     status = read(evidence_names["instrument_status"][0])
+    _validate_status_capture([{"request": request, "response": response, "observed_at": status["observed_at"]}
+        for request, response in zip(status["requests"], status["responses"])], SYMBOL, asof, observed)
     basic, trading = status["responses"]
     basics = [dict(zip(basic["fields"], row)) for row in basic["rows"]]
     states = [dict(zip(trading["fields"], row)) for row in trading["rows"]]
-    listed = read("sse-fund-list-561980.json")["result"]
+    listed = read(evidence_names["instrument_status"][1])["result"]
     if (basic["error_code"] != "0" or trading["error_code"] != "0" or len(basics) != 1 or len(states) != 1
             or basics[0]["code"] != "sh.561980" or basics[0]["type"] != "5" or basics[0]["status"] != "1"
             or states[0]["date"] != asof or states[0]["tradestatus"] != "1"
@@ -205,13 +291,12 @@ def prepare_reference_inputs(*, evidence_dir, liquidity_product, asof, global_sn
         "raw_baostock_isST": states[0]["isST"],
         "conflict": "BaoStock ETF isST is not interpreted as a listed-company stock risk-warning flag",
     }
-    universe = read("local-universe-561980.json")
+    universe = read(evidence_names["universe"][0])
     if universe["is_member"] is not True or universe["query"]["canonical_symbol"] != SYMBOL:
         raise ValueError("ETF is outside the observed configured universe")
-    fees = read("trading-fee-policy-manifest.json")
+    fees = read(evidence_names["market_rules"][-2])
     if fees["policy_version"] != "broker-fee-v1":
         raise ValueError("frozen fee policy version differs")
-    observed = datetime.now(timezone.utc).isoformat()
     entry = f"{SYMBOL}@{asof}"
     calendar_rows = {f"{SYMBOL}@{day}": {"is_trading_day": True,
         "decision_cutoff_at": f"{day}T09:25:00+08:00", "session_close_at": f"{day}T15:00:00+08:00",
@@ -232,15 +317,22 @@ def prepare_reference_inputs(*, evidence_dir, liquidity_product, asof, global_sn
     )
     event = {"event_type": "split", "effective_date": "2026-06-26", "announcement_at": observed,
              "event_id": next(item["sha256"] for item in index["files"] if item["file"] == "sse-561980-split-result-20260626.pdf")}
+    extra_events = index.get("additional_events", [])
+    _validate_reviewed_events({"events": extra_events}, SYMBOL)
+    events = [event, *[{**item, "announcement_at": observed} for item in extra_events]]
+    if len({item["event_id"] for item in events}) != len(events):
+        raise ValueError("base corporate-action identities are duplicated")
+    _validate_base_announcements(directory, index, evidence_names["corporate_actions"][0], observation_end,
+        evidence["corporate_actions"], events)
     evidence["corporate_actions"]["split_identity"] = {
         "symbol": SYMBOL, "effective_date": event["effective_date"], "old_units": 1, "new_units": 5,
         "source_sha256": event["event_id"],
     }
     rows = {"trading_calendar": calendar_rows, "instrument_status": {entry: {"is_st": False, "is_suspended": False, "listing_status": "listed"}},
             "universe": {entry: {"is_member": True, "universe_id": universe["source"]["sha256"]}},
-            "corporate_actions": {entry: {"events": [event]}}, "market_rules": {entry: rule}}
+            "corporate_actions": {entry: {"events": events}}, "market_rules": {entry: rule}}
     references = {component: _reference(component, values, evidence[component], observed) for component, values in rows.items()}
-    original_quotes = read("global_quotes.json")
+    original_quotes = read(evidence_names["global_signals"][0])
     for name, quote in global_snapshot["quotes"].items():
         original = original_quotes[name]
         if quote != {"price": original["price"], "chg_pct": original["chg_pct"],
@@ -251,14 +343,17 @@ def prepare_reference_inputs(*, evidence_dir, liquidity_product, asof, global_sn
     return references, global_inputs
 
 
-def extend_reference_inputs(references, global_inputs, *, evidence_dir, symbols, asof):
+def extend_reference_inputs(references, global_inputs, *, evidence_dir, symbols, asof, observation_end=None):
     directory = Path(evidence_dir)
     index = json.loads((directory / "evidence-index.json").read_bytes())
     expected = set(symbols) - {SYMBOL}
-    if (asof != "2026-09-04" or index["schema_version"] != "stockdata-main-etf-reviewed-facts/1" or index["asof"] != asof
+    if (index["schema_version"] != "stockdata-main-etf-reviewed-facts/1" or index["asof"] != asof
             or set(index["instruments"]) != expected or not expected <= set(ETF_RULE_SCOPES)):
         raise ValueError("additional reviewed ETF facts differ from the exact amount panel")
     observed = datetime.now(timezone.utc).isoformat()
+    observation_end = _day(observation_end or _timestamp(observed).astimezone(timezone(timedelta(hours=8))).date().isoformat())
+    if observation_end < _day(asof):
+        raise ValueError("official observation window ends before the decision asof")
     rows = {component: {r["panel_entry"]: r["payload"] for r in value["artifact"]["records"]}
             for component, value in references.items()}
     evidence = {component: {**value["source_evidence"], "additional_instruments": {}}
@@ -276,7 +371,9 @@ def extend_reference_inputs(references, global_inputs, *, evidence_dir, symbols,
             _validate_retained_times(item, observed)
         captures = json.loads((directory / f"{symbol}-status-ca.json").read_bytes())
         state = _validate_status_capture(captures, symbol, asof, observed)
-        _validate_announcement_capture(directory, symbol, facts["source_files"]["corporate_actions"], observed)
+        _validate_announcement_capture(directory, symbol, facts["source_files"]["corporate_actions"], observed,
+            observation_end=observation_end, evidence=bound["corporate_actions"], events=facts["events"],
+            reviewed_non_action_urls=facts.get("reviewed_non_action_urls"))
         if f"{symbol}-status-ca.json" not in facts["source_files"]["instrument_status"]:
             raise ValueError("additional ETF status facts are not receipt-bound")
         universe = _validate_universe(directory, symbol, facts["source_files"]["universe"])
@@ -317,7 +414,7 @@ def extend_reference_inputs(references, global_inputs, *, evidence_dir, symbols,
 
 def publish_main_buy_supplement(*, evidence_dir, liquidity_capture_file, global_snapshot_file,
                                publisher_dir, registry_sha256, provider_manifest_sha256, output_dir,
-                               additional_evidence_dir=None):
+                               additional_evidence_dir=None, asof=None, observation_end=None):
     directory = Path(publisher_dir)
     registry_raw = (directory / "registry.json").read_bytes()
     registry = load_enrolled_trust_registry_bytes(registry_raw, expected_sha256=registry_sha256)
@@ -328,6 +425,8 @@ def publish_main_buy_supplement(*, evidence_dir, liquidity_capture_file, global_
     publisher_id = _key_id(_public_key(key))
     signer = registry._signers[publisher_id]
     capture = json.loads(Path(liquidity_capture_file).read_bytes())
+    if asof is not None and _day(asof) != capture["request"]["end_date"]:
+        raise ValueError("requested asof differs from native amount capture")
     asof = capture["request"]["end_date"]
     fields = capture["response"]["fields"].split(",")
     dates = sorted(row[fields.index("date")] for row in capture["response"]["rows"])[-20:]
@@ -340,10 +439,10 @@ def publish_main_buy_supplement(*, evidence_dir, liquidity_capture_file, global_
     product = build_liquidity_amounts_product(captures, panel=[(symbol, day) for symbol in symbols for day in dates],
         decision_cutoff=datetime.now(timezone.utc).isoformat(), expected_watermark=asof)
     references, global_inputs = prepare_reference_inputs(evidence_dir=evidence_dir, liquidity_product=product,
-        asof=asof, global_snapshot=json.loads(Path(global_snapshot_file).read_bytes()))
+        asof=asof, global_snapshot=json.loads(Path(global_snapshot_file).read_bytes()), observation_end=observation_end)
     if additional_evidence_dir is not None:
         references, global_inputs = extend_reference_inputs(references, global_inputs,
-            evidence_dir=additional_evidence_dir, symbols=symbols, asof=asof)
+            evidence_dir=additional_evidence_dir, symbols=symbols, asof=asof, observation_end=observation_end)
     def sign(inputs):
         artifact = inputs["artifact"]
         observed = datetime.now(timezone.utc).isoformat()
@@ -376,6 +475,8 @@ def main(argv=None):
                  "registry-sha256", "provider-manifest-sha256", "output-dir"):
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--additional-evidence-dir")
+    parser.add_argument("--asof")
+    parser.add_argument("--observation-end")
     result = publish_main_buy_supplement(**vars(parser.parse_args(argv)))
     print(json.dumps(result, sort_keys=True))
 

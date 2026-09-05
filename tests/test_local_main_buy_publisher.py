@@ -118,9 +118,10 @@ def test_universe_is_recomputed_from_retained_config_bytes(tmp_path):
         publisher._validate_universe(*args)
 
 
-def test_extended_market_rules_bind_final_combined_source_receipt(tmp_path, monkeypatch):
+@pytest.mark.parametrize("asof", ["2026-09-04", "2026-08-14"])
+def test_extended_market_rules_bind_final_combined_source_receipt(tmp_path, monkeypatch, asof):
     from stockdata.market_rules import ETF_RULE_SCOPES
-    fixture, _, _ = make_supplement(asof="2026-09-04")
+    fixture, _, _ = make_supplement(asof=asof)
     symbols = sorted(ETF_RULE_SCOPES)
     references = {component: {**value, "source_evidence": {"files": []}}
                   for component, value in fixture["references"].items()}
@@ -131,20 +132,109 @@ def test_extended_market_rules_bind_final_combined_source_receipt(tmp_path, monk
             continue
         (tmp_path / f"{symbol}-status-ca.json").write_bytes(b"[]")
         instruments[symbol] = {"events": [], "corporate_actions_coverage": {
-            "start_date": "2025-07-11", "end_date": "2026-09-04", "complete": True},
+            "start_date": "2025-07-11", "end_date": asof, "complete": True},
             "source_files": {component: [f"{symbol}-status-ca.json"] for component in references},
             "assessments": {component: "fixture" for component in references}}
     (tmp_path / "evidence-index.json").write_bytes(_canonical({"schema_version": "stockdata-main-etf-reviewed-facts/1",
-        "asof": "2026-09-04", "instruments": instruments}))
+        "asof": asof, "instruments": instruments}))
     monkeypatch.setattr(publisher, "_evidence", lambda *args: {"files": []})
     monkeypatch.setattr(publisher, "_validate_reviewed_events", lambda *args: None)
     monkeypatch.setattr(publisher, "_validate_status_capture", lambda *args: {"isST": "1"})
-    monkeypatch.setattr(publisher, "_validate_announcement_capture", lambda *args: None)
+    monkeypatch.setattr(publisher, "_validate_announcement_capture", lambda *args, **kwargs: None)
     monkeypatch.setattr(publisher, "_validate_universe", lambda *args: {"source_sha256": "a" * 64})
     refs, _ = publisher.extend_reference_inputs(references, global_inputs,
-        evidence_dir=tmp_path, symbols=symbols, asof="2026-09-04")
+        evidence_dir=tmp_path, symbols=symbols, asof=asof)
     rules = refs["market_rules"]
     assert len(rules["artifact"]["records"]) == 8
     for row in rules["artifact"]["records"]:
         receipt = rules["source_receipts"][row["source_receipt_ids"][0]]
         assert row["payload"]["source_sha256"] == receipt["response_sha256"]
+
+
+def test_base_reference_sources_are_selected_by_index_for_another_session(tmp_path):
+    import hashlib
+    asof = "2026-08-14"
+    fixture, _, _ = make_supplement(asof=asof)
+    product = fixture["liquidity"]["product"]
+    global_snapshot = fixture["global_signals"]["snapshot"]
+    days = [entry.split("@")[1] for entry in product["panel"]] + ["2026-08-17"]
+    source_files = {
+        "trading_calendar": ["calendar-current.json", "rules.docx"],
+        "instrument_status": ["status-current.json", "listing-current.json", "rules.docx"],
+        "universe": ["universe-current.json"],
+        "corporate_actions": ["announcements-current.json", "sse-561980-split-result-20260626.pdf", "sse-561980-split-result-20260626.pdf.receipt.json"],
+        "market_rules": ["classification.html", "rules.docx", "faq.html", "fees.json", "fee-observation.json"],
+        "global_signals": ["global-current.json", "global-observation.json"],
+    }
+    observed = "2026-08-14T16:05:00+08:00"
+    values = {
+        "calendar-current.json": {"request": {"method": "query_trade_dates", "start_date": days[0], "end_date": days[-1]},
+            "observed_at": observed, "response": {"error_code": "0", "rows": [[day, "1"] for day in days]}},
+        "status-current.json": {"observed_at": observed, "requests": [
+            {"method": "query_stock_basic", "code": "sh.561980"},
+            {"method": "query_history_k_data_plus", "code": "sh.561980", "fields": "date,tradestatus,isST",
+             "start_date": asof, "end_date": asof, "frequency": "d", "adjustflag": "3"}], "responses": [
+            {"error_code": "0", "fields": ["code", "type", "status"], "rows": [["sh.561980", "5", "1"]]},
+            {"error_code": "0", "fields": ["date", "tradestatus", "isST"], "rows": [[asof, "1", "1"]]}]},
+        "listing-current.json": {"result": [{"FUND_CODE": "561980", "CATEGORY": "F112"}]},
+        "universe-current.json": {"is_member": True, "query": {"canonical_symbol": "561980.SH"}, "source": {"sha256": "a" * 64}},
+        "announcements-current.json": {"result": [{"SECURITY_CODE": "561980", "TITLE": "split result fixture",
+            "URL": "/disclosure/fund/announcement/c/new/2026-06-26/561980_20260626_4J0A.pdf"}],
+            "pageHelp": {"pageNo": 1, "pageCount": 1, "total": 1}},
+        "fees.json": {"policy_version": "broker-fee-v1", "commission_rate": .000085, "min_commission_cny": 5, "etf_stamp_tax": 0},
+        "global-current.json": {name: {"price": q["price"], "chg_pct": q["chg_pct"], "chg_20d": q["chg_20d"], "last_date": q["date"]}
+                                for name, q in global_snapshot["quotes"].items()},
+    }
+    split_url = "https://www.sse.com.cn/disclosure/fund/announcement/c/new/2026-06-26/561980_20260626_4J0A.pdf"
+    values["sse-561980-split-result-20260626.pdf.receipt.json"] = {"request": {"url": split_url},
+        "response": {"status_code": 200, "bytes": 2, "sha256": hashlib.sha256(b"{}").hexdigest()}}
+    files = []
+    for name in sorted({name for names in source_files.values() for name in names}):
+        raw = _canonical(values.get(name, {}))
+        (tmp_path / name).write_bytes(raw)
+        files.append({"file": name, "sha256": hashlib.sha256(raw).hexdigest(),
+            "source_url": split_url if name == "sse-561980-split-result-20260626.pdf" else
+                "https://query.sse.com.cn/commonQuery.do?sqlId=COMMON_PL_JJXX_JJGG_L&SECURITY_CODE=561980&START_DATE=20250101&END_DATE=20260815"})
+    (tmp_path / "evidence-index.json").write_bytes(_canonical({"asof": asof, "symbol": "561980.SH", "files": files,
+        "source_files": source_files, "assessments": {name: "synthetic fixture" for name in ["calendar", "status", "global", "universe", "corporate_actions", "market_rules"]}}))
+    refs, _ = publisher.prepare_reference_inputs(evidence_dir=tmp_path, liquidity_product=product,
+        asof=asof, global_snapshot=global_snapshot, observation_end="2026-08-15")
+    assert refs["instrument_status"]["artifact"]["panel"] == ["561980.SH@2026-08-14"]
+    with pytest.raises(ValueError, match="announcement observation identity"):
+        publisher.prepare_reference_inputs(evidence_dir=tmp_path, liquidity_product=product,
+            asof=asof, global_snapshot=global_snapshot, observation_end="2026-08-16")
+    with pytest.raises(ValueError, match="identity differs"):
+        publisher.prepare_reference_inputs(evidence_dir=tmp_path, liquidity_product=product,
+            asof="2026-08-13", global_snapshot=global_snapshot, observation_end="2026-08-15")
+
+
+def test_new_event_requires_exact_official_attachment_and_cannot_be_omitted():
+    import base64
+    import hashlib
+    raw = b"new official event fixture"
+    digest = hashlib.sha256(raw).hexdigest()
+    url = "https://www.sse.com.cn/disclosure/fund/announcement/c/new/2026-09-07/560900_event.pdf"
+    receipt = {"request": {"url": url}, "response": {"status_code": 200, "sha256": digest, "bytes": len(raw)}}
+    evidence = {"files": [
+        {"file": "event.pdf", "source_url": url, "sha256": digest, "raw_base64": base64.b64encode(raw).decode()},
+        {"file": "event.pdf.receipt.json", "sha256": hashlib.sha256(_canonical(receipt)).hexdigest(),
+         "raw_base64": base64.b64encode(_canonical(receipt)).decode()},
+    ]}
+    announcements = [(url, "分红公告")]
+    events = [{"event_type": "cash_dividend", "effective_date": "2026-09-08", "event_id": digest}]
+    publisher._validate_reviewed_events({"events": events}, "560900.SH")
+    publisher._validate_event_attachments(announcements, evidence, events)
+    with pytest.raises(ValueError, match="unreviewed"):
+        publisher._validate_event_attachments(announcements, evidence, [])
+    with pytest.raises(ValueError, match="exact official"):
+        publisher._validate_event_attachments([(url.replace("560900", "588730"), "分红公告")], evidence, events)
+    with pytest.raises(ValueError, match="exact official"):
+        publisher._validate_event_attachments(announcements, evidence, [{**events[0], "event_id": "a" * 64}])
+    new_row = (url + "-other", "New official announcement, not keyword-classified")
+    with pytest.raises(ValueError, match="unreviewed official"):
+        publisher._validate_event_attachments([*announcements, new_row], evidence, events)
+    publisher._validate_event_attachments([*announcements, new_row], evidence, events,
+        reviewed_non_action_urls=[new_row[0]])
+    with pytest.raises(ValueError, match="unreviewed official"):
+        publisher._validate_event_attachments([*announcements, new_row], evidence, events,
+            reviewed_non_action_urls=[new_row[0], new_row[0]])
