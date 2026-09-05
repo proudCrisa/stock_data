@@ -1,0 +1,24 @@
+stockdata/local_daily_snapshot.py
+  s_94dc23cc2246e9::t_9c301faebd3e2d 42
+tests/test_local_daily_snapshot.py
+  s_94dc23cc2246e9::t_9c301faebd3e2d 83,88,91-99
+  s_94dc23cc2246e9::t_d79775b32630a8 100
+docs/local-daily-snapshot.md
+  s_94dc23cc2246e9::t_9c301faebd3e2d 19-20,22-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "cf84d7831f243a0ed933f4a83eaa189fc10f184e",
+  "prompts": {},
+  "sessions": {
+    "s_94dc23cc2246e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a06e94-4de3-7853-a1e2-6d68e39842b1",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
