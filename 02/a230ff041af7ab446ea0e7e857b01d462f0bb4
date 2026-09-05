@@ -1,0 +1,19 @@
+stockdata/local_main_buy_publisher.py
+  s_94dc23cc2246e9::t_fec617cc6cf29a 128-131
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "02a230ff041af7ab446ea0e7e857b01d462f0bb4",
+  "prompts": {},
+  "sessions": {
+    "s_94dc23cc2246e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a06e94-4de3-7853-a1e2-6d68e39842b1",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
