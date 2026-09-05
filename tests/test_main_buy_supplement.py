@@ -294,3 +294,53 @@ def test_exact_etf_rule_publishes_after_signed_status_admission(tmp_path, monkey
             status = result.admitted
         payload["references"][component]["authority_envelope"] = result.envelope
     assert _verify(payload, pin) == payload
+
+
+@pytest.mark.parametrize("late_layer", [None, "record", "receipt", "envelope"])
+def test_current_calendar_observation_preserves_historical_pit_default(late_layer):
+    from stockdata.provider_authority_admission import admit_signed_component_authority
+
+    payload, pin, signer = make_supplement()
+    old = payload["references"]["trading_calendar"]
+    rows = {row["panel_entry"]: row["payload"] for row in old["artifact"]["records"]}
+    observed = f"{ASOF}T16:05:00+08:00"
+    inputs = _reference("trading_calendar", rows, observed=observed)
+    if late_layer == "record":
+        inputs["artifact"]["records"][0]["available_at"] = CUTOFF
+    elif late_layer == "receipt":
+        receipt = next(iter(inputs["source_receipts"].values()))
+        receipt["observed_at"] = CUTOFF
+        receipt_id = _hash(receipt)
+        inputs["source_receipts"] = {receipt_id: receipt}
+        for record in inputs["artifact"]["records"]:
+            record["source_receipt_ids"] = [receipt_id]
+    signed = _signed(inputs, registry_sha=pin,
+        root=Ed25519PrivateKey.from_private_bytes(bytes([1]) * 32), signer=signer,
+        observed=CUTOFF if late_layer == "envelope" else observed)
+    kwargs = dict(component="trading_calendar", artifact_value=signed["artifact"],
+        authority_envelope=signed["authority_envelope"], expected_panel=signed["artifact"]["panel"],
+        bound_source_receipts=signed["source_receipts"],
+        registry=load_enrolled_trust_registry_bytes(_canonical(payload["registry"]), expected_sha256=pin))
+    with pytest.raises(ValueError):
+        admit_signed_component_authority(**kwargs)
+    if late_layer:
+        with pytest.raises(ValueError):
+            admit_signed_component_authority(**kwargs, current_decision_observation_cutoff=CUTOFF)
+    else:
+        admitted = admit_signed_component_authority(**kwargs, current_decision_observation_cutoff=CUTOFF)
+        assert admitted.signed_calendar_phases_by_panel[f"{SYMBOL}@{ASOF}"]["decision_cutoff_at"] == f"{ASOF}T09:25:00+08:00"
+        payload["references"]["trading_calendar"] = signed
+        assert _verify(payload, pin) == payload
+
+
+def test_current_observation_cutoff_is_calendar_only():
+    from stockdata.provider_authority_admission import admit_signed_component_authority
+
+    payload, pin, _ = make_supplement()
+    inputs = payload["references"]["instrument_status"]
+    with pytest.raises(ValueError, match="calendar-only"):
+        admit_signed_component_authority(component="instrument_status", artifact_value=inputs["artifact"],
+            authority_envelope=inputs["authority_envelope"], expected_panel=inputs["artifact"]["panel"],
+            bound_source_receipts=inputs["source_receipts"],
+            registry=load_enrolled_trust_registry_bytes(_canonical(payload["registry"]), expected_sha256=pin),
+            current_decision_observation_cutoff=CUTOFF)

@@ -1,9 +1,32 @@
-# Local publisher preparation (inactive)
+# Local Trading publisher
 
-This runbook prepares externally authorized inputs. It does not create a trust
-root, sign enrollment with test keys, modify the bundled registry or activate a
-production publisher. The native amount probe and synthetic tests are not a
-complete operational BUY input set.
+The explicit local initialization command creates a real root and publisher for
+the current Trading input profile. It never modifies the bundled RQGM registry.
+Signature verification does not replace source facts or Trading BUY admission.
+
+```bash
+python -m stockdata.local_publisher init --directory /absolute/new-publisher-directory
+```
+
+The parent directory must already exist and the destination must not exist. The
+command creates random Ed25519 `root.key` and `publisher.key` files with mode 0600
+inside a 0700 directory. Keys are never printed. `root-public.json`,
+`enrollment.json`, `registry.json`, and `trust-anchor.json` are the public identity
+artifacts. Enrollment begins at the actual initialization time and lasts 365 days.
+The returned registry SHA-256 must be fixed independently in the Trading request;
+it must not be accepted from an untrusted snapshot's own declaration.
+
+`python -m stockdata.local_publisher capture-liquidity --symbol 561980.SH
+--start 2026-08-01 --asof 2026-09-04 --output-dir /absolute/new-capture-directory`
+retains one raw BaoStock capture and a native CNY product for the last 20 observed
+sessions. Rebuild the product from the unchanged raw capture using the final
+supplement cutoff after publishing all inputs; never backdate the key or receipts.
+
+Current-decision calendar publication and admission may explicitly pass
+`current_decision_observation_cutoff` to validate historical session facts as
+observed for the current decision. This option is calendar-only. Without it,
+the original historical preopen admission rules remain in force. Signed session
+phase fields and original receipt times are unchanged in either mode.
 
 ## Trust identity and enrollment
 
@@ -44,8 +67,9 @@ python -m stockdata.provider_authority_publisher build-registry \
   --output /absolute/staging/registry.json
 ```
 
-The administrator must supply the real enrollment. The existing all-zero role
-registry means no producer is enrolled; fixture keys cannot fill this gap.
+Alternatively, local initialization above issues a real enrollment under the
+new local root. The existing bundled registry remains empty; fixture keys cannot
+fill that gap or authorize the new local publisher.
 
 ## Exact input files
 

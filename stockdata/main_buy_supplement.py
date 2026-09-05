@@ -84,12 +84,14 @@ def build_global_signals_authority_inputs(
     }
 
 
-def _admit(component, inputs, *, panel, registry, cutoffs=None, status=None):
+def _admit(component, inputs, *, panel, registry, cutoffs=None, status=None,
+           current_decision_observation_cutoff=None):
     return admit_signed_component_authority(
         component=component, artifact_value=inputs["artifact"],
         authority_envelope=inputs["authority_envelope"], expected_panel=panel,
         bound_source_receipts=inputs["source_receipts"], registry=registry,
         decision_cutoff_by_panel=cutoffs, instrument_status_authority=status,
+        current_decision_observation_cutoff=current_decision_observation_cutoff,
     )
 
 
@@ -137,7 +139,8 @@ def verify_main_buy_supplement(
             raise ValueError("main BUY reference closure is incomplete")
     calendar_panel = sorted(set(liquidity_panel) | set(current_panel))
     calendar = _admit("trading_calendar", references["trading_calendar"],
-                      panel=calendar_panel, registry=registry)
+                      panel=calendar_panel, registry=registry,
+                      current_decision_observation_cutoff=decision_cutoff)
     for entry in current_panel:
         phases = calendar.signed_calendar_phases_by_panel[entry]
         if not (_timestamp(phases["session_close_at"]) < cutoff

@@ -34,6 +34,7 @@ AUTHORITY_COMPONENT_ROLES = frozenset(
         "market_rules",
         "liquidity_amounts",
         "global_signals",
+        "local_daily_prices",
     }
 )
 _VERIFIED_REGISTRY_TOKEN = object()

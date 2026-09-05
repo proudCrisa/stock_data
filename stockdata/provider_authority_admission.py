@@ -502,11 +502,14 @@ def admit_signed_component_authority(
     registry: EnrolledTrustRegistry,
     decision_cutoff_by_panel: Mapping[str, str] | None = None,
     instrument_status_authority: AdmittedProviderAuthority | None = None,
+    current_decision_observation_cutoff: str | None = None,
 ) -> AdmittedProviderAuthority:
     """Verify semantic coverage and external authority for one signed component."""
 
     if component not in SUPPORTED_SIGNED_COMPONENTS:
         raise ValueError("component is not externally signed provider authority")
+    if current_decision_observation_cutoff is not None and component != "trading_calendar":
+        raise ValueError("current decision observation cutoff is calendar-only")
     if not isinstance(artifact_value, Mapping) or set(artifact_value) != {
         "schema_version",
         "component",
@@ -685,6 +688,9 @@ def admit_signed_component_authority(
         if component == "trading_calendar"
         else decision_cutoff_by_panel
     )
+    if current_decision_observation_cutoff is not None:
+        cutoff = _timestamp(current_decision_observation_cutoff, "current decision observation cutoff")
+        cutoffs = {entry: cutoff for entry in normalized_expected}
     if cutoffs is None:
         raise ValueError(f"{component} authority requires signed calendar cutoffs")
     admitted = AdmittedProviderAuthority(

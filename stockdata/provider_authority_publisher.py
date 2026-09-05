@@ -245,9 +245,12 @@ def publish_authority_envelope(
     publisher_key_id: str | None = None,
     decision_cutoff_by_panel: Mapping[str, str] | None = None,
     instrument_status_authority: AdmittedProviderAuthority | None = None,
+    current_decision_observation_cutoff: str | None = None,
 ) -> PublishedEnvelope:
     """Build, sign, production-admit, and write one authority envelope."""
 
+    if current_decision_observation_cutoff is not None and component != "trading_calendar":
+        raise ValueError("current decision observation cutoff is calendar-only")
     registry = load_enrolled_trust_registry(
         registry_file, expected_sha256=_sha256(registry_sha256, "registry_sha256")
     )
@@ -310,6 +313,7 @@ def publish_authority_envelope(
         registry=registry,
         decision_cutoff_by_panel=decision_cutoff_by_panel,
         instrument_status_authority=instrument_status_authority,
+        current_decision_observation_cutoff=current_decision_observation_cutoff,
     )
     _write_canonical_json(output_file, envelope)
     return PublishedEnvelope(envelope=envelope, admitted=admitted)
