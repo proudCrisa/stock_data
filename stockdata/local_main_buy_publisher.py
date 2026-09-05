@@ -125,6 +125,10 @@ def prepare_reference_inputs(*, evidence_dir, liquidity_product, asof, global_sn
     )
     event = {"event_type": "split", "effective_date": "2026-06-26", "announcement_at": observed,
              "event_id": next(item["sha256"] for item in index["files"] if item["file"] == "sse-561980-split-result-20260626.pdf")}
+    evidence["corporate_actions"]["split_identity"] = {
+        "symbol": SYMBOL, "effective_date": event["effective_date"], "old_units": 1, "new_units": 5,
+        "source_sha256": event["event_id"],
+    }
     rows = {"trading_calendar": calendar_rows, "instrument_status": {entry: {"is_st": False, "is_suspended": False, "listing_status": "listed"}},
             "universe": {entry: {"is_member": True, "universe_id": universe["source"]["sha256"]}},
             "corporate_actions": {entry: {"events": [event]}}, "market_rules": {entry: rule}}
