@@ -75,7 +75,7 @@ def test_status_cannot_relabel_another_etfs_same_day_response():
 def test_official_announcement_completeness_is_rebuilt_from_receipt(tmp_path):
     import hashlib
     name = "159350.SZ-szse-announcements.raw.json"
-    data = {"announceCount": 1, "data": [{"secCode": ["159350"]}]}
+    data = {"announceCount": 1, "data": [{"secCode": ["159350"], "attachPath": "/disc/fixture.pdf", "title": "fixture"}]}
     raw = _canonical(data)
     receipt = {"observed_at": "2026-09-05T04:00:00Z", "request": {"method": "POST",
         "url": "https://www.szse.cn/api/disc/announcement/annList", "body": {
@@ -85,7 +85,14 @@ def test_official_announcement_completeness_is_rebuilt_from_receipt(tmp_path):
     (tmp_path / name).write_bytes(raw)
     (tmp_path / (name + ".receipt.json")).write_bytes(_canonical(receipt))
     args = (tmp_path, "159350.SZ", [name, name + ".receipt.json"], "2026-09-05T05:00:00Z")
-    publisher._validate_announcement_capture(*args)
+    publisher._validate_announcement_capture(*args, reviewed_non_action_urls=["https://disc.static.szse.cn/disc/fixture.pdf"])
+    del data["data"][0]["attachPath"]
+    raw = _canonical(data)
+    receipt["response"].update(sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw))
+    (tmp_path / name).write_bytes(raw)
+    (tmp_path / (name + ".receipt.json")).write_bytes(_canonical(receipt))
+    with pytest.raises(ValueError, match="page coverage"):
+        publisher._validate_announcement_capture(*args, reviewed_non_action_urls=[])
     data["announceCount"] = 51
     raw = _canonical(data)
     receipt["response"].update(sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw))

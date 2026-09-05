@@ -209,11 +209,12 @@ def _validate_announcement_capture(directory, symbol, source_files, observed, *,
                  and request["body"] == {"stock": [symbol[:6]], "channelCode": ["fundinfoNotice_disc"],
                     "seDate": ["2025-07-11", observation_end], "pageSize": 50, "pageNum": 1}
                  and data["announceCount"] == len(rows) and len(rows) <= 50
-                 and all(row["secCode"] == [symbol[:6]] for row in rows))
+                 and all(row["secCode"] == [symbol[:6]] and isinstance(row.get("attachPath"), str)
+                         and row["attachPath"].startswith("/") for row in rows))
     if not valid:
         raise ValueError("official announcement symbol/window/page coverage differs")
     announcements = [("https://www.sse.com.cn" + row["URL"], row["TITLE"]) for row in rows] if sh else [
-        ("https://disc.static.szse.cn" + row["attachPath"], row.get("title", "")) for row in rows if "attachPath" in row]
+        ("https://disc.static.szse.cn" + row["attachPath"], row.get("title", "")) for row in rows]
     _validate_event_attachments(announcements, evidence or {"files": []}, events,
         reviewed_non_action_urls=reviewed_non_action_urls,
         known_baseline=hashlib.sha256(raw).hexdigest() == _REVIEWED_ANNOUNCEMENT_HASHES[symbol])
