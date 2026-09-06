@@ -56,6 +56,7 @@ COMPONENT_SCHEMAS = {
 COMPONENT_SCHEMAS["availability_records"] = VERIFIED_AVAILABILITY_RECORDS_SCHEMA
 COMPONENT_SCHEMAS["liquidity_amounts"] = "stockdata-liquidity-amounts/1"
 COMPONENT_SCHEMAS["global_signals"] = "stockdata-global-signals/1"
+COMPONENT_SCHEMAS["fund_flow"] = "stockdata-fund-flow/1"
 
 _REFERENCE_CONTRACTS = {
     "checkout": ("stock-data-checkout", CHECKOUT_SCHEMA),

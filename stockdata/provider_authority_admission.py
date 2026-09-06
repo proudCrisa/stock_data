@@ -25,7 +25,11 @@ SIGNED_COMPONENTS = frozenset(
         "market_rules",
     }
 )
-SUPPORTED_SIGNED_COMPONENTS = SIGNED_COMPONENTS | {"liquidity_amounts", "global_signals"}
+SUPPORTED_SIGNED_COMPONENTS = SIGNED_COMPONENTS | {
+    "liquidity_amounts",
+    "global_signals",
+    "fund_flow",
+}
 SOURCE_RECEIPT_SCHEMA = "stockdata-provider-component-source-receipt/1"
 GENERIC_MARKET_RULEBOOK_PREREQUISITE_SCHEMA = (
     "stockdata-preregistered-generic-market-rulebook/1"
@@ -254,6 +258,10 @@ def _component_payload(
         validate_global_snapshot(payload)
         if panel_entry is None or payload["asof"] != panel_entry.split("@")[1]:
             raise ValueError("global_signals asof differs panel date")
+    elif component == "fund_flow":
+        from .formal_fund_flow import validate_fund_flow_record
+
+        validate_fund_flow_record(payload, panel_entry=panel_entry)
     return payload
 
 

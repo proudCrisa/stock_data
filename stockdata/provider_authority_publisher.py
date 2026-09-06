@@ -21,9 +21,9 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from .authority import (
     ALGORITHM,
-    AUTHORITY_COMPONENT_ROLES,
     AUTHORITY_ENVELOPE_SCHEMA,
     EnrolledTrustRegistry,
+    SUPPORTED_AUTHORITY_COMPONENT_ROLES,
     TRUST_REGISTRY_SCHEMA,
     load_enrolled_trust_registry,
 )
@@ -142,7 +142,7 @@ def _receipt_id(receipt: object) -> str:
 
 
 def _artifact_reference(component: str, artifact: object) -> ProviderArtifactReference:
-    if component not in AUTHORITY_COMPONENT_ROLES:
+    if component not in SUPPORTED_AUTHORITY_COMPONENT_ROLES:
         raise ValueError("component is not a supported provider authority role")
     if not isinstance(artifact, Mapping):
         raise ValueError("component artifact must be an object")
