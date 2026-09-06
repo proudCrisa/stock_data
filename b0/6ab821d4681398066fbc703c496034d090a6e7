@@ -1,0 +1,25 @@
+stockdata/qmt_pool_batch_capture.py
+  s_dcf78773457488::t_9d1e3ae22d0f1d 1-63
+docs/qmt-pool-batch-capture.md
+  s_dcf78773457488::t_4de4a7651957bc 1-41
+scripts/capture_qmt_pool_replay_batch.py
+  s_dcf78773457488::t_9d1e3ae22d0f1d 1-36
+tests/test_qmt_pool_batch_capture.py
+  s_dcf78773457488::t_e14cdedecd3b8a 1-103
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "b06ab821d4681398066fbc703c496034d090a6e7",
+  "prompts": {},
+  "sessions": {
+    "s_dcf78773457488": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a075b9-2944-7c12-8f61-2b0ba86cf3fb",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
