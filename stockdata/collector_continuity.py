@@ -29,6 +29,8 @@ from typing import Final, Literal
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
+from .ticker import normalize
+
 
 _ExceptionGroup = getattr(builtins, "ExceptionGroup", None)
 _BaseExceptionGroup = getattr(builtins, "BaseExceptionGroup", None)
@@ -1289,15 +1291,16 @@ class CollectorStepSpec:
 
 @dataclass(frozen=True)
 class _FrozenCollectorStepSchedule:
-    """A reconstructed schedule rooted in one persistent `/4` registration."""
+    """A reconstructed schedule rooted in one persistent registration."""
 
     registration_file: str
     registration_sha256: str
-    sessions: tuple[str, str, str]
+    sessions: tuple[str, ...]
     cohort_start: str
     source: str
     adjustment_mode: str
     adjustment_version: str
+    panel_mode: str
     database_path: str
     ledger_path: str
     ledger_identity: PhysicalFileIdentity
@@ -2407,7 +2410,7 @@ def _write_all(descriptor: int, payload: bytes, *, label: str) -> None:
 def initialize_prepared_collector(
     *, database_path: str | os.PathLike[str], ledger_path: str | os.PathLike[str], created_at: str
 ) -> dict[str, object]:
-    """Bind an empty 12-by-3 schema to one immutable genesis event."""
+    """Bind one empty, explicitly shaped cohort to an immutable genesis event."""
 
     require_collector_continuity_health()
     with open_exact_collector_sqlite(
@@ -2416,8 +2419,27 @@ def initialize_prepared_collector(
         database_identity, ledger_identity = opened.verify_identities()
         cohort, cohort_sha256 = _read_prepared_cohort(connection)
         symbols = cohort.get("symbols")
-        if not isinstance(symbols, list) or len(symbols) != 12:
+        panel_mode = cohort.get("panel_mode", "legacy_fixed_12x3")
+        if (
+            not isinstance(symbols, list)
+            or not symbols
+            or symbols != sorted(symbols)
+            or len(symbols) != len(set(symbols))
+            or any(not isinstance(symbol, str) for symbol in symbols)
+        ):
+            raise CollectorContinuityError("collector cohort symbols are invalid")
+        try:
+            if any(normalize(symbol) != symbol for symbol in symbols):
+                raise CollectorContinuityError("collector cohort symbols are invalid")
+        except ValueError as exc:
+            raise CollectorContinuityError("collector cohort symbols are invalid") from exc
+        if panel_mode == "legacy_fixed_12x3" and len(symbols) != 12:
             raise CollectorContinuityError("collector cohort is not 12 symbols")
+        if not isinstance(panel_mode, str) or panel_mode not in {
+            "legacy_fixed_12x3",
+            _REGISTRATION_V6_PANEL_MODE,
+        }:
+            raise CollectorContinuityError("collector cohort panel mode is invalid")
         install_collector_evidence_triggers(connection)
         _refresh_collector_schema_contract(connection)
         schema_sha256 = _prepared_schema_sha256(connection)
@@ -2849,10 +2871,19 @@ def _validate_ledger_detail(event_type: str, detail: Mapping[str, object]) -> No
         "step_state_before", "step_raw_before",
     }
     if event_type == "REGISTRATION_BOUND":
-        require_exact_keys(detail, registration_fields, "collector registration event")
+        prospective = "panel_mode" in detail
+        require_exact_keys(
+            detail,
+            registration_fields | ({"panel_mode"} if prospective else set()),
+            "collector registration event",
+        )
+        if prospective and detail.get("panel_mode") != _REGISTRATION_V6_PANEL_MODE:
+            raise CollectorContinuityError("collector registration panel mode is invalid")
         for key in ("registration_sha256", "panel_sha256", "sessions_sha256", "prerequisites_sha256"):
             _require_event_sha256(detail[key], key)
-        sessions = _validate_registration_sessions(detail["sessions"])
+        sessions = _validate_registration_sessions(
+            detail["sessions"], exact_count=None if prospective else 3
+        )
         if detail["sessions_sha256"] != canonical_json_sha256(list(sessions)):
             raise CollectorContinuityError("collector registration sessions hash is invalid")
         _require_event_text(detail["bound_at"], "bound_at")
@@ -3018,15 +3049,22 @@ def _validate_common_detail(detail: Mapping[str, object]) -> None:
     _require_event_sha256(detail["state_before_sha256"], "state_before_sha256")
 
 
-def _validate_registration_sessions(value: object) -> tuple[str, str, str]:
-    if type(value) is not list or len(value) != 3:
+def _validate_registration_sessions(
+    value: object, *, exact_count: int | None = 3
+) -> tuple[str, ...]:
+    if (
+        type(value) is not list
+        or not value
+        or (exact_count is not None and len(value) != exact_count)
+        or 2 + len(value) * 8 > COLLECTOR_LEDGER_MAX_LINES
+    ):
         raise CollectorContinuityError("collector registration sessions are invalid")
     sessions: list[str] = []
     for session in value:
         sessions.append(_validate_collector_session(session))
     if sessions != sorted(sessions) or len(set(sessions)) != len(sessions):
         raise CollectorContinuityError("collector registration sessions are not strictly ordered")
-    return sessions[0], sessions[1], sessions[2]
+    return tuple(sessions)
 
 
 def _validate_collector_session(value: object) -> str:
@@ -3077,7 +3115,6 @@ def _attempt_allowed_tables(detail: Mapping[str, object]) -> frozenset[str]:
         expected is None
         or phase != expected[0]
         or ordinal < 0
-        or ordinal > 11
         or ordinal % 4 != expected[1]
     ):
         raise CollectorContinuityError("collector attempt step identity is invalid")
@@ -3089,10 +3126,15 @@ def _matching_detail(left: Mapping[str, object], right: Mapping[str, object], fi
 
 
 def _validate_registered_attempt_session(
-    detail: Mapping[str, object], sessions: tuple[str, str, str]
+    detail: Mapping[str, object], sessions: tuple[str, ...]
 ) -> None:
     ordinal = detail["step_ordinal"]
-    if type(ordinal) is not int or detail["session"] != sessions[ordinal // 4]:
+    if (
+        type(ordinal) is not int
+        or ordinal < 0
+        or ordinal >= len(sessions) * 4
+        or detail["session"] != sessions[ordinal // 4]
+    ):
         raise CollectorContinuityError("collector attempt session is invalid")
 
 
@@ -3110,7 +3152,7 @@ def _validate_ledger_chain(events: Sequence[dict[str, object]]) -> None:
     attempt_ids: set[str] = set()
     quarantined = False
     database_uuid: str | None = None
-    sessions: tuple[str, str, str] | None = None
+    sessions: tuple[str, ...] | None = None
     previous: dict[str, object] | None = None
     for index, current in enumerate(events):
         current = validate_collector_ledger_event(current)
@@ -3138,7 +3180,14 @@ def _validate_ledger_chain(events: Sequence[dict[str, object]]) -> None:
             if registration is not None or index != 1:
                 raise CollectorContinuityError("collector registration is invalid")
             registration = details
-            sessions = _validate_registration_sessions(details["sessions"])
+            sessions = _validate_registration_sessions(
+                details["sessions"],
+                exact_count=(
+                    None
+                    if details.get("panel_mode") == _REGISTRATION_V6_PANEL_MODE
+                    else 3
+                ),
+            )
         elif event_type == "SQLITE_RECOVERY_STARTED":
             if (
                 open_recovery is not None
@@ -3606,8 +3655,40 @@ _REGISTRATION_V4_FIELDS: Final = frozenset(
 )
 _REGISTRATION_V4_SCHEMA: Final = "rqgm-forward-panel-registration/4"
 _REGISTRATION_V5_SCHEMA: Final = "rqgm-forward-panel-registration/5"
+_REGISTRATION_V6_SCHEMA: Final = "rqgm-forward-panel-registration/6"
 _REGISTRATION_V5_AUTHORITY_MODE: Final = "trusted_local_mechanical"
+_REGISTRATION_V6_PANEL_MODE: Final = "prospective_exact_cartesian"
+_MAX_EXACT_PANEL_CELLS: Final = 1_048_576 // 14
 _REGISTRATION_V5_FIELDS: Final = _REGISTRATION_V4_FIELDS | frozenset({"authority_mode"})
+_REGISTRATION_V6_FIELDS: Final = _REGISTRATION_V4_FIELDS | frozenset({"panel_mode"})
+_REGISTRATION_FIELDS_BY_SCHEMA: Final = {
+    _REGISTRATION_V4_SCHEMA: _REGISTRATION_V4_FIELDS,
+    _REGISTRATION_V5_SCHEMA: _REGISTRATION_V5_FIELDS,
+    _REGISTRATION_V6_SCHEMA: _REGISTRATION_V6_FIELDS,
+}
+
+
+def _require_registration_schema(
+    registration: Mapping[str, object], *, field: str
+) -> str:
+    schema = registration.get("schema_version")
+    if not isinstance(schema, str):
+        raise CollectorContinuityError(f"{field} schema is unsupported")
+    fields = _REGISTRATION_FIELDS_BY_SCHEMA.get(schema)
+    if fields is None:
+        raise CollectorContinuityError(f"{field} schema is unsupported")
+    require_exact_keys(registration, fields, field)
+    if (
+        schema == _REGISTRATION_V5_SCHEMA
+        and registration.get("authority_mode") != _REGISTRATION_V5_AUTHORITY_MODE
+    ):
+        raise CollectorContinuityError(f"{field} authority mode is invalid")
+    if (
+        schema == _REGISTRATION_V6_SCHEMA
+        and registration.get("panel_mode") != _REGISTRATION_V6_PANEL_MODE
+    ):
+        raise CollectorContinuityError(f"{field} panel mode is invalid")
+    return str(schema)
 
 
 def _read_registered_schedule_authority(
@@ -3642,27 +3723,15 @@ def _decode_registered_schedule_authority(raw: bytes) -> dict[str, object]:
     """Decode schedule authority from canonical registration bytes only."""
 
     registration = decode_canonical_json_object(raw)
-    schema = registration.get("schema_version")
-    fields = (
-        _REGISTRATION_V4_FIELDS
-        if schema == _REGISTRATION_V4_SCHEMA
-        else _REGISTRATION_V5_FIELDS
+    schema = _require_registration_schema(
+        registration, field="collector registration"
     )
-    require_exact_keys(registration, fields, "collector registration")
-    if schema not in {_REGISTRATION_V4_SCHEMA, _REGISTRATION_V5_SCHEMA}:
-        raise CollectorContinuityError("collector registration schema is unsupported")
-    if (
-        schema == _REGISTRATION_V5_SCHEMA
-        and registration.get("authority_mode") != _REGISTRATION_V5_AUTHORITY_MODE
-    ):
-        raise CollectorContinuityError("collector registration authority mode is invalid")
     registration_sha256 = hashlib.sha256(raw).hexdigest()
     _require_event_sha256(registration["panel_sha256"], "registration panel_sha256")
     _require_event_sha256(registration["prerequisites_sha256"], "registration prerequisites_sha256")
     if (
         registration["adjustment_mode"] != "raw"
         or registration["source"] != "tencent"
-        or registration["workspace_count"] != 36
         or registration["outcome_feedback_used"] is not False
         or registration["status"] != "AWAITING_FULL_SNAPSHOT_READINESS"
         or not isinstance(registration["adjustment_version"], str)
@@ -3685,7 +3754,10 @@ def _decode_registered_schedule_authority(raw: bytes) -> dict[str, object]:
     registered_local = registered_at.astimezone(_SHANGHAI)
     if registration["as_of"] != registered_local.date().isoformat():
         raise CollectorContinuityError("collector registration timestamp is invalid")
-    sessions = _validate_registration_sessions(registration["sessions"])
+    sessions = _validate_registration_sessions(
+        registration["sessions"],
+        exact_count=None if schema == _REGISTRATION_V6_SCHEMA else 3,
+    )
     if any(
         session <= registered_local.date().isoformat()
         or date.fromisoformat(session).weekday() >= 5
@@ -3695,13 +3767,30 @@ def _decode_registered_schedule_authority(raw: bytes) -> dict[str, object]:
     symbols_value = registration["symbols"]
     if (
         not isinstance(symbols_value, list)
-        or len(symbols_value) != 12
+        or not symbols_value
         or any(not isinstance(symbol, str) or not symbol for symbol in symbols_value)
         or symbols_value != sorted(symbols_value)
-        or len(set(symbols_value)) != 12
+        or len(set(symbols_value)) != len(symbols_value)
     ):
         raise CollectorContinuityError("collector registration symbols are invalid")
+    try:
+        if any(normalize(symbol) != symbol for symbol in symbols_value):
+            raise CollectorContinuityError("collector registration symbols are invalid")
+    except ValueError as exc:
+        raise CollectorContinuityError(
+            "collector registration symbols are invalid"
+        ) from exc
+    if schema != _REGISTRATION_V6_SCHEMA and len(symbols_value) != 12:
+        raise CollectorContinuityError("collector registration symbols are invalid")
     symbols = tuple(symbols_value)
+    workspace_count = registration["workspace_count"]
+    if (
+        type(workspace_count) is not int
+        or workspace_count < 1
+        or workspace_count > _MAX_EXACT_PANEL_CELLS
+        or workspace_count != len(symbols) * len(sessions)
+    ):
+        raise CollectorContinuityError("collector registration panel is invalid")
     panel = tuple(sorted(f"{symbol}@{session}" for symbol in symbols for session in sessions))
     if registration["panel_sha256"] != canonical_json_sha256(list(panel)):
         raise CollectorContinuityError("collector registration panel is invalid")
@@ -3740,6 +3829,7 @@ def _decode_registered_schedule_authority(raw: bytes) -> dict[str, object]:
         "capability": capability,
         "registration": registration,
         "registered_at": registered_at,
+        "panel_mode": registration.get("panel_mode", "legacy_fixed_12x3"),
     }
 
 
@@ -3785,8 +3875,15 @@ def _validate_registered_schedule_ledger(
         "sessions": list(sessions),
         "sessions_sha256": canonical_json_sha256(list(sessions)),
         "prerequisites_sha256": registration["prerequisites_sha256"],
+        **(
+            {"panel_mode": _REGISTRATION_V6_PANEL_MODE}
+            if registration.get("schema_version") == _REGISTRATION_V6_SCHEMA
+            else {}
+        ),
     }
-    if any(binding.get(field) != value for field, value in expected_binding.items()):
+    if set(binding) != {*expected_binding, "bound_at"} or any(
+        binding.get(field) != value for field, value in expected_binding.items()
+    ):
         raise CollectorContinuityError("collector registration binding drifted")
     try:
         bound_at = datetime.fromisoformat(str(binding.get("bound_at")))
@@ -3797,7 +3894,7 @@ def _validate_registered_schedule_ledger(
 
 
 def _read_bound_registration(registration_file: str | os.PathLike[str]) -> dict[str, object]:
-    """Load one canonical `/4` registration and reverify its SQLite binding."""
+    """Load one canonical registration and reverify its SQLite binding."""
 
     authority = _read_registered_schedule_authority(registration_file)
     capability = authority["capability"]
@@ -3820,7 +3917,7 @@ def _read_bound_registration(registration_file: str | os.PathLike[str]) -> dict[
 def _build_collector_step_schedule(
     authority: Mapping[str, object], *, registration_file: str
 ) -> _FrozenCollectorStepSchedule:
-    """Build the deterministic 12-step schedule from decoded authority."""
+    """Build the deterministic four-steps-per-session schedule."""
 
     registration_sha256 = str(authority["registration_sha256"])
     normalized_sessions = authority["sessions"]
@@ -3828,6 +3925,7 @@ def _build_collector_step_schedule(
     source = str(authority["source"])
     adjustment_mode = str(authority["adjustment_mode"])
     adjustment_version = str(authority["adjustment_version"])
+    panel_mode = str(authority.get("panel_mode", "legacy_fixed_12x3"))
     database = str(authority["database_path"])
     if not isinstance(normalized_sessions, tuple) or not isinstance(symbols, tuple):
         raise CollectorContinuityError("collector registration authority is invalid")
@@ -3870,6 +3968,8 @@ def _build_collector_step_schedule(
                     "--start", normalized_sessions[0], "--end", session, "--source", source,
                     "--adjustment-version", adjustment_version,
                 )
+                if panel_mode == _REGISTRATION_V6_PANEL_MODE:
+                    command += ("--panel-mode", panel_mode)
             schedule.append(
                 CollectorStepSpec(
                     registration_file=registration_file,
@@ -3900,6 +4000,7 @@ def _build_collector_step_schedule(
         source=source,
         adjustment_mode=adjustment_mode,
         adjustment_version=adjustment_version,
+        panel_mode=panel_mode,
         database_path=database,
         ledger_path=str(authority["ledger_path"]),
         ledger_identity=ledger_identity,
@@ -3910,7 +4011,7 @@ def _build_collector_step_schedule(
 def freeze_collector_step_schedule(
     *, registration_file: str | os.PathLike[str]
 ) -> tuple[CollectorStepSpec, ...]:
-    """Freeze the 12 commands from one persistent, ledger-bound registration."""
+    """Freeze commands from one persistent, ledger-bound registration."""
 
     require_collector_continuity_health()
     authority = _read_registered_schedule_authority(registration_file)
@@ -3949,7 +4050,6 @@ def _validate_collector_step_spec(spec: CollectorStepSpec) -> _FrozenCollectorSt
         )
         or type(spec.step_ordinal) is not int
         or spec.step_ordinal < 0
-        or spec.step_ordinal > 11
         or spec.step_ordinal % 4 != expected[1]
         or not os.path.isabs(spec.database_path)
         or tuple(sorted(spec.symbols)) != spec.symbols
@@ -5095,25 +5195,15 @@ def _read_registered_collector_read_authority(
     finally:
         opened.close()
     registration = decode_canonical_json_object(raw)
-    schema = registration.get("schema_version")
-    fields = (
-        _REGISTRATION_V4_FIELDS
-        if schema == _REGISTRATION_V4_SCHEMA
-        else _REGISTRATION_V5_FIELDS
+    _require_registration_schema(
+        registration, field="registered collector registration"
     )
-    require_exact_keys(registration, fields, "registered collector registration")
     registration_sha256 = hashlib.sha256(raw).hexdigest()
     if (
-        schema not in {_REGISTRATION_V4_SCHEMA, _REGISTRATION_V5_SCHEMA}
-        or registration_sha256 != spec.registration_sha256
+        registration_sha256 != spec.registration_sha256
         or registration_sha256 != frozen.registration_sha256
     ):
         raise CollectorContinuityError("registered collector registration identity drifted")
-    if (
-        schema == _REGISTRATION_V5_SCHEMA
-        and registration.get("authority_mode") != _REGISTRATION_V5_AUTHORITY_MODE
-    ):
-        raise CollectorContinuityError("registered collector registration authority mode is invalid")
     prerequisites = registration.get("prerequisites")
     if not isinstance(prerequisites, Mapping):
         raise CollectorContinuityError("registered collector prerequisites are invalid")
@@ -5529,20 +5619,9 @@ def _validate_raw_step_spec(spec: CollectorStepSpec) -> _FrozenCollectorStepSche
     finally:
         opened.close()
     registration = decode_canonical_json_object(raw)
-    schema = registration.get("schema_version")
-    fields = (
-        _REGISTRATION_V4_FIELDS
-        if schema == _REGISTRATION_V4_SCHEMA
-        else _REGISTRATION_V5_FIELDS
+    schema = _require_registration_schema(
+        registration, field="collector raw registration"
     )
-    require_exact_keys(registration, fields, "collector raw registration")
-    if schema not in {_REGISTRATION_V4_SCHEMA, _REGISTRATION_V5_SCHEMA}:
-        raise CollectorContinuityError("collector raw registration schema is unsupported")
-    if (
-        schema == _REGISTRATION_V5_SCHEMA
-        and registration.get("authority_mode") != _REGISTRATION_V5_AUTHORITY_MODE
-    ):
-        raise CollectorContinuityError("collector raw registration authority mode is invalid")
     registration_sha256 = hashlib.sha256(raw).hexdigest()
     if registration_sha256 != spec.registration_sha256 or registration_sha256 != frozen.registration_sha256:
         raise CollectorContinuityError("collector raw registration identity drifted")
@@ -5553,7 +5632,10 @@ def _validate_raw_step_spec(spec: CollectorStepSpec) -> _FrozenCollectorStepSche
     if not isinstance(capability, Mapping):
         raise CollectorContinuityError("collector raw registration capability is invalid")
     try:
-        sessions = _validate_registration_sessions(registration["sessions"])
+        sessions = _validate_registration_sessions(
+            registration["sessions"],
+            exact_count=None if schema == _REGISTRATION_V6_SCHEMA else 3,
+        )
         symbols = tuple(registration["symbols"])
         ledger_path = lexical_absolute_path(capability["ledger_path"])
         ledger_identity = PhysicalFileIdentity.from_dict(capability["ledger_identity"])
@@ -5578,8 +5660,17 @@ def _validate_raw_step_spec(spec: CollectorStepSpec) -> _FrozenCollectorStepSche
         "sessions": list(sessions),
         "sessions_sha256": canonical_json_sha256(list(sessions)),
         "prerequisites_sha256": registration.get("prerequisites_sha256"),
+        **(
+            {"panel_mode": _REGISTRATION_V6_PANEL_MODE}
+            if schema == _REGISTRATION_V6_SCHEMA
+            else {}
+        ),
     }
-    if not isinstance(binding, Mapping) or any(binding.get(key) != value for key, value in expected.items()):
+    if (
+        not isinstance(binding, Mapping)
+        or set(binding) != {*expected, "bound_at"}
+        or any(binding.get(key) != value for key, value in expected.items())
+    ):
         raise CollectorContinuityError("collector raw registration binding drifted")
     return frozen
 
@@ -7693,7 +7784,7 @@ def _child_environment_matches_active_attempt(
         ):
             raise CollectorContinuityError("collector child step ordinal is invalid")
         ordinal = int(ordinal_text)
-        if ordinal > 11:
+        if 2 + (ordinal // 4 + 1) * 8 > COLLECTOR_LEDGER_MAX_LINES:
             raise CollectorContinuityError("collector child step ordinal is invalid")
         step_id = values["STOCKDATA_COLLECTOR_STEP_ID"]
         expected_step = _STEP_IDENTITY.get(step_id)
@@ -8533,6 +8624,7 @@ def _reverify_registered_collector_static_prerequisites(
             registered_at=registered_at,
             observed_at=observed_at,
             authority_mode=str(registration.get("authority_mode", "signed")),
+            panel_mode=str(registration.get("panel_mode", "legacy_fixed_12x3")),
         )
     except (FuturePanelRegistrationError, KeyError, TypeError, ValueError) as exc:
         raise CollectorContinuityError("collector static prerequisites drifted") from exc
@@ -8563,9 +8655,10 @@ def _validate_complete_collector_materialization_history(
 ) -> tuple[tuple[dict[str, object], ...], dict[str, object], dict[str, object]]:
     """Validate one parsed terminal history without consulting live paths."""
 
-    if len(schedule.specs) != 12 or tuple(
+    step_count = len(schedule.sessions) * 4
+    if not schedule.sessions or len(schedule.specs) != step_count or tuple(
         spec.step_ordinal for spec in schedule.specs
-    ) != tuple(range(12)):
+    ) != tuple(range(step_count)):
         raise CollectorContinuityError("collector materialization schedule is incomplete")
     completed_ordinals: set[int] = set()
     next_ordinal = 0
@@ -8589,7 +8682,7 @@ def _validate_complete_collector_materialization_history(
             )
         detail = event.get("event")
         ordinal = detail.get("step_ordinal") if isinstance(detail, Mapping) else None
-        if type(ordinal) is not int or ordinal != next_ordinal or ordinal >= 12:
+        if type(ordinal) is not int or ordinal != next_ordinal or ordinal >= step_count:
             raise CollectorContinuityError(
                 "collector materialization ledger order drifted"
             )
@@ -8688,19 +8781,19 @@ def _validate_complete_collector_materialization_history(
                 )
             previous_terminal_state = terminal_state
             previous_terminal_ordinal = ordinal
-    if completed_ordinals != set(range(12)) or next_ordinal != 12:
+    if completed_ordinals != set(range(step_count)) or next_ordinal != step_count:
         raise CollectorContinuityError("collector materialization ledger is incomplete")
     tail = history[-1]
     tail_detail = tail.get("event")
     if (
         tail.get("event_type") != "ATTEMPT_COMPLETED"
         or not isinstance(tail_detail, Mapping)
-        or tail_detail.get("step_ordinal") != 11
+        or tail_detail.get("step_ordinal") != step_count - 1
     ):
         raise CollectorContinuityError("collector materialization ledger tail is invalid")
     tail_state = validate_collector_step_state(
         tail_detail.get("step_state_after"),
-        allowed_tables=schedule.specs[11].allowed_tables,
+        allowed_tables=schedule.specs[-1].allowed_tables,
     )
     if tail_detail.get("state_after_sha256") != tail_state["collector_state_sha256"]:
         raise CollectorContinuityError("collector materialization ledger tail state is invalid")
@@ -9010,6 +9103,8 @@ def _verify_collector_snapshot_connection(
         "adjustment_mode": schedule.adjustment_mode,
         "adjustment_version": schedule.adjustment_version,
     }
+    if schedule.panel_mode == _REGISTRATION_V6_PANEL_MODE:
+        expected_cohort["panel_mode"] = schedule.panel_mode
     rows = connection.execute(
         "SELECT database_uuid,cohort_sha256,genesis_json,genesis_sha256,"
         "ledger_genesis_event_sha256,created_at "
@@ -9241,7 +9336,7 @@ def verify_registered_collector_materialization_snapshot(
             )
         _verify_collector_snapshot_connection(
             connection,
-            schedule.specs[11],
+            schedule.specs[-1],
             schedule,
             capability=capability,
             expected_step_state=tail_state,
@@ -9354,8 +9449,8 @@ def _reverify_collector_materialization_live_state(
         raise CollectorContinuityError("collector materialization authority drifted")
     if _phase_ledger_history(lease) != tuple(history):
         raise CollectorContinuityError("collector materialization ledger head drifted")
-    with open_registered_collector_read_connection(schedule.specs[11]) as token:
-        current = snapshot_collector_step_state(token, schedule.specs[11])
+    with open_registered_collector_read_connection(schedule.specs[-1]) as token:
+        current = snapshot_collector_step_state(token, schedule.specs[-1])
     if current != expected_step_state:
         raise CollectorContinuityError("collector materialization live state drifted")
     _reject_registered_collector_read_sidecars(schedule.database_path)
@@ -9443,8 +9538,8 @@ def verify_registered_collector_materialization_complete(
             registration_sha256=str(authority["registration_sha256"]),
             database_uuid=str(capability["database_uuid"]),
         )
-        with open_registered_collector_read_connection(specs[11]) as token:
-            live_state = snapshot_collector_step_state(token, specs[11])
+        with open_registered_collector_read_connection(specs[-1]) as token:
+            live_state = snapshot_collector_step_state(token, specs[-1])
         if live_state != tail_state:
             raise CollectorContinuityError("collector materialization live tail drifted")
 
@@ -9657,7 +9752,7 @@ def _create_retained_collector_materialization_snapshot(
                 raise CollectorContinuityError("collector snapshot database content drifted")
             _verify_collector_snapshot_database_for_schedule(
                 temporary_path,
-                retained.schedule.specs[11],
+                retained.schedule.specs[-1],
                 retained.schedule,
                 capability=retained.capability,
                 expected_step_state=retained.tail_state,
@@ -9876,8 +9971,8 @@ def create_registered_collector_materialization_snapshot(
             registration_sha256=str(authority["registration_sha256"]),
             database_uuid=str(capability["database_uuid"]),
         )
-        with open_registered_collector_read_connection(specs[11]) as token:
-            live_state = snapshot_collector_step_state(token, specs[11])
+        with open_registered_collector_read_connection(specs[-1]) as token:
+            live_state = snapshot_collector_step_state(token, specs[-1])
         if live_state != tail_state:
             raise CollectorContinuityError("collector materialization live tail drifted")
         reverify_retained_inputs()
@@ -9900,16 +9995,16 @@ def create_registered_collector_materialization_snapshot(
                 temporary_identity = _verify_collector_snapshot_temp_identity(
                     temporary_fd, directory_fd, temporary_path
                 )
-                with open_registered_collector_read_connection(specs[11]) as token:
-                    before_backup = snapshot_collector_step_state(token, specs[11])
+                with open_registered_collector_read_connection(specs[-1]) as token:
+                    before_backup = snapshot_collector_step_state(token, specs[-1])
                     if before_backup != tail_state:
                         raise CollectorContinuityError(
                             "collector materialization live state drifted before backup"
                         )
                     _backup_registered_collector_database(
-                        token, specs[11], snapshot_path=temporary_path
+                        token, specs[-1], snapshot_path=temporary_path
                     )
-                    after_backup = snapshot_collector_step_state(token, specs[11])
+                    after_backup = snapshot_collector_step_state(token, specs[-1])
                 if after_backup != tail_state:
                     raise CollectorContinuityError(
                         "collector materialization live state drifted during backup"
@@ -9925,7 +10020,7 @@ def create_registered_collector_materialization_snapshot(
                 database_sha256 = _sha256_open_descriptor(temporary_fd)
                 _verify_collector_snapshot_database(
                     temporary_path,
-                    specs[11],
+                    specs[-1],
                     capability=capability,
                     expected_step_state=tail_state,
                     expected_logical_state=logical_state,

@@ -55,8 +55,16 @@ PROVIDER_DATA_MANIFEST_SCHEMA = "stockdata-rqgm-provider-data-manifest/1"
 REGISTRATION_REFERENCE_KIND = "stock-data-forward-panel-registration"
 REGISTRATION_SCHEMA = "rqgm-forward-panel-registration/4"
 TRUSTED_LOCAL_REGISTRATION_SCHEMA = "rqgm-forward-panel-registration/5"
+PROSPECTIVE_REGISTRATION_SCHEMA = "rqgm-forward-panel-registration/6"
 REGISTRATION_SCHEMAS = frozenset(
-    {REGISTRATION_SCHEMA, TRUSTED_LOCAL_REGISTRATION_SCHEMA}
+    {
+        REGISTRATION_SCHEMA,
+        TRUSTED_LOCAL_REGISTRATION_SCHEMA,
+        PROSPECTIVE_REGISTRATION_SCHEMA,
+    }
+)
+REGULAR_REGISTRATION_SCHEMAS = frozenset(
+    {REGISTRATION_SCHEMA, PROSPECTIVE_REGISTRATION_SCHEMA}
 )
 TRUSTED_LOCAL_READINESS_BLOCKER = "trusted_local_mechanical_has_no_readiness_authority"
 LEDGER_REFERENCE_KIND = "stock-data-forward-collector-ledger-snapshot"
@@ -950,7 +958,7 @@ def _verify_provider_bundle_core(
     if project_data_manifest:
         if replay_policy_binding is not _NO_RESEARCH_POLICY:
             raise ValueError("provider data manifest cannot use research replay mode")
-        if registration.schema_version != REGISTRATION_SCHEMA:
+        if registration.schema_version not in REGULAR_REGISTRATION_SCHEMAS:
             raise ValueError("provider data manifest requires regular registration")
         if ready is not True:
             raise ValueError("provider data manifest requires ready provider bundle")

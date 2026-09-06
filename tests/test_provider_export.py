@@ -365,7 +365,7 @@ def test_bundle_input_v2_rejects_wrong_or_aliased_continuity_locators(
             bundle["registration"]["reference"]["kind"] = "stock-data-registration"
         elif mutation == "wrong-registration-schema":
             bundle["registration"]["reference"]["schema_version"] = (
-                "rqgm-forward-panel-registration/6"
+                "rqgm-forward-panel-registration/7"
             )
         elif mutation == "detached-v5-schema":
             bundle["registration"]["reference"]["schema_version"] = (

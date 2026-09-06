@@ -85,6 +85,11 @@ def build_params(argv: list) -> dict:
     capture.add_argument("--end", default="")
     capture.add_argument("--source", choices=("baostock", "tencent"), default="baostock")
     capture.add_argument("--adjustment-version", default="")
+    capture.add_argument(
+        "--panel-mode",
+        choices=("legacy_fixed_12x3", "prospective_exact_cartesian"),
+        default="legacy_fixed_12x3",
+    )
 
     context_capture = sub.add_parser("forward-context-capture")
     context_capture.add_argument("--database", required=True)
@@ -139,6 +144,11 @@ def build_params(argv: list) -> dict:
     future_prepare = sub.add_parser("future-panel-prepare")
     future_prepare.add_argument("--database", required=True)
     future_prepare.add_argument("--panel-file", required=True)
+    future_prepare.add_argument(
+        "--panel-mode",
+        choices=("legacy_fixed_12x3", "prospective_exact_cartesian"),
+        default="legacy_fixed_12x3",
+    )
 
     local_prerequisites = sub.add_parser("future-panel-local-prerequisites")
     local_prerequisites.add_argument("--panel-file", required=True)
@@ -159,6 +169,11 @@ def build_params(argv: list) -> dict:
         "--authority-mode",
         choices=("signed", "trusted_local_mechanical"),
         default="signed",
+    )
+    future_registration.add_argument(
+        "--panel-mode",
+        choices=("legacy_fixed_12x3", "prospective_exact_cartesian"),
+        default="legacy_fixed_12x3",
     )
 
     registered_capture = sub.add_parser("registered-panel-capture")
@@ -218,7 +233,7 @@ def build_params(argv: list) -> dict:
             "database": args.database or None,
         }
     if args.kind == "forward-capture":
-        return {
+        params = {
             "kind": "forward_capture",
             "database": args.database,
             "codes": args.codes,
@@ -228,6 +243,9 @@ def build_params(argv: list) -> dict:
             "source": args.source,
             "adjustment_version": args.adjustment_version or None,
         }
+        if args.panel_mode != "legacy_fixed_12x3":
+            params["panel_mode"] = args.panel_mode
+        return params
     if args.kind == "forward-context-capture":
         return {
             "kind": "forward_context_capture",
@@ -297,11 +315,14 @@ def build_params(argv: list) -> dict:
             "policy_request_file": args.policy_request_file,
         }
     if args.kind == "future-panel-prepare":
-        return {
+        params = {
             "kind": "future_panel_prepare",
             "database_file": args.database,
             "panel_file": args.panel_file,
         }
+        if args.panel_mode != "legacy_fixed_12x3":
+            params["panel_mode"] = args.panel_mode
+        return params
     if args.kind == "future-panel-local-prerequisites":
         return {
             "kind": "future_panel_local_prerequisites",
@@ -319,6 +340,11 @@ def build_params(argv: list) -> dict:
             args.calendar_authority is not None or args.market_rules_authority is not None
         ):
             parser.error("trusted_local_mechanical does not accept authority files")
+        if (
+            args.panel_mode == "prospective_exact_cartesian"
+            and args.authority_mode != "signed"
+        ):
+            parser.error("prospective_exact_cartesian requires signed authority")
         params = {
             "kind": "future_panel_register",
             "output_file": args.output,
@@ -332,6 +358,8 @@ def build_params(argv: list) -> dict:
         }
         if args.authority_mode != "signed":
             params["authority_mode"] = args.authority_mode
+        if args.panel_mode != "legacy_fixed_12x3":
+            params["panel_mode"] = args.panel_mode
         return params
     if args.kind == "registered-panel-capture":
         return {
@@ -415,6 +443,7 @@ def _run_cache_command(params: dict, database: Path, writer_token: object | None
             params["end_date"] or None,
             source=params["source"],
             adjustment_version=params["adjustment_version"],
+            panel_mode=params.get("panel_mode", "legacy_fixed_12x3"),
         )
     if params["kind"] == "query":
         if params.get("finalized_only"):
@@ -624,6 +653,7 @@ def main(argv=None):
         out = prepare_future_collector_database(
             database_file=params["database_file"],
             panel_file=params["panel_file"],
+            panel_mode=params.get("panel_mode", "legacy_fixed_12x3"),
         )
         json.dump(out, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")
@@ -653,6 +683,7 @@ def main(argv=None):
             market_rules_file=params["market_rules_file"],
             market_rules_authority_file=params["market_rules_authority_file"],
             authority_mode=params.get("authority_mode", "signed"),
+            panel_mode=params.get("panel_mode", "legacy_fixed_12x3"),
         )
         json.dump(out, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")

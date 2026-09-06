@@ -139,6 +139,26 @@ stockdata-cli registered-panel-capture --registration-file reg.json \
     --database ~/.stockdata/cache.sqlite --date 2026-08-25 --phase post_close
 ```
 
+无 `--panel-mode` 时仍使用 `legacy_fixed_12x3`，signed registration 保持
+`rqgm-forward-panel-registration/4`，trusted-local research registration 保持 `/5`。
+输入定义的非空笛卡尔积面板必须在 prepare 和 register 两步都显式传入
+`--panel-mode prospective_exact_cartesian`；它生成 signed-only 的 `/6` registration：
+
+```bash
+stockdata-cli future-panel-prepare --database ~/.stockdata/cache.sqlite \
+    --panel-file prospective-panel.json --panel-mode prospective_exact_cartesian
+stockdata-cli future-panel-register --output prospective-reg.json \
+    --database ~/.stockdata/cache.sqlite --panel-file prospective-panel.json \
+    --source-receipt r1.json --calendar-file cal.json --calendar-authority cal.env.json \
+    --market-rules-file rules.json --market-rules-authority rules.env.json \
+    --panel-mode prospective_exact_cartesian
+```
+
+`/6` 绑定规范化 symbols、严格未来 sessions、精确笛卡尔积、panel digest、cell
+count、每 session 四步的 collector ledger 和 snapshot。它不迁移 `/4` 或 `/5`，
+也不放宽 authority、availability 或 ordinary provider `ready` 条件；生产 trust
+registry 为空时注册继续 fail closed。
+
 ### provider 物化与导出
 
 ```bash

@@ -67,6 +67,7 @@ def capture_forward_evidence(
     source: str = "baostock",
     adjustment_mode: str = "raw",
     adjustment_version: str | None = None,
+    panel_mode: str = "legacy_fixed_12x3",
     fetcher: Callable[[str, str, str], list[dict]] | None = None,
 ) -> dict[str, object]:
     """Capture and verify one fixed raw cohort without mixing legacy data."""
@@ -108,6 +109,11 @@ def capture_forward_evidence(
     if earliest is not None and str(earliest) < start:
         raise ValueError("forward evidence database predates the cohort start")
 
+    if not isinstance(panel_mode, str) or panel_mode not in {
+        "legacy_fixed_12x3",
+        "prospective_exact_cartesian",
+    }:
+        raise ValueError("panel_mode is invalid")
     cohort: dict[str, object] = {
         "symbols": list(symbols),
         "start": start,
@@ -115,6 +121,8 @@ def capture_forward_evidence(
         "adjustment_mode": adjustment_mode,
         "adjustment_version": adjustment_version,
     }
+    if panel_mode == "prospective_exact_cartesian":
+        cohort["panel_mode"] = panel_mode
     cohort_sha256 = _bind_cohort(cache, cohort)
 
     sync_result = sync_symbols(
