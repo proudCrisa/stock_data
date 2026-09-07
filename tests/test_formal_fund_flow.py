@@ -12,6 +12,7 @@ import sys
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import pytest
 
+import stockdata.formal_fund_flow as formal_fund_flow_module
 from fund_flow_fixture import (
     _calendar_inputs,
     _publish,
@@ -407,3 +408,18 @@ def test_module_cli_fails_closed_on_drifted_capture(tmp_path, monkeypatch):
     assert completed.returncode == 2
     assert "fund-flow capture source identity differs" in completed.stderr
     assert not (tmp_path / "formal-fund-flow.json").exists()
+
+
+def test_final_output_replace_failure_preserves_existing_file(tmp_path, monkeypatch):
+    output = tmp_path / "formal-fund-flow.json"
+    output.write_text("existing\n", encoding="ascii")
+
+    def fail_replace(source, destination):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(formal_fund_flow_module.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="replace failed"):
+        formal_fund_flow_module._write_final_output(output, {"complete": True})
+
+    assert output.read_text(encoding="ascii") == "existing\n"
+    assert list(tmp_path.iterdir()) == [output]

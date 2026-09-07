@@ -10,6 +10,7 @@ from datetime import date, datetime, timezone
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -579,6 +580,27 @@ def verify_formal_fund_flow(
     )
 
 
+def _write_final_output(path: str | Path, value: object) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(_canonical(value))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m stockdata.formal_fund_flow",
@@ -672,7 +694,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             decision_cutoff=args.decision_cutoff,
             expected_symbols=symbols,
         )
-        _write_canonical_json(args.output, payload)
+        _write_final_output(args.output, payload)
     except ValueError as exc:
         parser.exit(2, f"{parser.prog}: error: {exc}\n")
     json.dump(
