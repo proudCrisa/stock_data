@@ -1,0 +1,39 @@
+stockdata/market_rules.py
+  s_dcf78773457488::t_b8431931eff0df 42-47
+docs/159992-market-rules-evidence.md
+  s_dcf78773457488::t_1327efeec60f82 1-24
+  s_dcf78773457488::t_1e25649d1f89df 25-36
+tests/test_provider_market_rules.py
+  s_dcf78773457488::t_0f4d9560ad4871 261-264,379
+  s_dcf78773457488::t_63d02fdece0661 19-20,34-38,101-117,375-378,380,578,581-582,589-624
+  s_dcf78773457488::t_1bf35b674a8ec5 177-181,260,300,322-323,381-383,385,387
+  s_dcf78773457488::t_cd2c8531452aad 391,579-580,583-588
+  s_dcf78773457488::t_682b93c1ce3607 384,386,388-390
+  s_dcf78773457488::t_73c63b5f5d154c 118-120
+  s_dcf78773457488::t_af4be82c67106d 392-393
+  s_dcf78773457488::t_ba909fe835fbcc 625-626
+  s_dcf78773457488::t_001d48ee40c49c 121
+stockdata/liquidity_amount_product.py
+  s_dcf78773457488::t_b8431931eff0df 21-24,26-29
+tests/test_main_etf_rule_profiles.py
+  s_dcf78773457488::t_1327efeec60f82 5-6,41,45-47,49-53
+tests/test_liquidity_amount_product.py
+  s_dcf78773457488::t_1327efeec60f82 11,166-176
+  s_dcf78773457488::t_7834b3a9b195a1 177-179
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a752bb54c8e07fe3b39d077485633c959f1bed0b",
+  "prompts": {},
+  "sessions": {
+    "s_dcf78773457488": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a075b9-2944-7c12-8f61-2b0ba86cf3fb",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
