@@ -1,0 +1,21 @@
+docs/main-buy-publisher-runbook.md
+  s_dcf78773457488::t_f8f486f10d6215 231-233
+  s_dcf78773457488::t_a3c304f396900f 234-236
+  s_dcf78773457488::t_ba93063e7f2b6d 174-175,196,199,201,221-228
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "b65c667fd7aa2a168bd169e460e3613fe7831647",
+  "prompts": {},
+  "sessions": {
+    "s_dcf78773457488": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a075b9-2944-7c12-8f61-2b0ba86cf3fb",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
