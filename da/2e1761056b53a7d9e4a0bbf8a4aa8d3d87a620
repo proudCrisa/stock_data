@@ -1,0 +1,36 @@
+tests/test_liquidity_amount_product.py
+  s_dcf78773457488::t_42a240e63f37cf 12,14,193-215,234-270
+  s_dcf78773457488::t_cbec74ea399ddc 13,148-157,216-233
+  s_dcf78773457488::t_5d0c9c7fcad08c 179
+  s_e42fe47f74103d::t_927761cb4b016a 271-272
+stockdata/liquidity_amount_product.py
+  s_dcf78773457488::t_9f14764da4e47f 21-22,27-28,36-40,79-85,88,93,99,174,181-182,199-201,206
+  s_dcf78773457488::t_6a93bf6f44518c 78
+docs/159992-market-rules-evidence.md
+  s_dcf78773457488::t_5d0c9c7fcad08c 37-56,59
+  s_dcf78773457488::t_6a93bf6f44518c 57-58,60-68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "da2e1761056b53a7d9e4a0bbf8a4aa8d3d87a620",
+  "prompts": {},
+  "sessions": {
+    "s_dcf78773457488": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a075b9-2944-7c12-8f61-2b0ba86cf3fb",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_e42fe47f74103d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a075b9-277b-70a2-8c49-689caa276869",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
