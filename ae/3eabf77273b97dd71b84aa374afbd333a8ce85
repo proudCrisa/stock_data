@@ -1,0 +1,42 @@
+tests/test_provider_authority_admission.py
+  s_dcf78773457488::t_9366391a1c31ba 441,461-462
+  s_dcf78773457488::t_3b4cd4940be2cf 452-457,474-479,481-493
+  s_dcf78773457488::t_7d3a83439929c8 35,230,249-263,437-440,442-451,458-460,463-473,480
+tests/test_verified_provider_readiness.py
+  s_dcf78773457488::t_8c79190465a7d5 41,456-469
+tests/test_main_buy_supplement.py
+  s_dcf78773457488::t_3adeaab86f2122 401,405-407
+  s_dcf78773457488::t_f7adef93c98785 14-17,47-53,64-77,145-150
+  s_dcf78773457488::t_d207071dafc498 178-201
+tests/test_local_main_buy_publisher.py
+  s_dcf78773457488::t_fa05b036666d2f 7-8,28,31-38,48
+  s_dcf78773457488::t_15c0d225bc56c1 13-15,49-53
+stockdata/provider_authority_admission.py
+  s_dcf78773457488::t_48fa3544f25288 550
+  s_dcf78773457488::t_da96cd9f10ca17 783-784
+  s_dcf78773457488::t_268a0355db426d 34-36,281-284,290-293,295-296,326-381,384-390
+  s_dcf78773457488::t_bfd0267911b358 37-43,280,419,435,620,918,1092,1094
+  s_dcf78773457488::t_11784ac4cfe7dc 633,711,782,785-813,1253
+  s_dcf78773457488::t_8e1b43ef1ad274 483
+stockdata/provider_authority_publisher.py
+  s_dcf78773457488::t_da96cd9f10ca17 32,140-143
+tests/test_provider_authority_publisher.py
+  s_dcf78773457488::t_792f643d83f781 25
+  s_dcf78773457488::t_8c893745680451 386-461
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "ae3eabf77273b97dd71b84aa374afbd333a8ce85",
+  "prompts": {},
+  "sessions": {
+    "s_dcf78773457488": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a075b9-2944-7c12-8f61-2b0ba86cf3fb",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
