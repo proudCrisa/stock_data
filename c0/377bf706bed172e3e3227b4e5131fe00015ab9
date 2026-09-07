@@ -1,0 +1,27 @@
+tests/test_formal_fund_flow.py
+  s_dcf78773457488::t_9b58d248d3bf1e 7-10,52-55,307-388,390-409
+  s_dcf78773457488::t_0ff9205a072027 389
+stockdata/formal_fund_flow.py
+  s_dcf78773457488::t_6029267627affe 582,587-600
+  s_dcf78773457488::t_4715da65cba37c 18,272,288,496
+  s_dcf78773457488::t_0c9bf4379fdda4 14,602,680
+  s_dcf78773457488::t_bf7419d938665d 604-613,619-675
+  s_dcf78773457488::t_b3c2becb3f6052 5,13,15,24-28,583-586,601,603,676-679,681-690,702-705
+  s_dcf78773457488::t_73bacda4699c16 266-271,273-287,289-298,497-500,614-618
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "c0377bf706bed172e3e3227b4e5131fe00015ab9",
+  "prompts": {},
+  "sessions": {
+    "s_dcf78773457488": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a075b9-2944-7c12-8f61-2b0ba86cf3fb",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
