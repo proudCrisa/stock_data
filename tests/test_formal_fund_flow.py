@@ -12,7 +12,6 @@ import sys
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import pytest
 
-import stockdata.formal_fund_flow as formal_fund_flow_module
 from fund_flow_fixture import (
     _calendar_inputs,
     _publish,
@@ -354,6 +353,85 @@ def _formal_fund_flow_cli(tmp_path: Path, fixture: dict[str, object]) -> list[st
     return command
 
 
+def _offline_cli_env(
+    tmp_path: Path,
+    signer_key: str,
+    *,
+    fail_replace: Path | None = None,
+) -> tuple[dict[str, str], Path, Path]:
+    guard_dir = tmp_path / "offline-guard"
+    guard_dir.mkdir()
+    ledger = tmp_path / "external-io-attempts.log"
+    marker = tmp_path / "offline-guard-loaded"
+    ledger.write_text("", encoding="ascii")
+    (guard_dir / "sitecustomize.py").write_text(
+        """import os
+import socket
+import subprocess
+from pathlib import Path
+
+ledger = Path(os.environ["STOCKDATA_TEST_EXTERNAL_IO_LEDGER"])
+Path(os.environ["STOCKDATA_TEST_OFFLINE_GUARD_LOADED"]).write_text(
+    "loaded\\n", encoding="ascii"
+)
+
+def blocked(name):
+    def deny(*args, **kwargs):
+        with ledger.open("a", encoding="ascii") as handle:
+            handle.write(name + "\\n")
+        raise AssertionError(f"formal fund-flow CLI attempted external I/O: {name}")
+    return deny
+
+socket.getaddrinfo = blocked("socket.getaddrinfo")
+socket.socket.__init__ = blocked("socket.socket.__init__")
+socket.create_connection = blocked("socket.create_connection")
+subprocess.Popen.__init__ = blocked("subprocess.Popen.__init__")
+subprocess.run = blocked("subprocess.run")
+os.system = blocked("os.system")
+if hasattr(os, "posix_spawn"):
+    os.posix_spawn = blocked("os.posix_spawn")
+if hasattr(os, "posix_spawnp"):
+    os.posix_spawnp = blocked("os.posix_spawnp")
+
+fail_replace = os.environ.get("STOCKDATA_TEST_FAIL_REPLACE")
+if fail_replace:
+    real_replace = os.replace
+    def replace(source, destination, *args, **kwargs):
+        if str(destination) == fail_replace:
+            raise OSError("forced final output replace failure")
+        return real_replace(source, destination, *args, **kwargs)
+    os.replace = replace
+""",
+        encoding="ascii",
+    )
+    env = os.environ.copy()
+    env["STOCKDATA_TEST_FUND_FLOW_KEY"] = signer_key
+    env["STOCKDATA_TEST_EXTERNAL_IO_LEDGER"] = str(ledger)
+    env["STOCKDATA_TEST_OFFLINE_GUARD_LOADED"] = str(marker)
+    env["PYTHONPATH"] = os.pathsep.join(
+        value for value in (str(guard_dir), env.get("PYTHONPATH")) if value
+    )
+    if fail_replace is not None:
+        env["STOCKDATA_TEST_FAIL_REPLACE"] = str(fail_replace)
+    return env, ledger, marker
+
+
+def _run_offline_cli(
+    command: list[str],
+    *,
+    tmp_path: Path,
+    signer_key: str,
+    fail_replace: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env, ledger, marker = _offline_cli_env(
+        tmp_path, signer_key, fail_replace=fail_replace
+    )
+    completed = subprocess.run(command, env=env, capture_output=True, text=True)
+    assert marker.read_text(encoding="ascii") == "loaded\n"
+    assert ledger.read_text(encoding="ascii") == ""
+    return completed
+
+
 def test_module_cli_publishes_and_verifies_offline_fixture(tmp_path, monkeypatch):
     fixture = make_signed_fund_flow_fixture(
         tmp_path / "fixture", monkeypatch, symbols=SYMBOLS, session_count=39
@@ -362,16 +440,11 @@ def test_module_cli_publishes_and_verifies_offline_fixture(tmp_path, monkeypatch
     monkeypatch.undo()
 
     command = _formal_fund_flow_cli(tmp_path, fixture)
-    env = os.environ.copy()
-    env["STOCKDATA_TEST_FUND_FLOW_KEY"] = signer_key
-    completed = subprocess.run(
-        command,
-        check=True,
-        env=env,
-        capture_output=True,
-        text=True,
+    completed = _run_offline_cli(
+        command, tmp_path=tmp_path, signer_key=signer_key
     )
 
+    assert completed.returncode == 0
     summary = json.loads(completed.stdout)
     output = Path(summary["output"])
     assert summary["sessions"] == 39
@@ -396,13 +469,8 @@ def test_module_cli_fails_closed_on_drifted_capture(tmp_path, monkeypatch):
     ]
     captures[0]["source"] = "other"
     _write_json(tmp_path / "captures.json", captures)
-    env = os.environ.copy()
-    env["STOCKDATA_TEST_FUND_FLOW_KEY"] = signer_key
-    completed = subprocess.run(
-        command,
-        env=env,
-        capture_output=True,
-        text=True,
+    completed = _run_offline_cli(
+        command, tmp_path=tmp_path, signer_key=signer_key
     )
 
     assert completed.returncode == 2
@@ -410,16 +478,62 @@ def test_module_cli_fails_closed_on_drifted_capture(tmp_path, monkeypatch):
     assert not (tmp_path / "formal-fund-flow.json").exists()
 
 
-def test_final_output_replace_failure_preserves_existing_file(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("registry", "registry"),
+        ("calendar", "signature"),
+        ("cutoff", "decision_cutoff"),
+    ],
+)
+def test_module_cli_rejects_invalid_authority_wiring(
+    tmp_path, monkeypatch, case, message
+):
+    fixture = make_signed_fund_flow_fixture(
+        tmp_path / "fixture", monkeypatch, symbols=SYMBOLS, session_count=39
+    )
+    signer_key = os.environ["STOCKDATA_TEST_FUND_FLOW_KEY"]
+    monkeypatch.undo()
+    command = _formal_fund_flow_cli(tmp_path, fixture)
+
+    if case == "registry":
+        command[command.index("--expected-registry-sha256") + 1] = "0" * 64
+    elif case == "calendar":
+        calendar_path = tmp_path / "calendar.json"
+        calendar = json.loads(calendar_path.read_text(encoding="ascii"))
+        signature = calendar["authority_envelope"]["signature_base64"]
+        calendar["authority_envelope"]["signature_base64"] = (
+            ("A" if signature[0] != "A" else "B") + signature[1:]
+        )
+        _write_json(calendar_path, calendar)
+    else:
+        command[command.index("--decision-cutoff") + 1] = "2026-08-31T16:10:00"
+
+    completed = _run_offline_cli(
+        command, tmp_path=tmp_path, signer_key=signer_key
+    )
+    assert completed.returncode == 2
+    assert message in completed.stderr
+    assert not (tmp_path / "formal-fund-flow.json").exists()
+
+
+def test_module_cli_replace_failure_preserves_existing_file(tmp_path, monkeypatch):
+    fixture = make_signed_fund_flow_fixture(
+        tmp_path / "fixture", monkeypatch, symbols=SYMBOLS, session_count=39
+    )
+    signer_key = os.environ["STOCKDATA_TEST_FUND_FLOW_KEY"]
+    monkeypatch.undo()
+    command = _formal_fund_flow_cli(tmp_path, fixture)
     output = tmp_path / "formal-fund-flow.json"
     output.write_text("existing\n", encoding="ascii")
 
-    def fail_replace(source, destination):
-        raise OSError("replace failed")
-
-    monkeypatch.setattr(formal_fund_flow_module.os, "replace", fail_replace)
-    with pytest.raises(OSError, match="replace failed"):
-        formal_fund_flow_module._write_final_output(output, {"complete": True})
-
+    completed = _run_offline_cli(
+        command,
+        tmp_path=tmp_path,
+        signer_key=signer_key,
+        fail_replace=output,
+    )
+    assert completed.returncode == 1
+    assert "forced final output replace failure" in completed.stderr
     assert output.read_text(encoding="ascii") == "existing\n"
-    assert list(tmp_path.iterdir()) == [output]
+    assert not list(tmp_path.glob(".formal-fund-flow.json.*.tmp"))
