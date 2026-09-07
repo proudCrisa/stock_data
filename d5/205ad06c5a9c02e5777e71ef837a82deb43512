@@ -1,0 +1,29 @@
+tests/test_provider_authority_publisher.py
+  s_dcf78773457488::t_14580fa5b8bfc6 640-643
+  s_dcf78773457488::t_6ab49d54d1eb52 536-564
+  s_dcf78773457488::t_35e0e5aeae5e34 28,306-348
+  s_dcf78773457488::t_c51b0493020b98 461-487,489,494-497,499,509-511,513-531,533-535,565,567-587,589-613,615-633,672-677,679-681
+  s_dcf78773457488::t_d6affbc65bb53c 488,490-493,503-507
+  s_dcf78773457488::t_69b81f6bc4a2d4 498,500-502,508,512,532,566,588,614,634-639,644-671,678
+  s_dcf78773457488::t_a0a20efb4c4f16 349-350
+docs/calendar-observation-cutoff-cli.md
+  s_dcf78773457488::t_a2c6648c6e7e0b 1-43
+stockdata/provider_authority_publisher.py
+  s_dcf78773457488::t_f4a2b37a022883 358,388
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "d5205ad06c5a9c02e5777e71ef837a82deb43512",
+  "prompts": {},
+  "sessions": {
+    "s_dcf78773457488": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a075b9-2944-7c12-8f61-2b0ba86cf3fb",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
