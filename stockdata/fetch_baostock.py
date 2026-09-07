@@ -14,16 +14,27 @@ from .finalization import latest_finalized_date
 from .ticker import to_baostock
 
 _NUMERIC = ("open", "high", "low", "close", "volume")
+_DAILY_FIELDS = "date,open,high,low,close,volume,amount"
 _ADJUST_FLAGS = {"hfq": "1", "qfq": "2", "raw": "3"}
 _ADJUST_MODES = {value: key for key, value in _ADJUST_FLAGS.items()}
 
 
 class CapturedBars(list[dict]):
-    """Parsed bars with the exact provider request/response capture metadata."""
+    """Parsed bars with the exact provider request/response capture metadata.
 
-    def __init__(self, bars: list[dict], capture_receipt: dict):
+    ``dropped`` 记录因必需字段为空或不可解析而被丢弃的行数。
+    """
+
+    def __init__(
+        self,
+        bars: list[dict],
+        capture_receipt: dict,
+        *,
+        dropped: int = 0,
+    ):
         super().__init__(bars)
         self.capture_receipt = capture_receipt
+        self.dropped = dropped
 
 
 @contextlib.contextmanager
@@ -34,22 +45,49 @@ def _suppress_stdout():
             yield
 
 
-def _to_float(s: str) -> float:
+def _to_float(s: str) -> float | None:
     s = (s or "").strip()
-    return float(s) if s else 0.0
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
 
 
-def _parse_rows(fields: str, rows: list) -> list[dict]:
-    """baostock 行（list of list）+ 列名字符串 → 内部 bar 列表。"""
+def _parse_rows(fields: str, rows: list) -> CapturedBars:
+    """baostock 行（list of list）+ 列名字符串 → 内部 bar 列表。
+
+    必需字段（open/high/low/close/volume）为空或不可解析的行会被丢弃，
+    返回的 CapturedBars.dropped 携带丢弃计数。
+    """
     cols = [c.strip() for c in fields.split(",")]
     out = []
+    dropped = 0
     for r in rows:
         rec = dict(zip(cols, r))
         bar = {"date": rec["date"]}
+        valid = True
         for k in _NUMERIC:
-            bar[k] = _to_float(rec.get(k, ""))
-        out.append(bar)
-    return out
+            value = _to_float(rec.get(k, ""))
+            if value is None:
+                valid = False
+                break
+            bar[k] = value
+        if valid:
+            amount = _to_float(rec.get("amount", ""))
+            if amount is not None:
+                bar["amount"] = amount
+            out.append(bar)
+        else:
+            dropped += 1
+    receipt = {
+        "observed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "source": "baostock",
+        "request": {"method": "_parse_rows", "fields": fields},
+        "response": {"fields": fields, "rows": rows},
+    }
+    return CapturedBars(out, receipt, dropped=dropped)
 
 
 def fetch_baostock(
@@ -58,7 +96,7 @@ def fetch_baostock(
     end: str,
     adjustflag: str | None = None,
     adjustment_mode: str = "qfq",
-) -> list[dict]:
+) -> CapturedBars:
     """拉取 [start,end] 前复权日线。需网络 + baostock 登录。
 
     返回内部 bar 列表（date 升序，date/open/high/low/close/volume）。
@@ -84,7 +122,7 @@ def fetch_baostock(
         try:
             rs = bs.query_history_k_data_plus(
                 bs_code,
-                "date,open,high,low,close,volume",
+                _DAILY_FIELDS,
                 start_date=start,
                 end_date=end,
                 frequency="d",
@@ -99,8 +137,9 @@ def fetch_baostock(
             bs.logout()
     retrieved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     version = f"baostock-adjustflag-{adjustflag}"
-    fields = "date,open,high,low,close,volume"
-    bars = _parse_rows(fields, rows)
+    fields = _DAILY_FIELDS
+    parsed = _parse_rows(fields, rows)
+    bars = list(parsed)
     receipt = {
         "observed_at": retrieved_at,
         "source": "baostock",
@@ -125,4 +164,4 @@ def fetch_baostock(
             "is_final": bar["date"] <= latest_finalized_date(),
             "_capture_receipt": receipt,
         })
-    return CapturedBars(bars, receipt)
+    return CapturedBars(bars, receipt, dropped=parsed.dropped)

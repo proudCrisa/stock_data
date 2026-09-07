@@ -32,7 +32,14 @@ AUTHORITY_COMPONENT_ROLES = frozenset(
         "instrument_status",
         "corporate_actions",
         "market_rules",
+        "liquidity_amounts",
+        "global_signals",
+        "local_daily_prices",
     }
+)
+OPTIONAL_AUTHORITY_COMPONENT_ROLES = frozenset({"fund_flow"})
+SUPPORTED_AUTHORITY_COMPONENT_ROLES = (
+    AUTHORITY_COMPONENT_ROLES | OPTIONAL_AUTHORITY_COMPONENT_ROLES
 )
 _VERIFIED_REGISTRY_TOKEN = object()
 
@@ -83,7 +90,7 @@ def require_enrolled_role_coverage(
     ):
         raise ValueError("role coverage interval must be ordered and timezone-aware")
     requested = tuple(sorted(set(roles)))
-    if not requested or not set(requested).issubset(AUTHORITY_COMPONENT_ROLES):
+    if not requested or not set(requested).issubset(SUPPORTED_AUTHORITY_COMPONENT_ROLES):
         raise ValueError("role coverage contains an unsupported authority role")
 
     coverage: dict[str, str] = {}
@@ -216,11 +223,18 @@ def load_enrolled_trust_registry(
 ) -> EnrolledTrustRegistry:
     """Load and verify an Ed25519 registry selected by an external SHA-256 pin."""
 
-    expected_sha256 = _sha256(expected_sha256, "expected_sha256")
     try:
         raw = Path(path).read_bytes()
     except OSError as exc:
         raise ValueError("trust registry is unreadable") from exc
+    return load_enrolled_trust_registry_bytes(raw, expected_sha256=expected_sha256)
+
+
+def load_enrolled_trust_registry_bytes(
+    raw: bytes, *, expected_sha256: str,
+) -> EnrolledTrustRegistry:
+    """Verify portable registry bytes against a caller-owned trust anchor."""
+    expected_sha256 = _sha256(expected_sha256, "expected_sha256")
     registry_sha256 = hashlib.sha256(raw).hexdigest()
     if registry_sha256 != expected_sha256:
         raise ValueError("trust registry SHA-256 does not match the expected pin")
@@ -299,7 +313,7 @@ def load_enrolled_trust_registry(
             or any(not isinstance(role, str) for role in roles)
             or roles != sorted(roles)
             or len(roles) != len(set(roles))
-            or not set(roles).issubset(AUTHORITY_COMPONENT_ROLES)
+            or not set(roles).issubset(SUPPORTED_AUTHORITY_COMPONENT_ROLES)
         ):
             raise ValueError("component_roles must be supported, sorted, and unique")
         _, valid_from = _timestamp(row["valid_from"], "valid_from")
@@ -352,7 +366,7 @@ def verify_authority_envelope(
 
     if not isinstance(registry, EnrolledTrustRegistry):
         raise ValueError("registry must be a verified EnrolledTrustRegistry")
-    if expected_component not in AUTHORITY_COMPONENT_ROLES:
+    if expected_component not in SUPPORTED_AUTHORITY_COMPONENT_ROLES:
         raise ValueError("expected_component is not a supported authority role")
     if not isinstance(envelope, Mapping) or set(envelope) != {
         "schema_version",

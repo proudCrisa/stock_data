@@ -168,8 +168,14 @@ def test_local_readiness_receipt_is_exact_negative_evidence() -> None:
         "network": "DENIED",
         "private_material_exposed": False,
     }
-    assert payload["production_registry"] == {
-        "path": str(ROOT / "stockdata" / "enrolled_trust_registry.json"),
+    registry = payload["production_registry"]
+    # 回执记录的是审计当时检出位置的绝对路径；在不同 checkout 下复跑时
+    # 只要求它指向本仓库的 enrolled_trust_registry.json。
+    assert Path(registry["path"]).as_posix().endswith(
+        "stockdata/enrolled_trust_registry.json"
+    )
+    assert registry == {
+        "path": registry["path"],
         "pin_verified": True,
         "pinned_sha256": (
             "69b94b1d01cb8dd299db799fac657b78ce77a548d35753ab9dca1c9bf94aeec6"

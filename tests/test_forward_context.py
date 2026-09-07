@@ -96,6 +96,18 @@ def test_capture_rejects_weekend_even_inside_preopen_window(tmp_path):
         capture_forward_context(cache, "2026-08-01", now=saturday)
 
 
+def test_capture_rejects_holiday_when_calendar_covers_it(tmp_path):
+    cache = _cache(tmp_path)
+    cache.refresh_trading_calendar(
+        "2026-08-05", "2026-08-05",
+        fetcher=lambda _s, _e: [{"date": "2026-08-05", "is_trading_day": False}],
+    )
+    post_close = datetime(2026, 8, 5, 16, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    with pytest.raises(ValueError, match="trading day session"):
+        capture_forward_context(cache, "2026-08-05", now=post_close)
+
+
 def test_readiness_rejects_consistent_but_out_of_window_phase_timestamp(tmp_path):
     cache = _cache(tmp_path)
     preopen = datetime(2026, 7, 27, 9, 5, tzinfo=ZoneInfo("Asia/Shanghai"))

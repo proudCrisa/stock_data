@@ -69,7 +69,13 @@ def create_snapshot(
     adjustment_version: str | None = None,
 ) -> dict:
     """Export finalized rows into a content-addressed, read-only snapshot."""
-    if as_of > latest_finalized_date():
+    calendar = cache.trading_calendar
+    latest = (
+        latest_finalized_date(calendar=calendar)
+        if calendar.has_data()
+        else latest_finalized_date()
+    )
+    if as_of > latest:
         raise ValueError("as_of must not be later than the latest finalized date")
     normalized = sorted({normalize(code) for code in codes}) if codes else None
     rows = _select_rows(

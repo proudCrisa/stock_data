@@ -6,7 +6,7 @@
 import pytest
 
 from stockdata.cache import Cache
-from stockdata.service import HistoryService
+from stockdata.service import HistoryFetchError, HistoryService
 
 
 BARS_H1 = [
@@ -62,17 +62,25 @@ class TestIncrementalGap:
 
 
 class TestOfflineFallback:
-    def test_returns_cache_when_all_sources_down(self, cache):
+    def test_fetch_failure_propagates_instead_of_returning_cached_partial(self, cache):
         cache.upsert("600519.SH", BARS_H1)
         primary = RecordingPrimary(BARS_H1, fail=True)   # 主源挂
         svc = HistoryService(cache, primary_fetch=primary, fallback_fetch=None)
-        # 请求超出缓存区间 → 触发拉取 → 主源抛异常 → 仍返回缓存已有部分
-        rows = svc.get_history("600519.SH", "2024-01-02", "2024-06-30", today="2024-07-01")
-        assert len(rows) == 3   # 缓存里的 3 天
+        # 请求超出缓存区间 → 触发拉取 → 主源抛异常 → 必须向上传播
+        with pytest.raises(HistoryFetchError):
+            svc.get_history("600519.SH", "2024-01-02", "2024-06-30", today="2024-07-01")
+
+    def test_returns_cache_when_no_fetch_is_needed(self, cache):
+        cache.upsert("600519.SH", BARS_H1)
+        primary = RecordingPrimary(BARS_H1, fail=True)
+        svc = HistoryService(cache, primary_fetch=primary, fallback_fetch=None)
+        # 请求区间完全命中缓存，不触发拉取
+        rows = svc.get_history("600519.SH", "2024-01-02", "2024-01-04", today="2024-07-01")
+        assert len(rows) == 3
 
 
 class TestPrimaryFailFallback:
-    def test_unqualified_fallback_is_not_mixed_into_qfq(self, cache):
+    def test_fetch_failure_does_not_fall_back_to_unqualified_source(self, cache):
         primary = RecordingPrimary([], fail=True)
         fb_calls = []
 
@@ -81,9 +89,20 @@ class TestPrimaryFailFallback:
             return BARS_H1
 
         svc = HistoryService(cache, primary_fetch=primary, fallback_fetch=fallback)
-        rows = svc.get_history("600519.SH", "2024-01-02", "2024-01-04", today="2024-01-10")
+        with pytest.raises(HistoryFetchError):
+            svc.get_history("600519.SH", "2024-01-02", "2024-01-04", today="2024-01-10")
         assert fb_calls == []
-        assert rows == []
+
+
+class TestFetchFailure:
+    def test_primary_fetch_failure_propagates_with_context(self, cache):
+        def failing_fetch(code, start, end):
+            raise RuntimeError("network down")
+
+        svc = HistoryService(cache, primary_fetch=failing_fetch)
+        with pytest.raises(HistoryFetchError, match="failed to fetch") as exc_info:
+            svc.get_history("600519.SH", "2024-01-02", "2024-01-04", today="2024-01-10")
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
 
 
 class TestTodayBar:
@@ -226,3 +245,42 @@ class TestNonBaostockReadOnly:
                                today="2024-01-04")
         assert [r["date"] for r in rows] == ["2024-01-02", "2024-01-03", "2024-01-04"]
         assert all(r["source"] == "wind" for r in rows)
+
+
+_RECEIPT = {
+    "observed_at": "2024-01-10T00:00:00+00:00",
+    "source": "baostock",
+    "request": {"code": "sh.600519"},
+    "response": {"fields": "date,open", "rows": []},
+}
+
+
+class TestDroppedRows:
+    def test_partial_batch_with_dropped_rows_refuses_to_cache(self, cache):
+        # 与 sync_symbols 一致：部分行被丢时剩余行不得入库，
+        # 否则 gap 检测只看 min/max，被丢的中间交易日会被当作已覆盖。
+        from stockdata.fetch_baostock import CapturedBars
+
+        captured = CapturedBars(BARS_H1[:1], _RECEIPT, dropped=2)
+        calls = []
+
+        def primary(code, start, end):
+            calls.append((code, start, end))
+            return captured
+
+        svc = HistoryService(cache, primary_fetch=primary)
+        with pytest.raises(ValueError, match="refusing partial batch"):
+            svc.get_history("600519.SH", "2024-01-02", "2024-01-04",
+                            today="2024-01-10")
+        assert calls == [( "600519.SH", "2024-01-02", "2024-01-04")]
+        # 不允许任何部分行落库
+        assert cache.get_range("600519.SH", "2024-01-01", "2024-12-31") == []
+
+    def test_zero_dropped_fetches_normally(self, cache):
+        from stockdata.fetch_baostock import CapturedBars
+
+        captured = CapturedBars(BARS_H1, _RECEIPT, dropped=0)
+        svc = HistoryService(cache, primary_fetch=lambda code, start, end: captured)
+        rows = svc.get_history("600519.SH", "2024-01-02", "2024-01-04",
+                               today="2024-01-10")
+        assert len(rows) == 3

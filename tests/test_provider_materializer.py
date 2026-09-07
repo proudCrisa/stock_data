@@ -22,7 +22,11 @@ from stockdata.provider_materializer import (
     ProviderMaterializationError,
     materialize_provider_bundle,
 )
-from stockdata.rqgm_provider_contract import DATABASE_SCHEMA, REQUIRED_COMPONENTS
+from stockdata.rqgm_provider_contract import (
+    DATABASE_SCHEMA,
+    REQUIRED_COMPONENTS,
+    ProviderArtifactReference,
+)
 from test_collector_attempt_protocol import _prepared
 
 
@@ -162,6 +166,84 @@ def test_materializer_creates_verified_fail_closed_content_closure(
         item["code"] == "provider_component_authority_not_attested"
         for item in exported["readiness_report"]["blockers"]
         if item["code"] == "provider_component_authority_not_attested"
+    )
+
+
+def test_trusted_local_materializer_rejects_detached_component_inputs() -> None:
+    registration = {
+        "schema_version": "rqgm-forward-panel-registration/5",
+        "authority_mode": "trusted_local_mechanical",
+        "prerequisites": {
+            "source_receipt_ids": ["a" * 64],
+            "trading_calendar": {"artifact_sha256": "c" * 64},
+            "market_rule_prerequisite": {"artifact_sha256": "d" * 64},
+        },
+    }
+    detached_receipt = ProviderArtifactReference(
+        "stock-data-source-receipt",
+        "b" * 64,
+        "stockdata-provider-component-source-receipt/1",
+    )
+    components = {
+        component: ProviderArtifactReference(
+            f"stock-data-{component.replace('_', '-')}",
+            "e" * 64,
+            "stockdata-provider-component/1",
+        )
+        for component in REQUIRED_COMPONENTS
+    }
+
+    with pytest.raises(
+        ProviderMaterializationError,
+        match="source receipts differ from registration",
+    ):
+        provider_materializer._require_trusted_local_materialization_inputs(
+            registration_raw=_json(registration),
+            source_receipts=(detached_receipt,),
+            components=components,
+        )
+
+
+def test_trusted_local_readiness_is_always_negative_with_stable_blocker() -> None:
+    references = {
+        name: ProviderArtifactReference(
+            f"stock-data-{name}", "a" * 64, "fixture/1"
+        )
+        for name in ("database", "execution", "signal", "panel")
+    }
+    full_report = {
+        "components": {
+            component: {"ready": True, "blockers": []}
+            for component in REQUIRED_COMPONENTS
+        }
+    }
+
+    report = provider_materializer._readiness_report(
+        full_report=full_report,
+        database=references["database"],
+        execution_adjustment=references["execution"],
+        signal_adjustment=references["signal"],
+        panel=references["panel"],
+        panel_size=36,
+        companion_sha256="b" * 64,
+        trusted_local_mechanical=True,
+    )
+
+    assert report["ready"] is False
+    blocker_codes = {
+        blocker["code"]
+        for blocker in report["blockers"]
+        if isinstance(blocker, dict)
+    }
+    assert "trusted_local_mechanical_has_no_readiness_authority" in blocker_codes
+    assert all(
+        evidence["ready"] is False
+        and any(
+            blocker.get("code") == "trusted_local_mechanical_has_no_readiness_authority"
+            and blocker.get("count") == 1
+            for blocker in evidence["blockers"]
+        )
+        for evidence in report["components"].values()
     )
 
 

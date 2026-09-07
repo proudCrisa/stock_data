@@ -16,9 +16,16 @@ from .authority import (
     load_provider_trust_registry,
     require_enrolled_role_coverage,
 )
-from .cache import _RECEIPT_SCHEMA, _SCHEMA, _SCHEMA_VERSION, _SYNC_SCHEMA
+from .cache import (
+    _CALENDAR_SCHEMA,
+    _RECEIPT_SCHEMA,
+    _SCHEMA,
+    _SCHEMA_VERSION,
+    _SYNC_SCHEMA,
+)
 from .collector_continuity import (
     CollectorContinuityError,
+    COLLECTOR_LEDGER_MAX_LINES,
     OpenedRegularFile,
     acquire_collector_registration_lock,
     append_collector_ledger_event,
@@ -45,11 +52,18 @@ from .forward_corporate_actions import _ensure_schema as ensure_action_schema
 from .provider_authority_admission import (
     admit_signed_component_authority,
     preregister_generic_market_rulebook,
+    validate_local_mechanical_prerequisites,
 )
 from .ticker import normalize
 
 
 REGISTRATION_SCHEMA = "rqgm-forward-panel-registration/4"
+TRUSTED_LOCAL_REGISTRATION_SCHEMA = "rqgm-forward-panel-registration/5"
+PROSPECTIVE_REGISTRATION_SCHEMA = "rqgm-forward-panel-registration/6"
+TRUSTED_LOCAL_AUTHORITY_MODE = "trusted_local_mechanical"
+LEGACY_PANEL_MODE = "legacy_fixed_12x3"
+PROSPECTIVE_PANEL_MODE = "prospective_exact_cartesian"
+_MAX_CANONICAL_INPUT_BYTES = 1_048_576
 COLLECTOR_CAPABILITY_SCHEMA = "stockdata-forward-collector-capability/2"
 SOURCE = "tencent"
 ADJUSTMENT_VERSION = "tencent-qt-daily-v1"
@@ -124,10 +138,34 @@ def _now() -> datetime:
     return datetime.now(_SHANGHAI)
 
 
-def _panel(path: str | Path) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+def _panel(
+    path: str | Path, *, panel_mode: str = LEGACY_PANEL_MODE
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    if not isinstance(panel_mode, str) or panel_mode not in {
+        LEGACY_PANEL_MODE,
+        PROSPECTIVE_PANEL_MODE,
+    }:
+        raise FuturePanelRegistrationError("panel_mode is invalid")
+    candidate = Path(path).expanduser()
+    try:
+        if candidate.is_symlink() or not candidate.is_file():
+            raise FuturePanelRegistrationError("panel file must name a regular file")
+        if candidate.stat().st_size > _MAX_CANONICAL_INPUT_BYTES:
+            raise FuturePanelRegistrationError(
+                "future panel exceeds the canonical input limit"
+            )
+    except OSError as exc:
+        raise FuturePanelRegistrationError("panel file must name a regular file") from exc
     value = _read_canonical_json(path, "panel file")
-    if not isinstance(value, list) or len(value) != 36:
-        raise FuturePanelRegistrationError("future panel must contain exactly 36 entries")
+    if len(_canonical(value)) > _MAX_CANONICAL_INPUT_BYTES:
+        raise FuturePanelRegistrationError("future panel exceeds the canonical input limit")
+    if panel_mode == LEGACY_PANEL_MODE:
+        if not isinstance(value, list) or len(value) != 36:
+            raise FuturePanelRegistrationError(
+                "future panel must contain exactly 36 entries"
+            )
+    elif not isinstance(value, list) or not value:
+        raise FuturePanelRegistrationError("future panel must be a non-empty list")
     entries: list[str] = []
     for item in value:
         if not isinstance(item, str):
@@ -141,14 +179,27 @@ def _panel(path: str | Path) -> tuple[tuple[str, ...], tuple[str, ...], tuple[st
             raise FuturePanelRegistrationError("future panel entry is invalid") from exc
         entries.append(entry)
     canonical = tuple(sorted(entries))
-    if tuple(entries) != canonical or len(set(canonical)) != 36:
+    if tuple(entries) != canonical or len(set(canonical)) != len(canonical):
         raise FuturePanelRegistrationError("future panel must be sorted and unique")
     symbols = tuple(sorted({entry.split("@")[0] for entry in canonical}))
     sessions = tuple(sorted({entry.split("@")[1] for entry in canonical}))
-    if len(symbols) != 12 or len(sessions) != 3 or canonical != tuple(
+    if len(symbols) * len(sessions) != len(canonical):
+        if panel_mode == LEGACY_PANEL_MODE:
+            raise FuturePanelRegistrationError(
+                "future panel must be an exact 12-by-3 product"
+            )
+        raise FuturePanelRegistrationError("future panel must be an exact Cartesian product")
+    exact_product = tuple(
         sorted(f"{symbol}@{day}" for symbol in symbols for day in sessions)
+    )
+    if canonical != exact_product:
+        raise FuturePanelRegistrationError("future panel must be an exact Cartesian product")
+    if panel_mode == LEGACY_PANEL_MODE and (
+        len(symbols) != 12 or len(sessions) != 3
     ):
         raise FuturePanelRegistrationError("future panel must be an exact 12-by-3 product")
+    if 2 + len(sessions) * 8 > COLLECTOR_LEDGER_MAX_LINES:
+        raise FuturePanelRegistrationError("future panel exceeds the collector ledger limit")
     return canonical, symbols, sessions
 
 
@@ -167,18 +218,27 @@ def _source_receipts(paths: Sequence[str | Path]) -> dict[str, object]:
     return receipts
 
 
-def _cohort(symbols: Sequence[str], first_session: str) -> dict[str, object]:
-    return {
+def _cohort(
+    symbols: Sequence[str], first_session: str, *, panel_mode: str = LEGACY_PANEL_MODE
+) -> dict[str, object]:
+    result: dict[str, object] = {
         "symbols": list(symbols),
         "start": first_session,
         "source": SOURCE,
         "adjustment_mode": "raw",
         "adjustment_version": ADJUSTMENT_VERSION,
     }
+    if panel_mode == PROSPECTIVE_PANEL_MODE:
+        result["panel_mode"] = panel_mode
+    return result
 
 
 def _install_fresh_collector_schema(
-    connection: sqlite3.Connection, *, symbols: Sequence[str], first_session: str
+    connection: sqlite3.Connection,
+    *,
+    symbols: Sequence[str],
+    first_session: str,
+    panel_mode: str = LEGACY_PANEL_MODE,
 ) -> None:
     """Install the current collector schema only into an exclusively created database."""
 
@@ -191,11 +251,14 @@ def _install_fresh_collector_schema(
         connection.execute(_SCHEMA)
         connection.executescript(_SYNC_SCHEMA)
         connection.executescript(_RECEIPT_SCHEMA)
+        connection.executescript(_CALENDAR_SCHEMA)
         connection.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
         cache = _FreshCollectorSchema(connection)
         ensure_context_schema(cache)  # type: ignore[arg-type]
         ensure_action_schema(cache)  # type: ignore[arg-type]
-        _bind_cohort(cache, _cohort(symbols, first_session))  # type: ignore[arg-type]
+        _bind_cohort(  # type: ignore[arg-type]
+            cache, _cohort(symbols, first_session, panel_mode=panel_mode)
+        )
         connection.commit()
     except (sqlite3.Error, ValueError) as exc:
         connection.rollback()
@@ -203,11 +266,14 @@ def _install_fresh_collector_schema(
 
 
 def prepare_future_collector_database(
-    *, database_file: str | Path, panel_file: str | Path
+    *,
+    database_file: str | Path,
+    panel_file: str | Path,
+    panel_mode: str = LEGACY_PANEL_MODE,
 ) -> dict[str, object]:
     """Create one empty, immutable collector cohort without fetching market data."""
 
-    _, symbols, sessions = _panel(panel_file)
+    _, symbols, sessions = _panel(panel_file, panel_mode=panel_mode)
     now = _now().astimezone(_SHANGHAI)
     if any(day <= now.date().isoformat() for day in sessions):
         raise FuturePanelRegistrationError("collector panel is not wholly in the future")
@@ -228,11 +294,19 @@ def prepare_future_collector_database(
             database_path=database_path,
             ledger_path=ledger_path,
         ) as (connection, _):
-            _install_fresh_collector_schema(
-                connection,
-                symbols=symbols,
-                first_session=sessions[0],
-            )
+            if panel_mode == PROSPECTIVE_PANEL_MODE:
+                _install_fresh_collector_schema(
+                    connection,
+                    symbols=symbols,
+                    first_session=sessions[0],
+                    panel_mode=panel_mode,
+                )
+            else:
+                _install_fresh_collector_schema(
+                    connection,
+                    symbols=symbols,
+                    first_session=sessions[0],
+                )
         return initialize_prepared_collector(
             database_path=database_path,
             ledger_path=ledger_path,
@@ -254,6 +328,7 @@ def verify_collector_capability(
     *,
     symbols: Sequence[str],
     first_session: str,
+    panel_mode: str = LEGACY_PANEL_MODE,
     require_clean: bool = True,
 ) -> dict[str, object]:
     """Read-only verification that the fixed forward collectors can use the database."""
@@ -266,14 +341,18 @@ def verify_collector_capability(
         )
         with open_exact_collector_sqlite(
             database_path=str(path), ledger_path=ledger_path
-        ) as (connection, _):
-            structure, blockers = _structural_status(connection)
+        ) as (connection, opened):
+            structure, blockers = _structural_status(
+                connection, path, opened.database.identity
+            )
             if blockers:
                 raise FuturePanelRegistrationError("collector database price schema is invalid")
             cohort_rows = connection.execute(
                 "SELECT singleton,spec_json,spec_sha256 FROM main.forward_capture_cohort"
             ).fetchall()
-            expected_json = _canonical(_cohort(symbols, first_session)).decode("ascii")
+            expected_json = _canonical(
+                _cohort(symbols, first_session, panel_mode=panel_mode)
+            ).decode("ascii")
             expected_sha256 = hashlib.sha256(expected_json.encode("ascii")).hexdigest()
             if (
                 len(cohort_rows) != 1
@@ -355,6 +434,8 @@ _REGISTRATION_FIELDS = {
     "workspace_count", "outcome_feedback_used", "status", "prerequisite_files",
     "prerequisites", "prerequisites_sha256",
 }
+_TRUSTED_LOCAL_REGISTRATION_FIELDS = _REGISTRATION_FIELDS | {"authority_mode"}
+_PROSPECTIVE_REGISTRATION_FIELDS = _REGISTRATION_FIELDS | {"panel_mode"}
 
 
 def _verify_registration_authority(
@@ -403,10 +484,25 @@ def _open_existing_registration(
         if opened is not None:
             opened.close()
         raise FuturePanelRegistrationError("registration output is invalid") from exc
+    schema = value.get("schema_version") if isinstance(value, dict) else None
+    fields_by_schema = {
+        REGISTRATION_SCHEMA: _REGISTRATION_FIELDS,
+        TRUSTED_LOCAL_REGISTRATION_SCHEMA: _TRUSTED_LOCAL_REGISTRATION_FIELDS,
+        PROSPECTIVE_REGISTRATION_SCHEMA: _PROSPECTIVE_REGISTRATION_FIELDS,
+    }
+    expected_fields = fields_by_schema.get(schema) if isinstance(schema, str) else None
     if (
         not isinstance(value, dict)
-        or set(value) != _REGISTRATION_FIELDS
-        or value.get("schema_version") != REGISTRATION_SCHEMA
+        or expected_fields is None
+        or set(value) != expected_fields
+        or (
+            schema == TRUSTED_LOCAL_REGISTRATION_SCHEMA
+            and value.get("authority_mode") != TRUSTED_LOCAL_AUTHORITY_MODE
+        )
+        or (
+            schema == PROSPECTIVE_REGISTRATION_SCHEMA
+            and value.get("panel_mode") != PROSPECTIVE_PANEL_MODE
+        )
         or raw != _canonical(value)
     ):
         assert opened is not None
@@ -445,11 +541,14 @@ def _registered_at(value: Mapping[str, object]) -> datetime:
 def _binding_matches(
     event: Mapping[str, object], *, registration_sha256: str, panel_sha256: str,
     sessions: Sequence[str], prerequisites_sha256: str,
+    panel_mode: str = LEGACY_PANEL_MODE,
 ) -> bool:
     required = {
         "registration_sha256", "panel_sha256", "sessions", "sessions_sha256",
         "prerequisites_sha256", "bound_at",
     }
+    if panel_mode == PROSPECTIVE_PANEL_MODE:
+        required.add("panel_mode")
     if set(event) != required:
         return False
     try:
@@ -465,6 +564,10 @@ def _binding_matches(
         and event["sessions"] == list(sessions)
         and event["sessions_sha256"] == canonical_json_sha256(list(sessions))
         and event["prerequisites_sha256"] == prerequisites_sha256
+        and (
+            panel_mode != PROSPECTIVE_PANEL_MODE
+            or event["panel_mode"] == PROSPECTIVE_PANEL_MODE
+        )
     )
 
 
@@ -472,23 +575,28 @@ def _prerequisite_files(
     *,
     source_receipt_files: Sequence[str | Path],
     calendar_file: str | Path,
-    calendar_authority_file: str | Path,
+    calendar_authority_file: str | Path | None,
     market_rules_file: str | Path,
-    market_rules_authority_file: str | Path,
+    market_rules_authority_file: str | Path | None,
+    authority_mode: str,
 ) -> dict[str, object]:
-    return {
+    files: dict[str, object] = {
         "source_receipts": sorted(
             str(Path(path).expanduser().resolve()) for path in source_receipt_files
         ),
         "trading_calendar": str(Path(calendar_file).expanduser().resolve()),
-        "trading_calendar_authority": str(
-            Path(calendar_authority_file).expanduser().resolve()
-        ),
         "market_rules": str(Path(market_rules_file).expanduser().resolve()),
-        "market_rules_authority": str(
-            Path(market_rules_authority_file).expanduser().resolve()
-        ),
     }
+    if authority_mode == "signed":
+        if calendar_authority_file is None or market_rules_authority_file is None:
+            raise FuturePanelRegistrationError("signed registration requires authority files")
+        files["trading_calendar_authority"] = str(
+            Path(calendar_authority_file).expanduser().resolve()
+        )
+        files["market_rules_authority"] = str(
+            Path(market_rules_authority_file).expanduser().resolve()
+        )
+    return files
 
 
 def _static_prerequisites(
@@ -497,25 +605,50 @@ def _static_prerequisites(
     files: Mapping[str, object],
     registered_at: datetime,
     coverage_from: datetime,
+    authority_mode: str,
 ) -> dict[str, object]:
     receipt_files = files.get("source_receipts")
     if (
         set(files)
-        != {
-            "source_receipts",
-            "trading_calendar",
-            "trading_calendar_authority",
-            "market_rules",
-            "market_rules_authority",
-        }
+        != (
+            {
+                "source_receipts", "trading_calendar", "trading_calendar_authority",
+                "market_rules", "market_rules_authority",
+            }
+            if authority_mode == "signed"
+            else {"source_receipts", "trading_calendar", "market_rules"}
+        )
         or not isinstance(receipt_files, list)
         or not receipt_files
         or any(not isinstance(path, str) for path in receipt_files)
     ):
         raise FuturePanelRegistrationError("registration prerequisite files are invalid")
     try:
-        registry = load_provider_trust_registry()
         receipts = _source_receipts(receipt_files)
+        if authority_mode == TRUSTED_LOCAL_AUTHORITY_MODE:
+            local = validate_local_mechanical_prerequisites(
+                calendar_artifact=_read_canonical_json(
+                    str(files["trading_calendar"]), "calendar artifact"
+                ),
+                market_rules_artifact=_read_canonical_json(
+                    str(files["market_rules"]), "generic market-rule artifact"
+                ),
+                expected_panel=panel,
+                bound_source_receipts=receipts,
+            )
+            available_at = max(
+                datetime.fromisoformat(value)
+                for prerequisite in (
+                    local["trading_calendar"], local["market_rule_prerequisite"]
+                )
+                for value in prerequisite["available_at_by_panel"].values()
+            )
+            if available_at > registered_at:
+                raise FuturePanelRegistrationError(
+                    "static prerequisite was unavailable at registration"
+                )
+            return local
+        registry = load_provider_trust_registry()
         calendar = admit_signed_component_authority(
             component="trading_calendar",
             artifact_value=_read_canonical_json(
@@ -586,6 +719,8 @@ def reverify_registration_prerequisites(
     first_session: str,
     registered_at: datetime,
     observed_at: datetime,
+    authority_mode: str = "signed",
+    panel_mode: str = LEGACY_PANEL_MODE,
 ) -> None:
     """Recompute every registration prerequisite immediately before capture."""
 
@@ -594,11 +729,13 @@ def reverify_registration_prerequisites(
         files=prerequisite_files,
         registered_at=registered_at,
         coverage_from=observed_at,
+        authority_mode=authority_mode,
     )
     collector = verify_collector_capability(
         database_file,
         symbols=symbols,
         first_session=first_session,
+        panel_mode=panel_mode,
         require_clean=False,
     )
     if prerequisites != {**static, "collector": collector}:
@@ -614,13 +751,32 @@ def register_future_panel(
     panel_file: str | Path,
     source_receipt_files: Sequence[str | Path],
     calendar_file: str | Path,
-    calendar_authority_file: str | Path,
     market_rules_file: str | Path,
-    market_rules_authority_file: str | Path,
+    calendar_authority_file: str | Path | None = None,
+    market_rules_authority_file: str | Path | None = None,
+    authority_mode: str = "signed",
+    panel_mode: str = LEGACY_PANEL_MODE,
 ) -> dict[str, object]:
     """Register one future panel after independently recomputing every prerequisite."""
 
-    panel, symbols, sessions = _panel(panel_file)
+    if authority_mode not in {"signed", TRUSTED_LOCAL_AUTHORITY_MODE}:
+        raise FuturePanelRegistrationError("authority_mode is invalid")
+    if not isinstance(panel_mode, str) or panel_mode not in {
+        LEGACY_PANEL_MODE,
+        PROSPECTIVE_PANEL_MODE,
+    }:
+        raise FuturePanelRegistrationError("panel_mode is invalid")
+    if panel_mode == PROSPECTIVE_PANEL_MODE and authority_mode != "signed":
+        raise FuturePanelRegistrationError(
+            "prospective_exact_cartesian requires signed authority"
+        )
+    if authority_mode == TRUSTED_LOCAL_AUTHORITY_MODE and (
+        calendar_authority_file is not None or market_rules_authority_file is not None
+    ):
+        raise FuturePanelRegistrationError(
+            "trusted_local_mechanical does not accept authority files"
+        )
+    panel, symbols, sessions = _panel(panel_file, panel_mode=panel_mode)
     database_path = canonical_collector_path(os.path.abspath(os.fspath(database_file)))
     ledger_path = default_collector_ledger_path(database_path)
     output_path = Path(canonical_collector_path(os.path.abspath(os.fspath(output_file))))
@@ -630,6 +786,7 @@ def register_future_panel(
         calendar_authority_file=calendar_authority_file,
         market_rules_file=market_rules_file,
         market_rules_authority_file=market_rules_authority_file,
+        authority_mode=authority_mode,
     )
     try:
         with acquire_collector_registration_lock(
@@ -660,17 +817,29 @@ def register_future_panel(
                         "every registered session must be a future trading weekday"
                     )
                 collector = verify_collector_capability(
-                    database_path, symbols=symbols, first_session=sessions[0]
+                    database_path,
+                    symbols=symbols,
+                    first_session=sessions[0],
+                    panel_mode=panel_mode,
                 )
                 static = _static_prerequisites(
                     panel=panel,
                     files=files,
                     registered_at=registered_at,
                     coverage_from=registered_at,
+                    authority_mode=authority_mode,
                 )
                 prerequisites: dict[str, object] = {**static, "collector": collector}
                 result: dict[str, object] = {
-                    "schema_version": REGISTRATION_SCHEMA,
+                    "schema_version": (
+                        PROSPECTIVE_REGISTRATION_SCHEMA
+                        if panel_mode == PROSPECTIVE_PANEL_MODE
+                        else (
+                            REGISTRATION_SCHEMA
+                            if authority_mode == "signed"
+                            else TRUSTED_LOCAL_REGISTRATION_SCHEMA
+                        )
+                    ),
                     "registered_at": registered_at.isoformat(),
                     "as_of": registered_at.date().isoformat(),
                     "symbols": list(symbols),
@@ -680,13 +849,17 @@ def register_future_panel(
                     "adjustment_version": ADJUSTMENT_VERSION,
                     "database_path": collector["database_path"],
                     "panel_sha256": hashlib.sha256(_canonical(list(panel))).hexdigest(),
-                    "workspace_count": 36,
+                    "workspace_count": len(panel),
                     "outcome_feedback_used": False,
                     "status": "AWAITING_FULL_SNAPSHOT_READINESS",
                     "prerequisite_files": files,
                     "prerequisites": prerequisites,
                     "prerequisites_sha256": hashlib.sha256(_canonical(prerequisites)).hexdigest(),
                 }
+                if authority_mode != "signed":
+                    result["authority_mode"] = authority_mode
+                if panel_mode == PROSPECTIVE_PANEL_MODE:
+                    result["panel_mode"] = panel_mode
                 raw = _canonical(result)
                 registration_sha256 = hashlib.sha256(raw).hexdigest()
                 if registration is not None:
@@ -716,6 +889,11 @@ def register_future_panel(
                             "sessions_sha256": canonical_json_sha256(list(sessions)),
                             "prerequisites_sha256": result["prerequisites_sha256"],
                             "bound_at": bound_at.astimezone(_SHANGHAI).isoformat(),
+                            **(
+                                {"panel_mode": panel_mode}
+                                if panel_mode == PROSPECTIVE_PANEL_MODE
+                                else {}
+                            ),
                         },
                     )
                 elif not (
@@ -726,6 +904,7 @@ def register_future_panel(
                         panel_sha256=str(result["panel_sha256"]),
                         sessions=sessions,
                         prerequisites_sha256=str(result["prerequisites_sha256"]),
+                        panel_mode=panel_mode,
                     )
                 ):
                     raise FuturePanelRegistrationError("collector ledger is not a resumable registration")

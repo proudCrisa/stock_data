@@ -21,9 +21,9 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from .authority import (
     ALGORITHM,
-    AUTHORITY_COMPONENT_ROLES,
     AUTHORITY_ENVELOPE_SCHEMA,
     EnrolledTrustRegistry,
+    SUPPORTED_AUTHORITY_COMPONENT_ROLES,
     TRUST_REGISTRY_SCHEMA,
     load_enrolled_trust_registry,
 )
@@ -142,7 +142,7 @@ def _receipt_id(receipt: object) -> str:
 
 
 def _artifact_reference(component: str, artifact: object) -> ProviderArtifactReference:
-    if component not in AUTHORITY_COMPONENT_ROLES:
+    if component not in SUPPORTED_AUTHORITY_COMPONENT_ROLES:
         raise ValueError("component is not a supported provider authority role")
     if not isinstance(artifact, Mapping):
         raise ValueError("component artifact must be an object")
@@ -244,9 +244,13 @@ def publish_authority_envelope(
     available_at: str,
     publisher_key_id: str | None = None,
     decision_cutoff_by_panel: Mapping[str, str] | None = None,
+    instrument_status_authority: AdmittedProviderAuthority | None = None,
+    current_decision_observation_cutoff: str | None = None,
 ) -> PublishedEnvelope:
     """Build, sign, production-admit, and write one authority envelope."""
 
+    if current_decision_observation_cutoff is not None and component != "trading_calendar":
+        raise ValueError("current decision observation cutoff is calendar-only")
     registry = load_enrolled_trust_registry(
         registry_file, expected_sha256=_sha256(registry_sha256, "registry_sha256")
     )
@@ -287,7 +291,7 @@ def publish_authority_envelope(
         "payload": payload,
         "signature_base64": _base64(signer_key.sign(_canonical(payload))),
     }
-    if component == "market_rules":
+    if component == "market_rules" and instrument_status_authority is None:
         if decision_cutoff_by_panel is None:
             raise ValueError("generic market-rule publication requires calendar cutoffs")
         preregistered = preregister_generic_market_rulebook(
@@ -308,6 +312,8 @@ def publish_authority_envelope(
         bound_source_receipts=receipts,
         registry=registry,
         decision_cutoff_by_panel=decision_cutoff_by_panel,
+        instrument_status_authority=instrument_status_authority,
+        current_decision_observation_cutoff=current_decision_observation_cutoff,
     )
     _write_canonical_json(output_file, envelope)
     return PublishedEnvelope(envelope=envelope, admitted=admitted)
@@ -349,6 +355,7 @@ def _handle_publish_envelope(args: argparse.Namespace) -> None:
         available_at=args.available_at,
         publisher_key_id=args.publisher_key_id,
         decision_cutoff_by_panel=_parse_cutoffs(args.decision_cutoff),
+        current_decision_observation_cutoff=args.current_decision_observation_cutoff,
     )
 
 
@@ -378,6 +385,7 @@ def _parser() -> argparse.ArgumentParser:
     publish.add_argument("--available-at", required=True)
     publish.add_argument("--publisher-key-id")
     publish.add_argument("--decision-cutoff", action="append", default=[])
+    publish.add_argument("--current-decision-observation-cutoff")
     publish.set_defaults(func=_handle_publish_envelope)
     return parser
 

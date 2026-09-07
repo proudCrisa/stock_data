@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 import stockdata.collector_continuity as continuity
 import stockdata.future_panel_registration as future_registration
+import stockdata.provider_export as provider_export_module
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
@@ -41,7 +42,10 @@ from stockdata.provider_authority_admission import (
     SOURCE_RECEIPT_SCHEMA,
     admit_signed_component_authority,
 )
-from stockdata.provider_export import export_verified_provider_receipt
+from stockdata.provider_export import (
+    export_verified_provider_data_manifest,
+    export_verified_provider_receipt,
+)
 from stockdata.provider_intrinsic import reconstruct_intrinsic_evidence
 from stockdata.provider_materializer import materialize_provider_bundle
 from stockdata.rqgm_provider_contract import (
@@ -896,11 +900,100 @@ def test_complete_nine_component_fixture_materializes_and_reexports_ready(
     bundle_file = Path(materialized["bundle_file"])
     first_export = export_verified_provider_receipt(bundle_file)
     second_export = export_verified_provider_receipt(bundle_file)
+    first_manifest = export_verified_provider_data_manifest(bundle_file)
+    second_manifest = export_verified_provider_data_manifest(bundle_file)
 
     assert materialized["receipt"]["ready"] is True
     assert first_export["ready"] is True
     assert second_export["ready"] is True
     assert second_export == first_export == materialized["receipt"]
+    assert second_manifest == first_manifest
+    assert first_manifest["schema_version"] == (
+        "stockdata-rqgm-provider-data-manifest/1"
+    )
+    assert first_manifest["authority_grade"] == "formal"
+    assert first_manifest["decision_eligible"] is True
+    assert first_manifest["decision_authority"] is False
+    assert first_manifest["provider_export"] == first_export
+    assert first_manifest["provider_export_sha256"] == _sha256(first_export)
+    assert first_manifest["provider_bundle_sha256"] == hashlib.sha256(
+        bundle_file.read_bytes()
+    ).hexdigest()
+    assert first_manifest["provider_contract_sha256"] == first_export["contract"][
+        "contract_sha256"
+    ]
+    assert first_manifest["provider_snapshot_sha256"] == first_export[
+        "companion_snapshot"
+    ]["snapshot_sha256"]
+    assert first_manifest["exact_panel"]["reference"] == first_export[
+        "companion_snapshot"
+    ]["exact_panel"]
+    assert _sha256(first_manifest["exact_panel"]["payload"]) == first_manifest[
+        "exact_panel"
+    ]["reference"]["identifier"]
+    for adjustment in ("execution", "signal"):
+        projected = first_manifest["adjustment_identities"][adjustment]
+        assert projected["reference"] == first_export["companion_snapshot"][
+            f"{adjustment}_adjustment_identity"
+        ]
+        assert _sha256(projected["payload"]) == projected["reference"]["identifier"]
+    assert set(first_manifest["components"]) == set(REQUIRED_COMPONENTS)
+    for component in REQUIRED_COMPONENTS:
+        projected = first_manifest["components"][component]
+        assert projected["reference"] == first_export["companion_snapshot"][
+            "components"
+        ][component]
+        assert _sha256(projected["payload"]) == projected["reference"]["identifier"]
+    assert first_manifest["manifest_sha256"] == _sha256({
+        key: value for key, value in first_manifest.items()
+        if key != "manifest_sha256"
+    })
+
+
+def test_provider_data_manifest_rejects_not_ready_regular_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _fixture(tmp_path, complete_calendar=True)
+    materialized = _materialize(
+        fixture,
+        monkeypatch,
+        name="blocked-bundle",
+        include_intrinsic_receipts=False,
+    )
+
+    with pytest.raises(
+        ValueError, match="provider data manifest requires ready provider bundle"
+    ):
+        export_verified_provider_data_manifest(materialized["bundle_file"])
+
+
+def test_provider_data_manifest_rejects_post_projection_aba(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _fixture(tmp_path, complete_calendar=True)
+    materialized = _materialize(fixture, monkeypatch, name="aba-bundle")
+    bundle_file = Path(materialized["bundle_file"])
+    exact_panel_file = _bundle_locator(bundle_file, "exact_panel")
+    original_json = provider_export_module._research_json
+    drifted = False
+
+    def drift_after_projection(raw: bytes, field: str) -> object:
+        nonlocal drifted
+        payload = original_json(raw, field)
+        if field == "exact panel" and not drifted:
+            replacement = exact_panel_file.with_name("replacement-exact-panel.json")
+            replacement.write_bytes(exact_panel_file.read_bytes())
+            replacement.replace(exact_panel_file)
+            drifted = True
+        return payload
+
+    monkeypatch.setattr(
+        provider_export_module, "_research_json", drift_after_projection
+    )
+
+    with pytest.raises(ValueError, match="identity has drifted"):
+        export_verified_provider_data_manifest(bundle_file)
+    assert drifted is True
 
 
 def test_orphan_source_receipt_never_reaches_ready(

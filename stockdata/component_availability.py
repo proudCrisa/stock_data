@@ -217,11 +217,11 @@ def _component_record_closure(
     panel: Sequence[str],
     calendar_phases: Mapping[str, Mapping[str, tuple[str, datetime]]],
     bound_receipts: set[str],
-) -> dict[tuple[str, str], dict[str, object]]:
+) -> dict[tuple[str, str, bool | None], dict[str, object]]:
     if not isinstance(value, Mapping) or set(value) != set(EVIDENCE_COMPONENTS):
         raise ValueError("component record set is incomplete")
 
-    closure: dict[tuple[str, str], dict[str, object]] = {}
+    closure: dict[tuple[str, str, bool | None], dict[str, object]] = {}
     required_fields = {
         "panel_entry",
         "payload",
@@ -236,19 +236,37 @@ def _component_record_closure(
             raise ValueError(  # noqa: TRY004 - verifier rejects malformed evidence
                 f"{component} records must be a list"
             )
-        observed_entries: list[str] = []
+        market_rule_branches = (
+            component == "market_rules"
+            and len(records) == 2 * len(panel)
+            and all(
+                isinstance(record, Mapping)
+                and isinstance(record.get("payload"), Mapping)
+                and type(record["payload"].get("is_st")) is bool
+                for record in records
+            )
+        )
+        observed_keys: list[tuple[str, bool | None]] = []
+        observed_rule_order: list[tuple[str, str]] = []
         for record in records:
             if not isinstance(record, Mapping) or set(record) != required_fields:
                 raise ValueError(f"{component} component record schema is incomplete")
             panel_entry = _panel_entry(record["panel_entry"])
-            observed_entries.append(panel_entry)
             if panel_entry not in panel:
                 raise ValueError("component record is outside the exact panel")
             payload = record["payload"]
+            st_status: bool | None = None
+            if market_rule_branches:
+                if not isinstance(payload, Mapping) or type(payload.get("is_st")) is not bool:
+                    raise ValueError("market_rules component records require an ST branch")
+                st_status = payload["is_st"]
+            observed_keys.append((panel_entry, st_status))
             record_sha256 = _sha256(record["record_sha256"], "record_sha256")
             recomputed_sha256 = hashlib.sha256(_canonical(payload)).hexdigest()
             if record_sha256 != recomputed_sha256:
                 raise ValueError(f"{component} component record canonical hash drifted")
+            if market_rule_branches:
+                observed_rule_order.append((panel_entry, record_sha256))
             receipt_ids = _receipt_ids(
                 record["source_receipt_ids"],
                 bound_receipts=bound_receipts,
@@ -258,14 +276,14 @@ def _component_record_closure(
             available_at, _ = _timestamp(
                 record["available_at"], "available_at"
             )
-            closure[(component, panel_entry)] = {
+            closure[(component, panel_entry, st_status)] = {
                 "record_sha256": record_sha256,
                 "source_receipt_ids": receipt_ids,
                 "event_at": event_at,
                 "available_at": available_at,
             }
             if component == "corporate_actions":
-                closure[(component, panel_entry)]["announcement_times"] = (
+                closure[(component, panel_entry, st_status)]["announcement_times"] = (
                     _corporate_action_announcements(payload)
                 )
             if component == "trading_calendar":
@@ -288,11 +306,17 @@ def _component_record_closure(
                     )
 
         if (
-            observed_entries != sorted(observed_entries)
-            or len(observed_entries) != len(set(observed_entries))
+            (market_rule_branches and observed_rule_order != sorted(observed_rule_order))
+            or (not market_rule_branches and observed_keys != sorted(observed_keys))
+            or len(observed_keys) != len(set(observed_keys))
         ):
             raise ValueError(f"{component} component records must be sorted and unique")
-        if set(observed_entries) != set(panel):
+        expected_keys = (
+            {(panel_entry, st_status) for panel_entry in panel for st_status in (False, True)}
+            if market_rule_branches
+            else {(panel_entry, None) for panel_entry in panel}
+        )
+        if set(observed_keys) != expected_keys:
             raise ValueError(f"{component} component records do not cover the exact panel")
     return closure
 
@@ -339,7 +363,7 @@ def _verified_records(
     records: object,
     *,
     panel: Sequence[str],
-    closure: Mapping[tuple[str, str], Mapping[str, object]],
+    closure: Mapping[tuple[str, str, bool | None], Mapping[str, object]],
     calendar_phases: Mapping[str, Mapping[str, tuple[str, datetime]]],
     bound_receipts: set[str],
 ) -> tuple[set[str], list[tuple[datetime, str]]]:
@@ -348,7 +372,8 @@ def _verified_records(
             "availability records must be a list"
         )
     expected_keys = set(closure)
-    actual_keys: list[tuple[str, str]] = []
+    actual_keys: list[tuple[str, str, bool | None]] = []
+    actual_order: list[tuple[str, str, str]] = []
     used_receipts: set[str] = set()
     available_times: list[tuple[datetime, str]] = []
     required_fields = {
@@ -368,10 +393,19 @@ def _verified_records(
         panel_entry = _panel_entry(record["panel_entry"])
         if component not in EVIDENCE_COMPONENTS or panel_entry not in panel:
             raise ValueError("availability record is outside the exact component panel")
-        key = (str(component), panel_entry)
-        actual_keys.append(key)
-        bound_record = closure[key]
         record_sha256 = _sha256(record["record_sha256"], "record_sha256")
+        matches = [
+            key
+            for key, candidate in closure.items()
+            if key[:2] == (str(component), panel_entry)
+            and candidate["record_sha256"] == record_sha256
+        ]
+        if len(matches) != 1:
+            raise ValueError("availability record differs from the bound component record")
+        key = matches[0]
+        actual_keys.append(key)
+        actual_order.append((str(component), panel_entry, record_sha256))
+        bound_record = closure[key]
         if record_sha256 != bound_record["record_sha256"]:
             raise ValueError("availability record differs from the bound component record")
         receipt_ids = _receipt_ids(
@@ -426,7 +460,10 @@ def _verified_records(
         used_receipts.update(receipt_ids)
         available_times.append((available_time, available_at))
 
-    if actual_keys != sorted(actual_keys) or len(actual_keys) != len(set(actual_keys)):
+    if (
+        actual_order != sorted(actual_order)
+        or len(actual_keys) != len(set(actual_keys))
+    ):
         raise ValueError("availability records must be sorted and unique")
     if set(actual_keys) != expected_keys:
         raise ValueError("availability records do not cover the exact component panel")

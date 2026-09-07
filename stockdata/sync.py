@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from datetime import date, timedelta
-from typing import Callable, Iterable
+from typing import Callable
 
 from .cache import Cache
 from .fetch_baostock import fetch_baostock
@@ -48,10 +49,10 @@ def _is_collector_tencent_price_sync(
     adjustment_version: str,
 ) -> bool:
     """Return whether the immutable collector price writer rules apply."""
-    if (source, adjustment_mode, adjustment_version) != (
-        "tencent",
-        "raw",
-        "tencent-qt-daily-v1",
+    if (
+        source != "tencent"
+        or adjustment_mode != "raw"
+        or not adjustment_version.startswith("tencent-qt-daily-v")
     ):
         return False
     row = cache._conn.execute(
@@ -252,7 +253,15 @@ def sync_symbols(
     """Synchronize a bounded symbol/date set, committing each symbol separately."""
     if start > end:
         raise ValueError("start must be <= end")
-    if end > default_final_date():
+
+    calendar = cache.trading_calendar
+    _latest_final = (
+        (lambda: latest_finalized_date(calendar=calendar))
+        if calendar.has_data()
+        else latest_finalized_date
+    )
+
+    if end > _latest_final():
         raise ValueError("end must not be later than the latest finalized date")
     if adjustment_mode not in _VERSIONS:
         raise ValueError(f"unsupported adjustment_mode: {adjustment_mode}")
@@ -278,7 +287,7 @@ def sync_symbols(
         from .collector_continuity import require_collector_continuity_health
 
         require_collector_continuity_health()
-    current_session = end if end == latest_finalized_date() else None
+    current_session = end if end == _latest_final() else None
     results = []
     for code in normalized:
         try:
@@ -339,6 +348,11 @@ def sync_symbols(
             empty_collector_response = False
             for fetch_start, fetch_end in gaps:
                 response = fetch(code, fetch_start, fetch_end)
+                if getattr(response, "dropped", 0) > 0:
+                    raise ValueError(
+                        f"fetcher dropped {response.dropped} row(s) for {code} "
+                        f"{fetch_start}..{fetch_end}; refusing partial batch"
+                    )
                 response_bars = [
                     bar for bar in response
                     if fetch_start <= bar.get("date", "") <= fetch_end
@@ -398,6 +412,12 @@ def sync_symbols(
                     ("adjustment_version", version),
                 ):
                     if field in bar and bar[field] != expected:
+                        if (
+                            collector_price_sync
+                            and field == "adjustment_version"
+                        ):
+                            bar[field] = expected
+                            continue
                         raise ValueError(
                             f"fetcher {field} {bar[field]!r} conflicts with "
                             f"requested {expected!r}"
@@ -414,21 +434,24 @@ def sync_symbols(
                 is_final=True,
                 capture_receipts=capture_receipts,
             ) if bars or capture_receipts else 0
-            coverage_end = end
-            if end == latest_finalized_date() and end not in by_date:
-                coverage_end = (
-                    date.fromisoformat(end) - timedelta(days=1)
-                ).isoformat()
-            if start <= coverage_end:
-                if not (
-                    collector_price_sync
-                    and coverage is not None
-                    and coverage[0] <= start
-                    and coverage[1] >= coverage_end
-                ):
-                    cache.record_sync_coverage(
-                        code, source, adjustment_mode, version, start, coverage_end
-                    )
+            # 历史区间无有效 bar 时不扩展 coverage：数据源临时故障/停牌不应被
+            # 永久记为"已完成"。停牌股会因此每次重试，这是 fail-closed 的可接受代价。
+            if bars:
+                coverage_end = end
+                if end == _latest_final() and end not in by_date:
+                    coverage_end = (
+                        date.fromisoformat(end) - timedelta(days=1)
+                    ).isoformat()
+                if start <= coverage_end:
+                    if not (
+                        collector_price_sync
+                        and coverage is not None
+                        and coverage[0] <= start
+                        and coverage[1] >= coverage_end
+                    ):
+                        cache.record_sync_coverage(
+                            code, source, adjustment_mode, version, start, coverage_end
+                        )
             results.append({
                 "code": code,
                 "status": "synced" if bars else "no_data",

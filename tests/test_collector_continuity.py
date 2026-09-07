@@ -1584,7 +1584,7 @@ def test_research_cache_without_collector_genesis_keeps_update_and_delete_behavi
     cache = Cache(database)
     cache.upsert(
         "000001.SZ",
-        [{"date": "2020-01-02", "open": 1.0, "close": 2.0}],
+        [{"date": "2020-01-02", "open": 1.0, "high": 2.0, "low": 1.0, "close": 2.0, "volume": 100}],
         source="tencent",
         adjustment_mode="raw",
         adjustment_version="research-v1",

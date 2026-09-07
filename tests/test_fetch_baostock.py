@@ -12,7 +12,7 @@ import pytest
 from stockdata.fetch_baostock import _parse_rows
 
 
-FIELDS = "date,open,high,low,close,volume"
+FIELDS = "date,open,high,low,close,volume,amount"
 
 
 class TestSuppressStdout:
@@ -32,8 +32,8 @@ class TestSuppressStdout:
 class TestParseRows:
     def test_basic_parse(self):
         rows = [
-            ["2024-01-02", "1558.4788", "1561.3776", "1524.9465", "1531.2258", "3215644"],
-            ["2024-01-03", "1531.0000", "1540.0000", "1520.0000", "1535.5000", "2000000"],
+            ["2024-01-02", "1558.4788", "1561.3776", "1524.9465", "1531.2258", "3215644", "4915000000"],
+            ["2024-01-03", "1531.0000", "1540.0000", "1520.0000", "1535.5000", "2000000", "3071000000"],
         ]
         bars = _parse_rows(FIELDS, rows)
         assert len(bars) == 2
@@ -44,10 +44,11 @@ class TestParseRows:
             "low": 1524.9465,
             "close": 1531.2258,
             "volume": 3215644.0,
+            "amount": 4915000000.0,
         }
 
     def test_types_are_numeric(self):
-        rows = [["2024-01-02", "10.5", "11", "10", "10.8", "12345"]]
+        rows = [["2024-01-02", "10.5", "11", "10", "10.8", "12345", "133000"]]
         bar = _parse_rows(FIELDS, rows)[0]
         assert isinstance(bar["open"], float)
         assert isinstance(bar["volume"], float)
@@ -55,21 +56,45 @@ class TestParseRows:
     def test_empty_rows(self):
         assert _parse_rows(FIELDS, []) == []
 
-    def test_blank_volume_becomes_zero(self):
-        # baostock 停牌日可能返回空字符串字段
-        rows = [["2024-01-02", "", "", "", "", ""]]
-        bar = _parse_rows(FIELDS, rows)[0]
-        assert bar["date"] == "2024-01-02"
-        assert bar["open"] == 0.0
-        assert bar["volume"] == 0.0
+    def test_blank_required_fields_drop_row_and_count_dropped(self):
+        # baostock 停牌日可能返回空字符串字段，不能写成假零价 K 线
+        rows = [["2024-01-02", "", "", "", "", "", ""]]
+        parsed = _parse_rows(FIELDS, rows)
+        assert len(parsed) == 0
+        assert parsed.dropped == 1
+
+    def test_unparseable_required_field_drops_row(self):
+        rows = [
+            ["2024-01-02", "10.0", "11.0", "9.0", "10.5", "100", "1050"],
+            ["2024-01-03", "10.0", "bad", "9.0", "10.5", "100", "1050"],
+        ]
+        parsed = _parse_rows(FIELDS, rows)
+        assert [b["date"] for b in parsed] == ["2024-01-02"]
+        assert parsed.dropped == 1
+
+    def test_partial_blank_required_field_drops_only_invalid_row(self):
+        rows = [
+            ["2024-01-02", "10.0", "11.0", "9.0", "10.5", "100", "1050"],
+            ["2024-01-03", "10.0", "11.0", "9.0", "10.5", "", "1050"],
+        ]
+        parsed = _parse_rows(FIELDS, rows)
+        assert [b["date"] for b in parsed] == ["2024-01-02"]
+        assert parsed.dropped == 1
 
     def test_field_order_respected(self):
         # 若字段顺序不同，按列名对齐
-        fields = "date,close,open,high,low,volume"
-        rows = [["2024-01-02", "10.8", "10.5", "11", "10", "12345"]]
+        fields = "date,close,open,high,low,volume,amount"
+        rows = [["2024-01-02", "10.8", "10.5", "11", "10", "12345", "133000"]]
         bar = _parse_rows(fields, rows)[0]
         assert bar["close"] == 10.8
         assert bar["open"] == 10.5
+
+    def test_missing_amount_does_not_change_legacy_price_acceptance(self):
+        fields = "date,open,high,low,close,volume"
+        rows = [["2024-01-02", "10", "11", "9", "10.5", "100"]]
+        assert len(_parse_rows(fields, rows)) == 1
+        assert "amount" not in _parse_rows(fields, rows)[0]
+        assert len(_parse_rows(FIELDS, [rows[0] + [""]])) == 1
 
 
 def test_fetch_attaches_requested_adjustment_metadata(monkeypatch):
@@ -78,7 +103,7 @@ def test_fetch_attaches_requested_adjustment_metadata(monkeypatch):
         fields = FIELDS.split(",")
 
         def __init__(self):
-            self._rows = [["2024-01-02", "10", "11", "9", "10.5", "100"]]
+            self._rows = [["2024-01-02", "10", "11", "9", "10.5", "100", "1050"]]
 
         def next(self):
             return bool(self._rows)
@@ -90,6 +115,7 @@ def test_fetch_attaches_requested_adjustment_metadata(monkeypatch):
 
     def query(*args, **kwargs):
         captured.update(kwargs)
+        captured["fields"] = args[1]
         return Result()
 
     fake = SimpleNamespace(
@@ -111,6 +137,8 @@ def test_fetch_attaches_requested_adjustment_metadata(monkeypatch):
     assert bar["source"] == "baostock"
     assert bar["adjustment_mode"] == "raw"
     assert bar["adjustment_version"] == "baostock-adjustflag-3"
+    assert bar["amount"] == 1050.0
+    assert captured["fields"] == FIELDS
     assert bar["retrieved_at"]
     assert bar["is_final"] is True
 

@@ -2,8 +2,10 @@
 """AES-256-GCM 加密本地数据源并打包为 .zip。
 
 密钥安全约定：
-- 密钥仅经 getpass 交互式读取，不回显；
-- 不作命令行参数、不入环境变量、不写磁盘、不进任何日志；
+- 交互模式：密钥仅经 getpass 读取，不回显；
+- 无人值守模式（launchd）：经 `STOCKDATA_BACKUP_PASSWORD_FD` 指定的文件描述符读取，
+  由调用方从密钥库（如 macOS Keychain）取出后传入；密钥不作命令行参数、不入环境变量值、
+  不写磁盘、不进任何日志；
 - 派生用 PBKDF2-HMAC-SHA256（200k 迭代）+ 随机 salt；GCM 提供完整性认证。
 
 用法：
@@ -40,6 +42,14 @@ def _derive_key(password: bytes, salt: bytes) -> bytes:
 
 
 def _read_password() -> bytes:
+    fd = os.environ.get("STOCKDATA_BACKUP_PASSWORD_FD")
+    if fd is not None:
+        # 无人值守模式：调用方从密钥库取密钥后经 fd 传入，不做二次确认
+        with os.fdopen(int(fd), "rb", closefd=False) as f:
+            pw = f.read().rstrip(b"\n")
+        if not pw:
+            sys.exit("fd 传入的密钥为空，已取消。")
+        return pw
     p1 = getpass.getpass("设置加密密钥: ")
     if not p1:
         sys.exit("密钥为空，已取消。")

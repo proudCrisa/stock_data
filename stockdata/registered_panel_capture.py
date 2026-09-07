@@ -12,7 +12,11 @@ from stockdata.collector_continuity import (
 )
 from stockdata.forward_panel_capture import capture_phase  # noqa: F401 - audit sentinel
 from stockdata.future_panel_registration import (
+    PROSPECTIVE_PANEL_MODE,
+    PROSPECTIVE_REGISTRATION_SCHEMA,
     REGISTRATION_SCHEMA,
+    TRUSTED_LOCAL_AUTHORITY_MODE,
+    TRUSTED_LOCAL_REGISTRATION_SCHEMA,
     reverify_registration_prerequisites,  # noqa: F401 - retained compatibility surface
 )
 
@@ -35,6 +39,8 @@ _EXPECTED_KEYS = {
     "prerequisites",
     "prerequisites_sha256",
 }
+_TRUSTED_LOCAL_EXPECTED_KEYS = _EXPECTED_KEYS | {"authority_mode"}
+_PROSPECTIVE_EXPECTED_KEYS = _EXPECTED_KEYS | {"panel_mode"}
 class RegisteredPanelCaptureError(ValueError):
     """Raised when a capture request does not exactly match its registration."""
 
@@ -76,9 +82,23 @@ def _read_registration(path: str | Path) -> Mapping[str, object]:
         raise RegisteredPanelCaptureError("registration_file schema is incomplete")
     if raw != _canonical(dict(value)):
         raise RegisteredPanelCaptureError("registration_file must use canonical JSON bytes")
-    if value.get("schema_version") != REGISTRATION_SCHEMA:
+    schema = value.get("schema_version")
+    fields_by_schema = {
+        REGISTRATION_SCHEMA: _EXPECTED_KEYS,
+        TRUSTED_LOCAL_REGISTRATION_SCHEMA: _TRUSTED_LOCAL_EXPECTED_KEYS,
+        PROSPECTIVE_REGISTRATION_SCHEMA: _PROSPECTIVE_EXPECTED_KEYS,
+    }
+    if not isinstance(schema, str) or schema not in fields_by_schema:
         raise RegisteredPanelCaptureError("registration has an unsupported schema")
-    if set(value) != _EXPECTED_KEYS:
+    expected_keys = fields_by_schema[schema]
+    invalid_mode = (
+        schema == TRUSTED_LOCAL_REGISTRATION_SCHEMA
+        and value.get("authority_mode") != TRUSTED_LOCAL_AUTHORITY_MODE
+    ) or (
+        schema == PROSPECTIVE_REGISTRATION_SCHEMA
+        and value.get("panel_mode") != PROSPECTIVE_PANEL_MODE
+    )
+    if set(value) != expected_keys or invalid_mode:
         raise RegisteredPanelCaptureError("registration_file schema is incomplete")
     return value
 

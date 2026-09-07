@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
+
 import stockdata.sync as sync_module
 from stockdata.cache import Cache
 from stockdata.fetch_baostock import CapturedBars
@@ -208,7 +209,8 @@ def test_sync_persists_a_source_response_receipt_even_when_empty(tmp_path):
     }
 
 
-def test_sync_no_data_range_is_idempotent(tmp_path):
+def test_sync_no_data_range_is_not_marked_as_covered(tmp_path):
+    # fail-closed：历史区间无有效 bar 时不扩展 coverage，停牌/空响应会每次重试。
     cache = Cache(tmp_path / "empty.sqlite")
     calls = []
 
@@ -223,8 +225,79 @@ def test_sync_no_data_range_is_idempotent(tmp_path):
         cache, ["600519.SH"], "2024-01-06", "2024-01-07", fetcher=fetch
     )
     assert first["symbols"][0]["status"] == "no_data"
-    assert second["symbols"][0]["status"] == "up_to_date"
-    assert calls == [("600519.SH", "2024-01-06", "2024-01-07")]
+    assert second["symbols"][0]["status"] == "no_data"
+    assert calls == [
+        ("600519.SH", "2024-01-06", "2024-01-07"),
+        ("600519.SH", "2024-01-06", "2024-01-07"),
+    ]
+
+
+def test_partial_dropped_rows_reject_batch_and_record_error(tmp_path):
+    # fail-closed：部分有效行 + 部分坏行时整段拒收，不推进 coverage。
+    cache = Cache(tmp_path / "dropped.sqlite")
+    receipt = {
+        "observed_at": "2024-01-02T16:00:00+08:00",
+        "source": "baostock",
+        "request": {"code": "sh.600519"},
+        "response": {"fields": "date", "rows": []},
+    }
+
+    def fetch(code, start, end):
+        return CapturedBars(
+            [_bar("2024-01-02", 1.0)], receipt, dropped=1
+        )
+
+    result = sync_symbols(
+        cache,
+        ["600519.SH"],
+        "2024-01-02",
+        "2024-01-03",
+        fetcher=fetch,
+    )
+
+    assert result["errors"] == 1
+    assert result["symbols"][0]["status"] == "error"
+    assert "dropped" in result["symbols"][0]["error"].lower()
+    assert cache.get_range("600519.SH", "2024-01-02", "2024-01-03") == []
+    assert cache.sync_coverage(
+        "600519.SH", "baostock", "qfq", "baostock-adjustflag-2"
+    ) is None
+
+
+def test_no_data_does_not_record_coverage(tmp_path):
+    cache = Cache(tmp_path / "no-coverage.sqlite")
+
+    result = sync_symbols(
+        cache,
+        ["600519.SH"],
+        "2024-01-06",
+        "2024-01-07",
+        fetcher=lambda code, start, end: [],
+    )
+
+    assert result["symbols"][0]["status"] == "no_data"
+    coverage = cache.sync_coverage(
+        "600519.SH", "baostock", "qfq", "baostock-adjustflag-2"
+    )
+    assert coverage is None
+
+
+def test_valid_bars_record_coverage(tmp_path):
+    cache = Cache(tmp_path / "with-coverage.sqlite")
+
+    result = sync_symbols(
+        cache,
+        ["600519.SH"],
+        "2024-01-02",
+        "2024-01-03",
+        fetcher=lambda code, start, end: [_bar("2024-01-02", 1.0), _bar("2024-01-03", 1.1)],
+    )
+
+    assert result["symbols"][0]["status"] == "synced"
+    coverage = cache.sync_coverage(
+        "600519.SH", "baostock", "qfq", "baostock-adjustflag-2"
+    )
+    assert coverage == ("2024-01-02", "2024-01-03")
 
 
 def test_sync_retries_latest_cutoff_when_source_is_temporarily_empty(
