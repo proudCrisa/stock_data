@@ -25,6 +25,7 @@ from stockdata.provider_authority_admission import (
     GENERIC_MARKET_RULEBOOK_PREREQUISITE_SCHEMA,
     PreregisteredGenericMarketRulebook,
     SOURCE_RECEIPT_SCHEMA,
+    admit_signed_component_authority,
 )
 from stockdata.provider_authority_publisher import (
     build_canonical_registry,
@@ -302,6 +303,51 @@ def generic_publisher_fixture(tmp_path, monkeypatch):
     }
 
 
+def _current_calendar_inputs(publisher_fixture):
+    observed_at = "2026-08-13T16:05:00+08:00"
+    artifact = deepcopy(publisher_fixture["artifact"])
+    receipt = deepcopy(publisher_fixture["receipt"])
+    receipt["observed_at"] = observed_at
+    receipt_id = hashlib.sha256(_canonical(receipt)).hexdigest()
+    for record in artifact["records"]:
+        record["available_at"] = observed_at
+        record["source_receipt_ids"] = [receipt_id]
+    _write_json(publisher_fixture["artifact_file"], artifact)
+    _write_json(publisher_fixture["receipt_file"], receipt)
+    return artifact, receipt, receipt_id
+
+
+def _publish_cli_args(
+    *,
+    component,
+    registry_file,
+    artifact_file,
+    receipt_file,
+    signer_private_key_env,
+    output_file,
+    available_at="2026-08-13T08:00:00+08:00",
+):
+    return [
+        "publish-envelope",
+        "--component",
+        component,
+        "--registry",
+        str(registry_file),
+        "--artifact",
+        str(artifact_file),
+        "--source-receipt",
+        str(receipt_file),
+        "--signer-private-key-env",
+        signer_private_key_env,
+        "--output",
+        str(output_file),
+        "--effective-at",
+        "2026-08-13T00:00:00+08:00",
+        "--available-at",
+        available_at,
+    ]
+
+
 def test_builds_canonical_registry_and_production_loads_it(publisher_fixture):
     registry_file = publisher_fixture["registry_file"]
     registry_sha256 = hashlib.sha256(registry_file.read_bytes()).hexdigest()
@@ -410,6 +456,227 @@ def test_cli_builds_registry_and_publishes_envelope(publisher_fixture, tmp_path)
         == 0
     )
     assert envelope_file.exists()
+
+
+def test_cli_current_decision_observation_cutoff_admits_current_calendar(
+    publisher_fixture, tmp_path
+):
+    artifact, receipt, receipt_id = _current_calendar_inputs(publisher_fixture)
+    output_file = tmp_path / "current-calendar-envelope.json"
+    cutoff = "2026-08-13T16:10:00+08:00"
+    args = _publish_cli_args(
+        component="trading_calendar",
+        registry_file=publisher_fixture["registry_file"],
+        artifact_file=publisher_fixture["artifact_file"],
+        receipt_file=publisher_fixture["receipt_file"],
+        signer_private_key_env="SIGNER_PRIVATE_KEY_B64",
+        output_file=output_file,
+        available_at="2026-08-13T16:05:00+08:00",
+    )
+
+    assert main([*args, "--current-decision-observation-cutoff", cutoff]) == 0
+    envelope = json.loads(output_file.read_bytes())
+    admitted = admit_signed_component_authority(
+        component="trading_calendar",
+        artifact_value=artifact,
+        authority_envelope=envelope,
+        expected_panel=artifact["panel"],
+        bound_source_receipts={receipt_id: receipt},
+        registry=publisher_fixture["registry"],
+        current_decision_observation_cutoff=cutoff,
+    )
+    assert "current_decision_observation_cutoff" not in envelope["payload"]
+    assert set(admitted.decision_cutoff_by_panel.values()) == {cutoff}
+    assert {
+        phases["decision_cutoff_at"]
+        for phases in admitted.signed_calendar_phases_by_panel.values()
+    } == {"2026-08-13T09:25:00+08:00"}
+    assert admitted.readiness_evidence()["ready"] is True
+
+
+@pytest.mark.parametrize(
+    ("cutoff", "error"),
+    [
+        pytest.param(None, "post-cutoff", id="missing"),
+        pytest.param(
+            "not-a-timestamp", "canonical timezone-aware timestamp", id="invalid"
+        ),
+        pytest.param(
+            "2026-08-13T16:10:00",
+            "canonical timezone-aware timestamp",
+            id="timezone-less",
+        ),
+    ],
+)
+def test_cli_current_decision_observation_cutoff_rejects_missing_or_invalid(
+    publisher_fixture, tmp_path, capsys, cutoff, error
+):
+    _current_calendar_inputs(publisher_fixture)
+    output_file = tmp_path / "rejected-current-calendar-envelope.json"
+    args = _publish_cli_args(
+        component="trading_calendar",
+        registry_file=publisher_fixture["registry_file"],
+        artifact_file=publisher_fixture["artifact_file"],
+        receipt_file=publisher_fixture["receipt_file"],
+        signer_private_key_env="SIGNER_PRIVATE_KEY_B64",
+        output_file=output_file,
+        available_at="2026-08-13T16:05:00+08:00",
+    )
+    if cutoff is not None:
+        args.extend(["--current-decision-observation-cutoff", cutoff])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(args)
+
+    assert exc_info.value.code == 2
+    assert error in capsys.readouterr().err
+    assert not output_file.exists()
+
+
+def test_cli_current_decision_observation_cutoff_rejects_observation_at_cutoff(
+    publisher_fixture, tmp_path, capsys
+):
+    _current_calendar_inputs(publisher_fixture)
+    output_file = tmp_path / "at-current-cutoff-envelope.json"
+    args = _publish_cli_args(
+        component="trading_calendar",
+        registry_file=publisher_fixture["registry_file"],
+        artifact_file=publisher_fixture["artifact_file"],
+        receipt_file=publisher_fixture["receipt_file"],
+        signer_private_key_env="SIGNER_PRIVATE_KEY_B64",
+        output_file=output_file,
+        available_at="2026-08-13T16:05:00+08:00",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                *args,
+                "--current-decision-observation-cutoff",
+                "2026-08-13T16:05:00+08:00",
+            ]
+        )
+
+    assert exc_info.value.code == 2
+    assert "post-cutoff" in capsys.readouterr().err
+    assert not output_file.exists()
+
+
+def test_cli_current_decision_observation_cutoff_is_calendar_only(
+    generic_publisher_fixture, tmp_path, capsys
+):
+    output_file = tmp_path / "rejected-market-rules-envelope.json"
+    args = _publish_cli_args(
+        component="market_rules",
+        registry_file=generic_publisher_fixture["registry_file"],
+        artifact_file=generic_publisher_fixture["artifact_file"],
+        receipt_file=generic_publisher_fixture["receipt_file"],
+        signer_private_key_env="GENERIC_SIGNER_PRIVATE_KEY_B64",
+        output_file=output_file,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                *args,
+                "--current-decision-observation-cutoff",
+                "2026-08-13T16:10:00+08:00",
+            ]
+        )
+
+    assert exc_info.value.code == 2
+    assert "calendar-only" in capsys.readouterr().err
+    assert not output_file.exists()
+
+
+def test_cli_without_current_decision_observation_cutoff_preserves_market_rules(
+    generic_publisher_fixture, tmp_path
+):
+    output_file = tmp_path / "market-rules-envelope.json"
+    args = _publish_cli_args(
+        component="market_rules",
+        registry_file=generic_publisher_fixture["registry_file"],
+        artifact_file=generic_publisher_fixture["artifact_file"],
+        receipt_file=generic_publisher_fixture["receipt_file"],
+        signer_private_key_env="GENERIC_SIGNER_PRIVATE_KEY_B64",
+        output_file=output_file,
+    )
+    for entry in generic_publisher_fixture["panel"]:
+        args.extend(
+            ["--decision-cutoff", f"{entry}=2026-08-13T09:25:00+08:00"]
+        )
+
+    assert main(args) == 0
+    assert output_file.exists()
+
+
+def test_cli_current_decision_observation_cutoff_rejects_wrong_registry_pin(
+    publisher_fixture, tmp_path, capsys
+):
+    _current_calendar_inputs(publisher_fixture)
+    output_file = tmp_path / "wrong-registry-pin-envelope.json"
+    args = _publish_cli_args(
+        component="trading_calendar",
+        registry_file=publisher_fixture["registry_file"],
+        artifact_file=publisher_fixture["artifact_file"],
+        receipt_file=publisher_fixture["receipt_file"],
+        signer_private_key_env="SIGNER_PRIVATE_KEY_B64",
+        output_file=output_file,
+        available_at="2026-08-13T16:05:00+08:00",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                *args,
+                "--registry-sha256",
+                "0" * 64,
+                "--current-decision-observation-cutoff",
+                "2026-08-13T16:10:00+08:00",
+            ]
+        )
+
+    assert exc_info.value.code == 2
+    assert (
+        "trust registry SHA-256 does not match the expected pin"
+        in capsys.readouterr().err
+    )
+    assert not output_file.exists()
+
+
+def test_cli_current_decision_observation_cutoff_rejects_source_receipt_drift(
+    publisher_fixture, tmp_path, capsys
+):
+    artifact, receipt, _ = _current_calendar_inputs(publisher_fixture)
+    receipt["bindings"][0]["record_sha256"] = "0" * 64
+    receipt_id = hashlib.sha256(_canonical(receipt)).hexdigest()
+    for record in artifact["records"]:
+        record["source_receipt_ids"] = [receipt_id]
+    _write_json(publisher_fixture["artifact_file"], artifact)
+    _write_json(publisher_fixture["receipt_file"], receipt)
+    output_file = tmp_path / "source-receipt-drift-envelope.json"
+    args = _publish_cli_args(
+        component="trading_calendar",
+        registry_file=publisher_fixture["registry_file"],
+        artifact_file=publisher_fixture["artifact_file"],
+        receipt_file=publisher_fixture["receipt_file"],
+        signer_private_key_env="SIGNER_PRIVATE_KEY_B64",
+        output_file=output_file,
+        available_at="2026-08-13T16:05:00+08:00",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                *args,
+                "--current-decision-observation-cutoff",
+                "2026-08-13T16:10:00+08:00",
+            ]
+        )
+
+    assert exc_info.value.code == 2
+    assert "receipt does not bind record" in capsys.readouterr().err
+    assert not output_file.exists()
 
 
 def test_rejects_non_canonical_json(publisher_fixture, tmp_path):

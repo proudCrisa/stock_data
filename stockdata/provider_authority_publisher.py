@@ -355,6 +355,7 @@ def _handle_publish_envelope(args: argparse.Namespace) -> None:
         available_at=args.available_at,
         publisher_key_id=args.publisher_key_id,
         decision_cutoff_by_panel=_parse_cutoffs(args.decision_cutoff),
+        current_decision_observation_cutoff=args.current_decision_observation_cutoff,
     )
 
 
@@ -384,6 +385,7 @@ def _parser() -> argparse.ArgumentParser:
     publish.add_argument("--available-at", required=True)
     publish.add_argument("--publisher-key-id")
     publish.add_argument("--decision-cutoff", action="append", default=[])
+    publish.add_argument("--current-decision-observation-cutoff")
     publish.set_defaults(func=_handle_publish_envelope)
     return parser
 
