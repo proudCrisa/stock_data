@@ -245,3 +245,42 @@ class TestNonBaostockReadOnly:
                                today="2024-01-04")
         assert [r["date"] for r in rows] == ["2024-01-02", "2024-01-03", "2024-01-04"]
         assert all(r["source"] == "wind" for r in rows)
+
+
+_RECEIPT = {
+    "observed_at": "2024-01-10T00:00:00+00:00",
+    "source": "baostock",
+    "request": {"code": "sh.600519"},
+    "response": {"fields": "date,open", "rows": []},
+}
+
+
+class TestDroppedRows:
+    def test_partial_batch_with_dropped_rows_refuses_to_cache(self, cache):
+        # 与 sync_symbols 一致：部分行被丢时剩余行不得入库，
+        # 否则 gap 检测只看 min/max，被丢的中间交易日会被当作已覆盖。
+        from stockdata.fetch_baostock import CapturedBars
+
+        captured = CapturedBars(BARS_H1[:1], _RECEIPT, dropped=2)
+        calls = []
+
+        def primary(code, start, end):
+            calls.append((code, start, end))
+            return captured
+
+        svc = HistoryService(cache, primary_fetch=primary)
+        with pytest.raises(ValueError, match="refusing partial batch"):
+            svc.get_history("600519.SH", "2024-01-02", "2024-01-04",
+                            today="2024-01-10")
+        assert calls == [( "600519.SH", "2024-01-02", "2024-01-04")]
+        # 不允许任何部分行落库
+        assert cache.get_range("600519.SH", "2024-01-01", "2024-12-31") == []
+
+    def test_zero_dropped_fetches_normally(self, cache):
+        from stockdata.fetch_baostock import CapturedBars
+
+        captured = CapturedBars(BARS_H1, _RECEIPT, dropped=0)
+        svc = HistoryService(cache, primary_fetch=lambda code, start, end: captured)
+        rows = svc.get_history("600519.SH", "2024-01-02", "2024-01-04",
+                               today="2024-01-10")
+        assert len(rows) == 3

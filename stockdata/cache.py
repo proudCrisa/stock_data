@@ -323,8 +323,14 @@ class Cache:
         """Bar 级完整性校验：拒绝任何脏数据进入 daily 表。"""
         bar_date = bar.get("date")
         try:
-            date.fromisoformat(bar_date)
+            parsed_date = date.fromisoformat(bar_date)
         except (TypeError, ValueError):
+            raise InvalidBarError(
+                code, str(bar_date), "date must be a valid YYYY-MM-DD string"
+            )
+        # Python 3.11 的 fromisoformat 接受 20240101 等非规范形式；放行会破坏
+        # 依赖词汇序的日期过滤/排序/coverage 计算，必须要求规范 YYYY-MM-DD。
+        if parsed_date.isoformat() != bar_date:
             raise InvalidBarError(
                 code, str(bar_date), "date must be a valid YYYY-MM-DD string"
             )

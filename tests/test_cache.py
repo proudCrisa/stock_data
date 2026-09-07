@@ -365,6 +365,12 @@ class TestBarValidation:
         with pytest.raises(InvalidBarError, match="date"):
             cache.upsert("600519.SH", [self._bar(date="2024-13-40")])
 
+    def test_rejects_noncanonical_date_accepted_by_fromisoformat(self, cache):
+        # Python 3.11 的 date.fromisoformat 接受 20240101 等非规范形式；
+        # 放行会破坏词汇序的过滤/排序/coverage 计算。
+        with pytest.raises(InvalidBarError, match="date"):
+            cache.upsert("600519.SH", [self._bar(date="20240102")])
+
     @pytest.mark.parametrize("field", ["open", "high", "low", "close"])
     def test_rejects_non_positive_or_non_finite_price(self, cache, field):
         with pytest.raises(InvalidBarError, match=field):

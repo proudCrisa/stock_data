@@ -1071,6 +1071,10 @@ COLLECTOR_SQLITE_BUSY_TIMEOUT_MS: Final = COLLECTOR_BUSY_TIMEOUT_MS
 COLLECTOR_LEDGER_MAX_BYTES: Final = 128 * 1024 * 1024
 COLLECTOR_LEDGER_MAX_LINE_BYTES: Final = 64 * 1024
 COLLECTOR_LEDGER_MAX_LINES: Final = 100_000
+# 前瞻排程信封在导入时冻结为生产上限：parser 边界测试会临时下调
+# COLLECTOR_LEDGER_MAX_LINES，但注册排程上限（GENESIS + REGISTRATION +
+# 每会话 8 行）不得随之缩放，否则恰好等于行数上限的合法 ledger 会被误拒。
+COLLECTOR_LEDGER_SCHEDULE_MAX_LINES: Final = COLLECTOR_LEDGER_MAX_LINES
 LEDGER_EVENT_TYPES: Final = (
     "GENESIS",
     "REGISTRATION_BOUND",
@@ -3056,7 +3060,7 @@ def _validate_registration_sessions(
         type(value) is not list
         or not value
         or (exact_count is not None and len(value) != exact_count)
-        or 2 + len(value) * 8 > COLLECTOR_LEDGER_MAX_LINES
+        or 2 + len(value) * 8 > COLLECTOR_LEDGER_SCHEDULE_MAX_LINES
     ):
         raise CollectorContinuityError("collector registration sessions are invalid")
     sessions: list[str] = []
@@ -3115,6 +3119,9 @@ def _attempt_allowed_tables(detail: Mapping[str, object]) -> frozenset[str]:
         expected is None
         or phase != expected[0]
         or ordinal < 0
+        # 与 _child_environment_matches_active_attempt 一致的全局上界：
+        # 超出排程信封的 ordinal 不属于任何合法注册，独立事件校验必须拒绝。
+        or 2 + (ordinal // 4 + 1) * 8 > COLLECTOR_LEDGER_MAX_LINES
         or ordinal % 4 != expected[1]
     ):
         raise CollectorContinuityError("collector attempt step identity is invalid")

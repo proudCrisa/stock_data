@@ -89,8 +89,10 @@ def build_liquidity_amounts_product(
                 or request.get("frequency") != "d" or request.get("adjustflag") != "3"):
             raise LiquidityAmountProductError("liquidity identity requires raw baostock")
         observed = _timestamp(capture["observed_at"])
-        if observed > cutoff:
-            raise LiquidityAmountProductError("receipt observed after decision cutoff")
+        # 与 require_predecision_authority 一致：available/observed 必须严格
+        # 早于 decision cutoff，否则构造出的产品永远无法被其声明的 cutoff 准入。
+        if observed >= cutoff:
+            raise LiquidityAmountProductError("receipt observed at or after decision cutoff")
         exchange, separator, digits = request["code"].partition(".")
         if separator != "." or exchange not in {"sh", "sz"}:
             raise LiquidityAmountProductError("receipt security code is invalid")

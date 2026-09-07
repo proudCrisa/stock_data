@@ -8,6 +8,7 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
+from typing import cast
 
 from .authority import EnrolledTrustRegistry, verify_authority_envelope
 from .market_rules import (

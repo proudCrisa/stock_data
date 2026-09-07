@@ -88,6 +88,11 @@ class HistoryService:
             )
         for gstart, gend in gaps:
             fetched = self._fetch_gap(code, gstart, gend)
+            if getattr(fetched, "dropped", 0) > 0:
+                raise ValueError(
+                    f"fetcher dropped {fetched.dropped} row(s) for {code} "
+                    f"{gstart}..{gend}; refusing partial batch"
+                )
             capture_receipt = getattr(fetched, "capture_receipt", None)
             bars = fetched
             if bars:

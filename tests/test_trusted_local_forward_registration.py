@@ -160,6 +160,57 @@ def test_trusted_local_registration_binds_static_hashes_and_exact_coverage(
     assert set(prerequisites["market_rule_prerequisite"]["policy_ids_by_panel"]) == panel
 
 
+def test_verify_trusted_local_forward_prerequisites_accepts_exact_closure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 覆盖 verify_trusted_local_forward_prerequisites 的 market_rules 分支：
+    # 该路径此前 cast 未导入，只要走到 market_rules 循环必然 NameError。
+    from stockdata.provider_authority_admission import (
+        verify_trusted_local_forward_prerequisites,
+    )
+
+    inputs = _local_inputs(tmp_path, monkeypatch)
+    bound_receipts = {
+        hashlib.sha256(Path(path).read_bytes()).hexdigest(): json.loads(
+            Path(path).read_bytes()
+        )
+        for path in inputs["source_receipt_files"]
+    }
+    result = verify_trusted_local_forward_prerequisites(
+        calendar_value=json.loads(Path(inputs["calendar_file"]).read_bytes()),
+        market_rules_value=json.loads(Path(inputs["market_rules_file"]).read_bytes()),
+        expected_panel=json.loads(Path(inputs["panel_file"]).read_bytes()),
+        bound_source_receipts=bound_receipts,
+    )
+
+    assert result["source_receipt_ids"] == sorted(bound_receipts)
+
+
+def test_verify_trusted_local_forward_prerequisites_reject_post_cutoff_rules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from stockdata.provider_authority_admission import (
+        verify_trusted_local_forward_prerequisites,
+    )
+
+    inputs = _local_inputs(tmp_path, monkeypatch)
+    bound_receipts = {
+        hashlib.sha256(Path(path).read_bytes()).hexdigest(): json.loads(
+            Path(path).read_bytes()
+        )
+        for path in inputs["source_receipt_files"]
+    }
+    market_rules = json.loads(Path(inputs["market_rules_file"]).read_bytes())
+    market_rules["records"][0]["available_at"] = "2026-08-17T10:00:00+08:00"
+    with pytest.raises(ValueError, match="post-cutoff"):
+        verify_trusted_local_forward_prerequisites(
+            calendar_value=json.loads(Path(inputs["calendar_file"]).read_bytes()),
+            market_rules_value=market_rules,
+            expected_panel=json.loads(Path(inputs["panel_file"]).read_bytes()),
+            bound_source_receipts=bound_receipts,
+        )
+
+
 def test_trusted_local_registration_rejects_unused_well_formed_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

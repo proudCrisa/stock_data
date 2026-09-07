@@ -535,8 +535,8 @@ def _rehash(event: dict[str, object]) -> dict[str, object]:
     return event
 
 
-@pytest.mark.parametrize("ordinal", (12, 15, 5))
-def test_ledger_event_rejects_out_of_range_and_global_step_ordinal(
+@pytest.mark.parametrize("ordinal", (15, 5))
+def test_ledger_event_rejects_out_of_range_step_ordinal(
     tmp_path: Path, ordinal: int
 ) -> None:
     genesis = _genesis_event(tmp_path)
@@ -544,6 +544,37 @@ def test_ledger_event_rejects_out_of_range_and_global_step_ordinal(
     details["step_ordinal"] = ordinal
     with pytest.raises(CollectorContinuityError):
         _build((genesis,), "ATTEMPT_STARTED", details)
+
+
+def test_ledger_event_rejects_step_ordinal_beyond_global_schedule_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 与 _child_environment_matches_active_attempt 一致的动态全局上界：
+    # 超出行数预算可容纳的排程信封的 ordinal 不属于任何合法注册。
+    monkeypatch.setattr(continuity, "COLLECTOR_LEDGER_MAX_LINES", 10)
+    genesis = _genesis_event(tmp_path)
+    details = _detail("ATTEMPT_STARTED")
+    details["step_ordinal"] = 4   # 2 + (4//4+1)*8 = 18 > 10
+    with pytest.raises(CollectorContinuityError):
+        _build((genesis,), "ATTEMPT_STARTED", details)
+    # 信封内的 ordinal 仍然合法
+    details = _detail("ATTEMPT_STARTED")
+    details["step_ordinal"] = 0   # 2 + 8 = 10 <= 10
+    _build((genesis,), "ATTEMPT_STARTED", details)
+
+
+def test_ledger_chain_rejects_step_ordinal_beyond_registered_sessions(
+    tmp_path: Path,
+) -> None:
+    # 事件级校验接受 12（默认行数预算内容得下），但链上注册只有 3 个
+    # 会话（ordinal 0..11），链校验必须拒绝。
+    genesis = _genesis_event(tmp_path)
+    registration = _build((genesis,), "REGISTRATION_BOUND")
+    details = _detail("ATTEMPT_STARTED")
+    details["step_ordinal"] = 12
+    start = _build((genesis, registration), "ATTEMPT_STARTED", details)
+    with pytest.raises(CollectorContinuityError):
+        parse_collector_ledger(_raw([genesis, registration, start]))
 
 
 def test_ledger_state_machine_rejects_genesis_to_start_without_registration(
@@ -611,6 +642,34 @@ def test_ledger_limits_are_frozen() -> None:
     assert COLLECTOR_LEDGER_MAX_BYTES == 128 * 1024 * 1024
     assert COLLECTOR_LEDGER_MAX_LINES == 100_000
     assert COLLECTOR_LEDGER_MAX_LINE_BYTES == 64 * 1024
+    assert continuity.COLLECTOR_LEDGER_SCHEDULE_MAX_LINES == 100_000
+
+
+def test_registration_schedule_envelope_ignores_parser_line_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 排程信封按导入时冻结的生产上限校验：parser 边界测试下调
+    # COLLECTOR_LEDGER_MAX_LINES 不得影响注册的排程合法性。
+    monkeypatch.setattr(continuity, "COLLECTOR_LEDGER_MAX_LINES", 2)
+    genesis = _genesis_event(tmp_path)
+    _build((genesis,), "REGISTRATION_BOUND")
+
+
+def test_registration_sessions_beyond_schedule_envelope_rejected(
+    tmp_path: Path,
+) -> None:
+    from datetime import date, timedelta
+
+    sessions = [
+        (date(2000, 1, 1) + timedelta(days=index)).isoformat()
+        for index in range(12_500)
+    ]
+    genesis = _genesis_event(tmp_path)
+    details = _detail("REGISTRATION_BOUND")
+    details["sessions"] = sessions
+    details["sessions_sha256"] = canonical_json_sha256(sessions)
+    with pytest.raises(CollectorContinuityError):
+        _build((genesis,), "REGISTRATION_BOUND", details)
 
 
 @pytest.mark.parametrize("limit_name", ["COLLECTOR_LEDGER_MAX_BYTES", "COLLECTOR_LEDGER_MAX_LINES"])

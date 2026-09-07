@@ -202,6 +202,13 @@ def test_rejects_receipt_after_cutoff_and_before_final_close():
     captures[0]["observed_at"] = "2026-08-31T09:26:00+08:00"
     with pytest.raises(LiquidityAmountProductError, match="decision cutoff"):
         _build(captures)
+    # 边界：observed == cutoff 同样拒绝（require_predecision_authority 用
+    # available >= cutoff 拒收，构造期必须与准入期同口径，否则产品构造
+    # 成功却永远无法被其声明的 cutoff 准入）。
+    captures = _captures()
+    captures[0]["observed_at"] = DECISION_CUTOFF
+    with pytest.raises(LiquidityAmountProductError, match="decision cutoff"):
+        _build(captures)
     captures[0]["observed_at"] = "2026-08-28T14:59:00+08:00"
     with pytest.raises(LiquidityAmountProductError, match="not final"):
         _build(captures)
