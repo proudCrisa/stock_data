@@ -4,6 +4,10 @@ import base64
 from copy import deepcopy
 import json
 import math
+import os
+from pathlib import Path
+import subprocess
+import sys
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import pytest
@@ -43,6 +47,10 @@ def _canonical(value: object) -> bytes:
     return json.dumps(
         value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False
     ).encode("ascii")
+
+
+def _write_json(path: Path, value: object) -> None:
+    path.write_bytes(_canonical(value))
 
 
 def _verify(fixture, payload=None, **overrides):
@@ -296,3 +304,106 @@ def test_verifier_rejects_validly_signed_future_envelope(tmp_path, monkeypatch):
     ).decode("ascii")
     with pytest.raises(ValueError, match="post-cutoff"):
         _verify(fixture, payload)
+
+
+def _formal_fund_flow_cli(tmp_path: Path, fixture: dict[str, object]) -> list[str]:
+    payload = fixture["payload"]
+    assert isinstance(payload, dict)
+    captures = [
+        payload["fund_flow"]["source_evidence"][symbol]
+        for symbol in fixture["expected_symbols"]
+    ]
+    registry = tmp_path / "registry.json"
+    calendar = tmp_path / "calendar.json"
+    capture_file = tmp_path / "captures.json"
+    output = tmp_path / "formal-fund-flow.json"
+    _write_json(registry, payload["registry"])
+    _write_json(calendar, payload["calendar"])
+    _write_json(capture_file, captures)
+
+    command = [
+        sys.executable,
+        "-m",
+        "stockdata.formal_fund_flow",
+        "--captures",
+        str(capture_file),
+        "--calendar",
+        str(calendar),
+        "--registry",
+        str(registry),
+        "--expected-registry-sha256",
+        fixture["expected_registry_sha256"],
+        "--provider-manifest-sha256",
+        fixture["provider_manifest_sha256"],
+        "--asof",
+        fixture["asof"],
+        "--decision-cutoff",
+        fixture["decision_cutoff"],
+        "--signer-private-key-env",
+        "STOCKDATA_TEST_FUND_FLOW_KEY",
+        "--effective-at",
+        f"{fixture['asof']}T15:00:00+08:00",
+        "--available-at",
+        f"{fixture['asof']}T15:00:00+08:00",
+        "--output",
+        str(output),
+    ]
+    for symbol in fixture["expected_symbols"]:
+        command.extend(["--symbol", symbol])
+    return command
+
+
+def test_module_cli_publishes_and_verifies_offline_fixture(tmp_path, monkeypatch):
+    fixture = make_signed_fund_flow_fixture(
+        tmp_path / "fixture", monkeypatch, symbols=SYMBOLS, session_count=39
+    )
+    signer_key = os.environ["STOCKDATA_TEST_FUND_FLOW_KEY"]
+    monkeypatch.undo()
+
+    command = _formal_fund_flow_cli(tmp_path, fixture)
+    env = os.environ.copy()
+    env["STOCKDATA_TEST_FUND_FLOW_KEY"] = signer_key
+    completed = subprocess.run(
+        command,
+        check=True,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    summary = json.loads(completed.stdout)
+    output = Path(summary["output"])
+    assert summary["sessions"] == 39
+    verified = _verify(fixture, json.loads(output.read_text()))
+    assert verified.symbols == SYMBOLS
+    assert verified.bindings.registry_sha256 == fixture["expected_registry_sha256"]
+
+
+def test_module_cli_fails_closed_on_drifted_capture(tmp_path, monkeypatch):
+    fixture = make_signed_fund_flow_fixture(
+        tmp_path / "fixture", monkeypatch, symbols=SYMBOLS, session_count=39
+    )
+    signer_key = os.environ["STOCKDATA_TEST_FUND_FLOW_KEY"]
+    monkeypatch.undo()
+
+    command = _formal_fund_flow_cli(tmp_path, fixture)
+    payload = fixture["payload"]
+    assert isinstance(payload, dict)
+    captures = [
+        deepcopy(payload["fund_flow"]["source_evidence"][symbol])
+        for symbol in fixture["expected_symbols"]
+    ]
+    captures[0]["source"] = "other"
+    _write_json(tmp_path / "captures.json", captures)
+    env = os.environ.copy()
+    env["STOCKDATA_TEST_FUND_FLOW_KEY"] = signer_key
+    completed = subprocess.run(
+        command,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert "fund-flow capture source identity differs" in completed.stderr
+    assert not (tmp_path / "formal-fund-flow.json").exists()

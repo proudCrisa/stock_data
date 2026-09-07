@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
@@ -9,13 +10,21 @@ from datetime import date, datetime, timezone
 import hashlib
 import json
 import math
+from pathlib import Path
+import sys
+import tempfile
 from types import MappingProxyType
 
-from .authority import load_enrolled_trust_registry_bytes
+from .authority import EnrolledTrustRegistry, load_enrolled_trust_registry_bytes
 from .provider_authority_admission import (
     SOURCE_RECEIPT_SCHEMA,
     AdmittedProviderAuthority,
     admit_signed_component_authority,
+)
+from .provider_authority_publisher import (
+    _read_canonical_json,
+    _write_canonical_json,
+    publish_authority_envelope,
 )
 from .ticker import normalize
 
@@ -254,6 +263,39 @@ def _calendar_window(
     return sessions
 
 
+def _admit_calendar_closure(
+    calendar_inputs: object,
+    *,
+    registry_value: object,
+    expected_registry_sha256: str,
+    admission_cutoff: str,
+) -> tuple[EnrolledTrustRegistry, AdmittedProviderAuthority]:
+    if not isinstance(registry_value, Mapping):
+        raise ValueError("registry must be a JSON object")
+    if not isinstance(calendar_inputs, Mapping) or set(calendar_inputs) != {
+        "artifact",
+        "source_receipts",
+        "authority_envelope",
+    }:
+        raise ValueError("formal fund-flow calendar closure is incomplete")
+    artifact = calendar_inputs["artifact"]
+    if not isinstance(artifact, Mapping) or not isinstance(artifact.get("panel"), list):
+        raise ValueError("formal fund-flow calendar artifact is invalid")
+    registry = load_enrolled_trust_registry_bytes(
+        _canonical(registry_value),
+        expected_sha256=_sha256(expected_registry_sha256, "expected_registry_sha256"),
+    )
+    return registry, admit_signed_component_authority(
+        component="trading_calendar",
+        artifact_value=artifact,
+        authority_envelope=calendar_inputs["authority_envelope"],
+        expected_panel=artifact["panel"],
+        bound_source_receipts=calendar_inputs["source_receipts"],
+        registry=registry,
+        current_decision_observation_cutoff=admission_cutoff,
+    )
+
+
 def build_fund_flow_authority_inputs(
     captures: Sequence[Mapping[str, object]],
     *,
@@ -451,30 +493,11 @@ def verify_formal_fund_flow(
         raise ValueError(
             "formal fund-flow supplement differs external decision identity"
         )
-    registry = load_enrolled_trust_registry_bytes(
-        _canonical(payload["registry"]),
-        expected_sha256=_sha256(expected_registry_sha256, "expected_registry_sha256"),
-    )
-    calendar_inputs = payload["calendar"]
-    if not isinstance(calendar_inputs, Mapping) or set(calendar_inputs) != {
-        "artifact",
-        "source_receipts",
-        "authority_envelope",
-    }:
-        raise ValueError("formal fund-flow calendar closure is incomplete")
-    calendar_artifact = calendar_inputs["artifact"]
-    if not isinstance(calendar_artifact, Mapping) or not isinstance(
-        calendar_artifact.get("panel"), list
-    ):
-        raise ValueError("formal fund-flow calendar artifact is invalid")
-    calendar = admit_signed_component_authority(
-        component="trading_calendar",
-        artifact_value=calendar_artifact,
-        authority_envelope=calendar_inputs["authority_envelope"],
-        expected_panel=calendar_artifact["panel"],
-        bound_source_receipts=calendar_inputs["source_receipts"],
-        registry=registry,
-        current_decision_observation_cutoff=admission_cutoff,
+    registry, calendar = _admit_calendar_closure(
+        payload["calendar"],
+        registry_value=payload["registry"],
+        expected_registry_sha256=expected_registry_sha256,
+        admission_cutoff=admission_cutoff,
     )
     sessions = _calendar_window(
         calendar,
@@ -556,6 +579,115 @@ def verify_formal_fund_flow(
     )
 
 
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m stockdata.formal_fund_flow",
+        description="Build and verify a signed offline fund-flow supplement.",
+    )
+    for name in (
+        "captures",
+        "calendar",
+        "registry",
+        "expected-registry-sha256",
+        "provider-manifest-sha256",
+        "asof",
+        "decision-cutoff",
+        "signer-private-key-env",
+        "effective-at",
+        "available-at",
+        "output",
+    ):
+        parser.add_argument(f"--{name}", required=True)
+    parser.add_argument("--symbol", action="append", required=True)
+    args = parser.parse_args(argv)
+    try:
+        symbols = _symbols(args.symbol)
+        manifest = _sha256(args.provider_manifest_sha256, "provider_manifest_sha256")
+        _, admission_cutoff = _decision_cutoff(args.decision_cutoff)
+        captures = _read_canonical_json(args.captures, "fund-flow captures")
+        registry_value = _read_canonical_json(args.registry, "registry")
+        calendar_inputs = _read_canonical_json(args.calendar, "signed calendar")
+        if not isinstance(captures, list) or not all(
+            isinstance(capture, Mapping) for capture in captures
+        ):
+            raise ValueError("fund-flow captures must be a JSON array of objects")
+        _, calendar = _admit_calendar_closure(
+            calendar_inputs,
+            registry_value=registry_value,
+            expected_registry_sha256=args.expected_registry_sha256,
+            admission_cutoff=admission_cutoff,
+        )
+        fund_inputs = build_fund_flow_authority_inputs(
+            captures,
+            expected_symbols=symbols,
+            calendar_authority=calendar,
+            provider_manifest_sha256=manifest,
+            asof=args.asof,
+            decision_cutoff=args.decision_cutoff,
+        )
+
+        with tempfile.TemporaryDirectory(
+            prefix="stockdata-formal-fund-flow-"
+        ) as raw_dir:
+            directory = Path(raw_dir)
+            artifact_file = directory / "fund-flow-artifact.json"
+            authority_file = directory / "fund-flow-authority.json"
+            _write_canonical_json(artifact_file, fund_inputs["artifact"])
+            receipt_files = []
+            for receipt_id, receipt in sorted(fund_inputs["source_receipts"].items()):
+                receipt_file = directory / f"{receipt_id}.json"
+                _write_canonical_json(receipt_file, receipt)
+                receipt_files.append(receipt_file)
+            published = publish_authority_envelope(
+                component="fund_flow",
+                registry_file=args.registry,
+                registry_sha256=args.expected_registry_sha256,
+                artifact_file=artifact_file,
+                source_receipt_files=receipt_files,
+                signer_private_key_env=args.signer_private_key_env,
+                output_file=authority_file,
+                effective_at=args.effective_at,
+                available_at=args.available_at,
+                decision_cutoff_by_panel={
+                    entry: admission_cutoff
+                    for entry in fund_inputs["artifact"]["panel"]
+                },
+            )
+
+        payload = {
+            "schema_version": FORMAL_FUND_FLOW_SCHEMA,
+            "provider_manifest_sha256": manifest,
+            "asof": args.asof,
+            "decision_cutoff": args.decision_cutoff,
+            "symbols": list(symbols),
+            "registry": registry_value,
+            "calendar": dict(calendar_inputs),
+            "fund_flow": {**fund_inputs, "authority_envelope": published.envelope},
+        }
+        verified = verify_formal_fund_flow(
+            payload,
+            expected_registry_sha256=args.expected_registry_sha256,
+            provider_manifest_sha256=manifest,
+            asof=args.asof,
+            decision_cutoff=args.decision_cutoff,
+            expected_symbols=symbols,
+        )
+        _write_canonical_json(args.output, payload)
+    except ValueError as exc:
+        parser.exit(2, f"{parser.prog}: error: {exc}\n")
+    json.dump(
+        {
+            "output": str(Path(args.output)),
+            "sessions": len(verified.sessions),
+            "fund_flow_signature_sha256": verified.bindings.fund_flow_signature_sha256,
+        },
+        sys.stdout,
+        sort_keys=True,
+    )
+    sys.stdout.write("\n")
+    return 0
+
+
 __all__ = [
     "FORMAL_FUND_FLOW_SCHEMA",
     "FUND_FLOW_ARTIFACT_SCHEMA",
@@ -567,3 +699,7 @@ __all__ = [
     "validate_fund_flow_record",
     "verify_formal_fund_flow",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
