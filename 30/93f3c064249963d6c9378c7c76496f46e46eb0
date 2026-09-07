@@ -1,0 +1,20 @@
+tests/test_formal_fund_flow.py
+  s_dcf78773457488::t_c2880c14b26bcc 487
+  s_dcf78773457488::t_198df208f42b83 401-404,511-513
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "3093f3c064249963d6c9378c7c76496f46e46eb0",
+  "prompts": {},
+  "sessions": {
+    "s_dcf78773457488": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a075b9-2944-7c12-8f61-2b0ba86cf3fb",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
