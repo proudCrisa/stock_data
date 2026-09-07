@@ -18,8 +18,15 @@ IDENTITY = {
     "adjustment_mode": "raw", "adjustment_version": "baostock-adjustflag-3",
 }
 # Exact issuer-confirmed ETF identities, not security-code prefix inference.
+LIQUIDITY_ETF_SYMBOLS_V1 = (
+    "561980.SH", "588730.SH", "560900.SH", "159350.SZ",
+    "518880.SH", "511010.SH", "513650.SH", "159980.SZ",
+)
 ETF_SOURCES = {
-    **{symbol: scope["classification_source"] for symbol, scope in ETF_RULE_SCOPES.items()},
+    **{
+        symbol: ETF_RULE_SCOPES[symbol]["classification_source"]
+        for symbol in LIQUIDITY_ETF_SYMBOLS_V1
+    },
     "159980.SZ": "https://www.dcfund.com.cn/home/working/download/autoupload/1742473215380.pdf",
     "561980.SH": "https://static.cmfchina.com/web/noticedetails/225146/index.html",
 }

@@ -8,6 +8,7 @@ import json
 import pytest
 
 from stockdata.liquidity_amount_product import (
+    ETF_SOURCES,
     LiquidityAmountProductError,
     build_liquidity_amounts_product,
     load_liquidity_amounts_product,
@@ -159,6 +160,20 @@ def test_rejects_non_etf_target(tmp_path):
             panel=panel,
             decision_cutoff=DECISION_CUTOFF,
             expected_watermark=_sessions()[-1],
+        )
+
+
+def test_new_rule_scope_does_not_implicitly_grant_liquidity_authority():
+    sessions = _sessions()
+    code = "159992.SZ"
+
+    assert code not in ETF_SOURCES
+    with pytest.raises(LiquidityAmountProductError, match="approved issuer source"):
+        build_liquidity_amounts_product(
+            [_receipt(code, sessions)],
+            panel=[(code, day) for day in sessions],
+            decision_cutoff=DECISION_CUTOFF,
+            expected_watermark=sessions[-1],
         )
 
 

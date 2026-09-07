@@ -2,6 +2,8 @@ from copy import deepcopy
 
 import pytest
 
+from stockdata.liquidity_amount_product import ETF_SOURCES
+from stockdata.local_main_buy_publisher import REVIEWED_MAIN_BUY_SYMBOLS_V1
 from stockdata.market_rules import ETF_MARKET_RULE_PAYLOAD_SCHEMA, ETF_RULE_SCOPES, validate_market_rule_payload
 from test_provider_market_rules import _rule
 
@@ -36,12 +38,16 @@ def test_unknown_etf_cannot_borrow_known_profile():
         validate_market_rule_payload(rule)
 
 
-def test_159992_price_qualification_does_not_grant_market_rule_scope():
+def test_159992_rule_scope_is_forward_only_and_does_not_expand_other_authority():
     from stockdata import local_daily_snapshot
     assert local_daily_snapshot.PROFILE == "trading-current-local-prices/2"
     assert "159992.SZ" in local_daily_snapshot.ETF_SYMBOLS
-    assert "159992.SZ" not in ETF_RULE_SCOPES
+    assert "159992.SZ" in ETF_RULE_SCOPES
+    assert "159992.SZ" not in REVIEWED_MAIN_BUY_SYMBOLS_V1
+    assert "159992.SZ" not in ETF_SOURCES
     rule = _rule(schema_version=ETF_MARKET_RULE_PAYLOAD_SCHEMA, security_type="ETF", board="ETF",
-                 instrument_id="159992.SZ", **ETF_RULE_SCOPES["159350.SZ"])
-    with pytest.raises(ValueError, match="primary sources"):
-        validate_market_rule_payload(rule, panel_entry="159992.SZ@2026-09-07")
+                 instrument_id="159992.SZ", **ETF_RULE_SCOPES["159992.SZ"])
+    rule["effective_until"] = "2026-09-08"
+    assert validate_market_rule_payload(
+        rule, panel_entry="159992.SZ@2026-09-08"
+    ) == rule

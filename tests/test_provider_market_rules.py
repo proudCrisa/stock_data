@@ -16,6 +16,8 @@ from stockdata.authority import (
     load_enrolled_trust_registry,
 )
 from stockdata.market_rules import (
+    ETF_MARKET_RULE_PAYLOAD_SCHEMA,
+    ETF_RULE_SCOPES,
     MARKET_RULE_PAYLOAD_SCHEMA,
     validate_market_rule_payload,
 )
@@ -29,6 +31,11 @@ from stockdata.provider_authority_admission import (
 from stockdata.rqgm_provider_contract import COMPONENT_SCHEMAS
 
 DAY = "2026-08-13"
+RULE_159992_DAY = "2026-09-08"
+RULE_159992_SOURCE = "retained-official-etf-rules/1"
+RULE_159992_SOURCE_SHA256 = (
+    "864f873f6c0b1c1cd34fe63421c0ffa2b68c067a7993dc55c00363880d3bafc3"
+)
 
 
 def _canonical(value: object) -> bytes:
@@ -91,6 +98,27 @@ def _rule(**overrides: object) -> dict[str, object]:
     return value
 
 
+def _rule_159992(**overrides: object) -> dict[str, object]:
+    value = _rule(**{
+        "schema_version": ETF_MARKET_RULE_PAYLOAD_SCHEMA,
+        "policy_id": "szse-etf-159992-20260907-v1",
+        "source": RULE_159992_SOURCE,
+        "source_sha256": RULE_159992_SOURCE_SHA256,
+        "security_type": "ETF",
+        "board": "ETF",
+        "instrument_id": "159992.SZ",
+        **ETF_RULE_SCOPES["159992.SZ"],
+        "effective_until": RULE_159992_DAY,
+        "commission_rate": 0.000085,
+        "minimum_commission": 5.0,
+        "transfer_fee_rate": 0.0,
+        "stamp_duty_sell_rate": 0.0,
+        "slippage_bps": 0.0,
+    })
+    value.update(overrides)
+    return value
+
+
 def _registry(tmp_path, root: Ed25519PrivateKey, signer: Ed25519PrivateKey):
     authorization = {
         "schema_version": SIGNER_ENROLLMENT_SCHEMA,
@@ -146,6 +174,11 @@ def _signed_fixture(
     receipt_observed_at: str = "2026-08-13T08:00:00+08:00",
     envelope_effective_at: str = "2026-08-13T00:00:00+08:00",
     envelope_available_at: str = "2026-08-13T08:00:00+08:00",
+    status_receipt_source: str = "official-instrument-status",
+    status_response_sha256: str | None = None,
+    status_receipt_observed_at: str = "2026-08-13T08:00:00+08:00",
+    status_envelope_effective_at: str = "2026-08-13T00:00:00+08:00",
+    status_envelope_available_at: str = "2026-08-13T08:00:00+08:00",
 ):
     if entries is None:
         if payload is None:
@@ -224,8 +257,11 @@ def _signed_fixture(
         "payload": envelope_payload,
         "signature_base64": _b64(signer.sign(_canonical(envelope_payload))),
     }
-    status_source = "official-instrument-status"
-    status_response_sha256 = hashlib.sha256(b"instrument status response").hexdigest()
+    status_source = status_receipt_source
+    if status_response_sha256 is None:
+        status_response_sha256 = hashlib.sha256(
+            b"instrument status response"
+        ).hexdigest()
     status_records = []
     status_bindings = []
     statuses = status_by_panel or {}
@@ -261,7 +297,7 @@ def _signed_fixture(
     status_receipt = {
         "schema_version": SOURCE_RECEIPT_SCHEMA,
         "source": status_source,
-        "observed_at": "2026-08-13T08:00:00+08:00",
+        "observed_at": status_receipt_observed_at,
         "response_sha256": status_response_sha256,
         "bindings": status_bindings,
     }
@@ -283,8 +319,8 @@ def _signed_fixture(
         "component_role": "instrument_status",
         "artifact": status_reference,
         "source_receipt_ids": [status_receipt_id],
-        "effective_at": "2026-08-13T00:00:00+08:00",
-        "available_at": "2026-08-13T08:00:00+08:00",
+        "effective_at": status_envelope_effective_at,
+        "available_at": status_envelope_available_at,
         "publisher_key_id": _key_id(signer),
         "trust_root_id": _key_id(root),
         "trust_registry_sha256": registry.registry_sha256,
@@ -333,6 +369,25 @@ def _admit(fixture):
             entry: f"{entry.split('@')[1]}T09:25:00+08:00" for entry in panel
         },
         instrument_status_authority=status_admitted,
+    )
+
+
+def _signed_159992_fixture(tmp_path, payload=None, *, status=None):
+    entry = f"159992.SZ@{RULE_159992_DAY}"
+    return _signed_fixture(
+        tmp_path,
+        entries=[(entry, _rule_159992() if payload is None else payload)],
+        status_by_panel={entry: status} if status is not None else None,
+        receipt_observed_at="2026-09-07T21:22:21+08:00",
+        envelope_effective_at="2026-09-07T21:22:21+08:00",
+        envelope_available_at="2026-09-07T21:22:21+08:00",
+        status_receipt_source="synthetic-fixture-status",
+        status_response_sha256=(
+            "30114becba50783d4ea028de67935a20739b9a0d016b0e96201694819b1c801c"
+        ),
+        status_receipt_observed_at="2026-09-07T21:22:21+08:00",
+        status_envelope_effective_at="2026-09-07T21:22:21+08:00",
+        status_envelope_available_at="2026-09-07T21:22:21+08:00",
     )
 
 
@@ -518,6 +573,55 @@ def test_admits_complete_rule_and_binds_full_canonical_artifact(tmp_path) -> Non
     assert (
         hashlib.sha256(_canonical(changed)).hexdigest() != admitted.artifact.identifier
     )
+
+
+def test_admits_signed_159992_rule_on_first_supported_forward_panel(tmp_path) -> None:
+    fixture = _signed_159992_fixture(tmp_path)
+    admitted = _admit(fixture)
+
+    assert admitted.component == "market_rules"
+    assert tuple(admitted.payload_by_panel) == (
+        f"159992.SZ@{RULE_159992_DAY}",
+    )
+    assert admitted.artifact.identifier == hashlib.sha256(
+        _canonical(fixture[2])
+    ).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"effective_until": "2026-09-07"},
+        {"instrument_id": "159350.SZ"},
+        {"exchange": "SH"},
+        {"classification_source": "https://example.com/unreviewed"},
+        {"rule_source": "https://example.com/unreviewed-rule"},
+        {"t_plus_one": False},
+        {"price_limit_up": 0.20, "price_limit_down": 0.20},
+        {"lot_size": 10},
+        {"price_tick": 0.01},
+        {"commission_rate": -1.0},
+        {"minimum_commission": -1.0},
+        {"slippage_model": "UNREVIEWED"},
+    ],
+)
+def test_resigned_159992_semantic_drift_is_rejected(
+    tmp_path, overrides: dict[str, object]
+) -> None:
+    with pytest.raises(ValueError):
+        _admit(_signed_159992_fixture(tmp_path, _rule_159992(**overrides)))
+
+
+def test_signed_159992_rule_rejects_nontradable_status(tmp_path) -> None:
+    with pytest.raises(ValueError, match="non-tradable instrument status"):
+        _admit(_signed_159992_fixture(
+            tmp_path,
+            status={
+                "is_st": False,
+                "is_suspended": True,
+                "listing_status": "suspended",
+            },
+        ))
 
 
 def test_market_rules_require_admitted_instrument_status(tmp_path) -> None:

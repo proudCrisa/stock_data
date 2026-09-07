@@ -39,6 +39,12 @@ ETF_RULE_SCOPES = {
         "exchange": "SZ", "t_plus_one": True, "price_limit_up": 0.10, "price_limit_down": 0.10,
         "lot_size": 100, "price_tick": 0.001,
     },
+    "159992.SZ": {
+        "fund_type": "DOMESTIC_EQUITY", "classification_source": "https://www.yhfund.com.cn/en/investment/quantitative/index.shtml",
+        "rule_source": _SZSE_RULE_SOURCE, "effective_from": "2026-09-07",
+        "exchange": "SZ", "t_plus_one": True, "price_limit_up": 0.10, "price_limit_down": 0.10,
+        "lot_size": 100, "price_tick": 0.001,
+    },
     "518880.SH": {
         "fund_type": "GOLD", "classification_source": "https://www.sse.com.cn/disclosure/fund/announcement/c/new/2026-03-17/518880_20260317_QR4M.pdf",
         "rule_source": _SSE_RULE_SOURCE, "effective_from": "2026-07-06",
