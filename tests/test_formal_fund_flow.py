@@ -371,9 +371,6 @@ import subprocess
 from pathlib import Path
 
 ledger = Path(os.environ["STOCKDATA_TEST_EXTERNAL_IO_LEDGER"])
-Path(os.environ["STOCKDATA_TEST_OFFLINE_GUARD_LOADED"]).write_text(
-    "loaded\\n", encoding="ascii"
-)
 
 def blocked(name):
     def deny(*args, **kwargs):
@@ -401,6 +398,10 @@ if fail_replace:
             raise OSError("forced final output replace failure")
         return real_replace(source, destination, *args, **kwargs)
     os.replace = replace
+
+Path(os.environ["STOCKDATA_TEST_OFFLINE_GUARD_LOADED"]).write_text(
+    "loaded\\n", encoding="ascii"
+)
 """,
         encoding="ascii",
     )
@@ -483,7 +484,7 @@ def test_module_cli_fails_closed_on_drifted_capture(tmp_path, monkeypatch):
     [
         ("registry", "registry"),
         ("calendar", "signature"),
-        ("cutoff", "decision_cutoff"),
+        ("cutoff", "post-cutoff"),
     ],
 )
 def test_module_cli_rejects_invalid_authority_wiring(
@@ -507,7 +508,9 @@ def test_module_cli_rejects_invalid_authority_wiring(
         )
         _write_json(calendar_path, calendar)
     else:
-        command[command.index("--decision-cutoff") + 1] = "2026-08-31T16:10:00"
+        command[command.index("--decision-cutoff") + 1] = (
+            "2026-08-31T15:00:00+08:00"
+        )
 
     completed = _run_offline_cli(
         command, tmp_path=tmp_path, signer_key=signer_key
