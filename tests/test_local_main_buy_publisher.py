@@ -1,5 +1,8 @@
-from datetime import datetime, timedelta, timezone
+import base64
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 
 import pytest
 
@@ -10,10 +13,11 @@ from test_main_buy_supplement import make_supplement
 from test_provider_authority_publisher import _private_raw
 
 
-def test_legacy_publisher_cannot_upgrade_date_coverage_to_exact_cutoff(
-    tmp_path, monkeypatch
-):
-    fixture, pin, signer = make_supplement(asof="2026-09-04")
+def _publisher_fixture(tmp_path, monkeypatch):
+    cutoff = "2026-09-05T04:10:00+00:00"
+    fixture, pin, signer = make_supplement(
+        asof="2026-09-04", decision_cutoff=cutoff
+    )
     identity = tmp_path / "identity"
     identity.mkdir()
     (identity / "registry.json").write_bytes(_canonical(fixture["registry"]))
@@ -32,11 +36,73 @@ def test_legacy_publisher_cannot_upgrade_date_coverage_to_exact_cutoff(
     receipt = next(iter(corporate_actions["source_receipts"].values()))
     receipt["schema_version"] = SOURCE_RECEIPT_SCHEMA
     del receipt["corporate_action_coverage"]
+    response_name = "561980.SH-sse-announcements.json"
+    response_raw = _canonical({"pageHelp": {"pageNo": 1, "pageCount": 1, "total": 0}, "result": []})
+    request_receipt_name = response_name + ".receipt.json"
+    request_receipt = {
+        "observed_at": "2026-09-05T03:58:00+00:00",
+        "request": {"method": "GET", "url": "https://query.sse.com.cn/commonQuery.do", "params": {
+            "END_DATE": "20260905", "SECURITY_CODE": "561980", "START_DATE": "20250711",
+            "isPagination": "true", "pageHelp.pageSize": "1000", "sqlId": "COMMON_PL_JJXX_JJGG_L"}},
+        "response": {"status_code": 200, "sha256": hashlib.sha256(response_raw).hexdigest(),
+                     "bytes": len(response_raw)},
+    }
+    request_receipt_raw = _canonical(request_receipt)
+    evidence = {
+        "schema_version": "stockdata-local-reference-source-evidence/1",
+        "assessment": "synthetic production-path fixture only",
+        "files": [
+            {"file": response_name, "sha256": hashlib.sha256(response_raw).hexdigest(),
+             "raw_base64": base64.b64encode(response_raw).decode("ascii")},
+            {"file": request_receipt_name, "sha256": hashlib.sha256(request_receipt_raw).hexdigest(),
+             "raw_base64": base64.b64encode(request_receipt_raw).decode("ascii")},
+        ],
+        "announcement_capture": {
+            "response_file": response_name,
+            "response_sha256": hashlib.sha256(response_raw).hexdigest(),
+            "request_receipt_file": request_receipt_name,
+            "request_receipt_sha256": hashlib.sha256(request_receipt_raw).hexdigest(),
+        },
+    }
+    corporate_actions["source_evidence"] = evidence
+    receipt["response_sha256"] = _hash(evidence)
     receipt_id = _hash(receipt)
     corporate_actions["source_receipts"] = {receipt_id: receipt}
     for record in corporate_actions["artifact"]["records"]:
         record["source_receipt_ids"] = [receipt_id]
     monkeypatch.setattr(publisher, "prepare_reference_inputs", lambda **kwargs: (references, global_inputs))
+
+    enrollment = fixture["registry"]["signer_enrollments"][0]
+    entry = "561980.SH@2026-09-04"
+    qualification_payload = {
+        "schema_version": publisher.CORPORATE_ACTION_COVERAGE_QUALIFICATION_SCHEMA,
+        "trust_registry_sha256": pin,
+        "publisher_key_id": enrollment["publisher_key_id"],
+        "trust_root_id": enrollment["trust_root_id"],
+        "qualified_at": "2026-09-05T03:59:00+00:00",
+        "decision_cutoff_at": cutoff,
+        "panel": [entry],
+        "entries": [{
+            "panel_entry": entry,
+            "coverage_start": "2025-07-11",
+            "coverage_end": "2026-09-05",
+            "decision_cutoff_at": cutoff,
+            "coverage_complete_through_decision_cutoff": True,
+            "source_evidence_sha256": _hash(evidence),
+            "announcement_response_file": response_name,
+            "announcement_response_sha256": hashlib.sha256(response_raw).hexdigest(),
+            "announcement_request_receipt_file": request_receipt_name,
+            "announcement_request_receipt_sha256": hashlib.sha256(request_receipt_raw).hexdigest(),
+        }],
+    }
+    qualification = {
+        "schema_version": publisher.CORPORATE_ACTION_COVERAGE_QUALIFICATION_ENVELOPE_SCHEMA,
+        "algorithm": "ed25519",
+        "payload": qualification_payload,
+        "signature_base64": base64.b64encode(signer.sign(_canonical(qualification_payload))).decode("ascii"),
+    }
+    qualification_path = tmp_path / "corporate-action-coverage.json"
+    qualification_path.write_bytes(_canonical(qualification))
     class Clock:
         tick = datetime(2026, 9, 5, 4, tzinfo=timezone.utc)
 
@@ -45,11 +111,137 @@ def test_legacy_publisher_cannot_upgrade_date_coverage_to_exact_cutoff(
             cls.tick += timedelta(microseconds=1)
             return cls.tick
     monkeypatch.setattr(publisher, "datetime", Clock)
-    with pytest.raises(ValueError, match="exactly one signed coverage declaration"):
-        publisher.publish_main_buy_supplement(evidence_dir=tmp_path,
-            liquidity_capture_file=capture_path, global_snapshot_file=global_path,
-            publisher_dir=identity, registry_sha256=pin, provider_manifest_sha256="a" * 64,
-            output_dir=tmp_path / "output")
+    kwargs = {
+        "evidence_dir": tmp_path,
+        "liquidity_capture_file": capture_path,
+        "global_snapshot_file": global_path,
+        "publisher_dir": identity,
+        "registry_sha256": pin,
+        "provider_manifest_sha256": "a" * 64,
+        "output_dir": tmp_path / "output",
+        "corporate_action_coverage_file": qualification_path,
+    }
+    return kwargs, qualification_path, corporate_actions
+
+
+def _resign_qualification(path, signer, mutate):
+    value = json.loads(path.read_bytes())
+    mutate(value["payload"])
+    value["signature_base64"] = base64.b64encode(
+        signer.sign(_canonical(value["payload"]))
+    ).decode("ascii")
+    path.write_bytes(_canonical(value))
+
+
+def _argv(kwargs):
+    argv = []
+    for name, value in kwargs.items():
+        argv.extend(("--" + name.replace("_", "-"), str(value)))
+    return argv
+
+
+def test_cli_requires_corporate_action_coverage_file():
+    values = {
+        "evidence-dir": "evidence", "liquidity-capture-file": "liquidity",
+        "global-snapshot-file": "global", "publisher-dir": "publisher",
+        "registry-sha256": "a" * 64, "provider-manifest-sha256": "b" * 64,
+        "output-dir": "output",
+    }
+    argv = [item for name, value in values.items() for item in (f"--{name}", value)]
+    with pytest.raises(SystemExit) as exc:
+        publisher.main(argv)
+    assert exc.value.code == 2
+
+
+def test_production_cli_publishes_exact_cutoff_corporate_action_v2(
+    tmp_path, monkeypatch, capsys
+):
+    kwargs, qualification_path, _ = _publisher_fixture(tmp_path, monkeypatch)
+    publisher.main(_argv(kwargs))
+    printed = json.loads(capsys.readouterr().out)
+    supplement = json.loads((tmp_path / "output" / "supplement.json").read_bytes())
+    corporate_actions = supplement["references"]["corporate_actions"]
+    receipt = next(iter(corporate_actions["source_receipts"].values()))
+    qualification = json.loads(qualification_path.read_bytes())
+    cutoff = qualification["payload"]["decision_cutoff_at"]
+    assert printed["decision_cutoff"] == cutoff == supplement["decision_cutoff"]
+    assert supplement["liquidity"]["product"]["decision_cutoff"] == cutoff
+    assert receipt["schema_version"] == "stockdata-provider-component-source-receipt/2"
+    assert receipt["corporate_action_coverage"] == [
+        {key: qualification["payload"]["entries"][0][key] for key in (
+            "panel_entry", "coverage_start", "coverage_end", "decision_cutoff_at",
+            "coverage_complete_through_decision_cutoff")}
+    ]
+    retained = corporate_actions["source_evidence"]
+    assert retained["coverage_qualification"] == qualification
+
+
+@pytest.mark.parametrize("failure", [
+    "incomplete", "expired", "wrong_panel", "wrong_cutoff", "evidence_hash",
+    "evidence_file_hash", "duplicate_panel", "alternate_capture", "bad_signature",
+])
+def test_production_coverage_failure_is_atomic(tmp_path, monkeypatch, failure):
+    kwargs, qualification_path, corporate_actions = _publisher_fixture(tmp_path, monkeypatch)
+    fixture, _, signer = make_supplement(asof="2026-09-04")
+    mutations = {
+        "incomplete": lambda payload: payload["entries"][0].update(
+            coverage_complete_through_decision_cutoff=False),
+        "expired": lambda payload: payload["entries"][0].update(coverage_end="2026-09-04"),
+        "wrong_panel": lambda payload: payload.update(panel=["588730.SH@2026-09-04"]),
+        "wrong_cutoff": lambda payload: payload["entries"][0].update(
+            decision_cutoff_at="2026-09-05T04:09:00+00:00"),
+        "evidence_hash": lambda payload: payload["entries"][0].update(
+            source_evidence_sha256="b" * 64),
+        "evidence_file_hash": lambda payload: payload["entries"][0].update(
+            announcement_response_sha256="c" * 64),
+        "duplicate_panel": lambda payload: payload["entries"].append(deepcopy(payload["entries"][0])),
+    }
+    if failure == "alternate_capture":
+        evidence = corporate_actions["source_evidence"]
+        response_raw = _canonical({"pageHelp": {"pageNo": 1, "pageCount": 2, "total": 1}, "result": []})
+        response_name = "unreviewed-second-response.json"
+        receipt_name = response_name + ".receipt.json"
+        receipt = {
+            "observed_at": "2026-09-05T03:58:00+00:00",
+            "request": {"method": "GET", "url": "https://query.sse.com.cn/commonQuery.do", "params": {
+                "END_DATE": "20260905", "SECURITY_CODE": "561980", "START_DATE": "20250711",
+                "isPagination": "true", "pageHelp.pageSize": "1000", "sqlId": "COMMON_PL_JJXX_JJGG_L"}},
+            "response": {"status_code": 200, "sha256": hashlib.sha256(response_raw).hexdigest(),
+                         "bytes": len(response_raw)},
+        }
+        receipt_raw = _canonical(receipt)
+        evidence["files"].extend([
+            {"file": response_name, "sha256": hashlib.sha256(response_raw).hexdigest(),
+             "raw_base64": base64.b64encode(response_raw).decode("ascii")},
+            {"file": receipt_name, "sha256": hashlib.sha256(receipt_raw).hexdigest(),
+             "raw_base64": base64.b64encode(receipt_raw).decode("ascii")},
+        ])
+        def point_to_alternate(payload):
+            entry = payload["entries"][0]
+            entry.update(
+                source_evidence_sha256=_hash(evidence),
+                announcement_response_file=response_name,
+                announcement_response_sha256=hashlib.sha256(response_raw).hexdigest(),
+                announcement_request_receipt_file=receipt_name,
+                announcement_request_receipt_sha256=hashlib.sha256(receipt_raw).hexdigest(),
+            )
+        _resign_qualification(qualification_path, signer, point_to_alternate)
+    elif failure == "bad_signature":
+        value = json.loads(qualification_path.read_bytes())
+        value["signature_base64"] = base64.b64encode(b"x" * 64).decode("ascii")
+        qualification_path.write_bytes(_canonical(value))
+    else:
+        _resign_qualification(qualification_path, signer, mutations[failure])
+    with pytest.raises(ValueError, match="corporate-action coverage"):
+        publisher.main(_argv(kwargs))
+    assert not (tmp_path / "output").exists()
+
+
+def test_legacy_v1_without_qualification_file_publishes_nothing(tmp_path, monkeypatch):
+    kwargs, _, _ = _publisher_fixture(tmp_path, monkeypatch)
+    kwargs["corporate_action_coverage_file"] = tmp_path / "missing.json"
+    with pytest.raises(ValueError, match="561980.SH@2026-09-04: qualification file"):
+        publisher.publish_main_buy_supplement(**kwargs)
     assert not (tmp_path / "output").exists()
 
 
@@ -178,7 +370,8 @@ def test_base_reference_sources_are_selected_by_index_for_another_session(tmp_pa
         "trading_calendar": ["calendar-current.json", "rules.docx"],
         "instrument_status": ["status-current.json", "listing-current.json", "rules.docx"],
         "universe": ["universe-current.json"],
-        "corporate_actions": ["announcements-current.json", "sse-561980-split-result-20260626.pdf", "sse-561980-split-result-20260626.pdf.receipt.json"],
+        "corporate_actions": ["announcements-current.json", "announcements-current.json.receipt.json",
+                              "sse-561980-split-result-20260626.pdf", "sse-561980-split-result-20260626.pdf.receipt.json"],
         "market_rules": ["classification.html", "rules.docx", "faq.html", "fees.json", "fee-observation.json"],
         "global_signals": ["global-current.json", "global-observation.json"],
     }
@@ -202,6 +395,16 @@ def test_base_reference_sources_are_selected_by_index_for_another_session(tmp_pa
                                 for name, q in global_snapshot["quotes"].items()},
     }
     split_url = "https://www.sse.com.cn/disclosure/fund/announcement/c/new/2026-06-26/561980_20260626_4J0A.pdf"
+    announcement_raw = _canonical(values["announcements-current.json"])
+    values["announcements-current.json.receipt.json"] = {
+        "observed_at": "2026-08-15T16:04:00+08:00",
+        "request": {"method": "GET", "url": "https://query.sse.com.cn/commonQuery.do", "params": {
+            "sqlId": "COMMON_PL_JJXX_JJGG_L", "SECURITY_CODE": "561980",
+            "START_DATE": "20250101", "END_DATE": "20260815", "isPagination": "true",
+            "pageHelp.pageSize": "1000"}},
+        "response": {"status_code": 200, "sha256": hashlib.sha256(announcement_raw).hexdigest(),
+                     "bytes": len(announcement_raw)},
+    }
     values["sse-561980-split-result-20260626.pdf.receipt.json"] = {"request": {"url": split_url},
         "response": {"status_code": 200, "bytes": 2, "sha256": hashlib.sha256(b"{}").hexdigest()}}
     files = []

@@ -170,8 +170,65 @@ python -m stockdata.local_main_buy_publisher \
   --publisher-dir /absolute/local-publisher \
   --registry-sha256 EXTERNALLY_FIXED_REGISTRY_SHA256 \
   --provider-manifest-sha256 TRADING_LOCAL_PROVIDER_MANIFEST_SHA256 \
+  --corporate-action-coverage-file /absolute/signed-ca-coverage.json \
   --output-dir /absolute/new-supplement-directory
 ```
+
+`--corporate-action-coverage-file` is required. It is canonical JSON with this
+exact shape (one sorted entry per requested panel):
+
+```json
+{
+  "algorithm": "ed25519",
+  "payload": {
+    "decision_cutoff_at": "2026-09-08T09:25:00+08:00",
+    "entries": [{
+      "announcement_request_receipt_file": "561980.SH-sse-announcements.json.receipt.json",
+      "announcement_request_receipt_sha256": "<sha256>",
+      "announcement_response_file": "561980.SH-sse-announcements.json",
+      "announcement_response_sha256": "<sha256>",
+      "coverage_complete_through_decision_cutoff": true,
+      "coverage_end": "2026-09-08",
+      "coverage_start": "2025-07-11",
+      "decision_cutoff_at": "2026-09-08T09:25:00+08:00",
+      "panel_entry": "561980.SH@2026-09-08",
+      "source_evidence_sha256": "<sha256>"
+    }],
+    "panel": ["561980.SH@2026-09-08"],
+    "publisher_key_id": "<enrolled-corporate-actions-signer-id>",
+    "qualified_at": "<canonical-time-before-cutoff>",
+    "schema_version": "stockdata-corporate-action-coverage-qualification/1",
+    "trust_registry_sha256": "<externally-fixed-registry-sha256>",
+    "trust_root_id": "<enrolled-root-id>"
+  },
+  "schema_version": "stockdata-corporate-action-coverage-qualification-envelope/1",
+  "signature_base64": "<ed25519-signature-over-canonical-payload>"
+}
+```
+
+The producer verifies this signature against the already-pinned registry and
+requires the signer to hold the `corporate_actions` role through the exact
+cutoff. A file hash proves integrity only; an arbitrary self-signed
+`complete=true` file has no qualification authority. Each entry must identify
+the exact retained announcement response and its HTTP request/response receipt.
+Those files, all reviewed attachments, and the review partition remain bound by
+`source_evidence_sha256`. The producer copies the validated coverage fields into
+the sole corporate-actions source receipt `/2`; it does not infer them from
+`asof`, `observation_end`, filenames, or wall-clock time.
+
+The qualification cutoff is also the liquidity-product and outer-supplement
+cutoff. Preparation may record current observation times; the final publication
+time is read once and must be after `qualified_at` and before that cutoff. Missing or duplicate panels,
+expired or false coverage, a different cutoff, an evidence hash change, or a
+missing HTTP receipt rejects before the output directory is created.
+
+Legacy corporate-actions source receipts `/1` remain valid historical bytes,
+but they cannot qualify a new publication. Existing retained main-ETF evidence
+must be recaptured or independently qualified with exact HTTP receipts before a
+new formal supplement can be produced. In particular, the retained 561980
+response records URL, bytes, hash, and retention time but lacks its original
+HTTP status and observation-time receipt. Those facts must be recollected; they
+must not be reconstructed as a successful receipt after the cutoff.
 
 This recipe verifies the retained source files against the evidence index, binds
 their original bytes inside signed receipts, constructs the five reference

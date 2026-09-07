@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import argparse
 import base64
-from datetime import datetime, timezone, timedelta
+from collections.abc import Mapping
+from datetime import date, datetime, timezone, timedelta
 import hashlib
 import json
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .authority import ALGORITHM, AUTHORITY_ENVELOPE_SCHEMA, load_enrolled_trust_registry_bytes
 from .liquidity_amount_product import (
@@ -21,7 +24,10 @@ from .main_buy_supplement import (
     SCHEMA_VERSION, build_global_signals_authority_inputs, verify_main_buy_supplement,
 )
 from .market_rules import ETF_MARKET_RULE_PAYLOAD_SCHEMA, ETF_RULE_SCOPES
-from .provider_authority_admission import SOURCE_RECEIPT_SCHEMA
+from .provider_authority_admission import (
+    CORPORATE_ACTION_SOURCE_RECEIPT_SCHEMA,
+    SOURCE_RECEIPT_SCHEMA,
+)
 from .provider_authority_publisher import _base64, _key_id, _public_key
 from .rqgm_provider_contract import COMPONENT_SCHEMAS
 
@@ -40,6 +46,12 @@ REVIEWED_MAIN_BUY_SYMBOLS_V1 = frozenset({
     "561980.SH", "159350.SZ", "159980.SZ", "511010.SH",
     "513650.SH", "518880.SH", "560900.SH", "588730.SH",
 })
+CORPORATE_ACTION_COVERAGE_QUALIFICATION_SCHEMA = (
+    "stockdata-corporate-action-coverage-qualification/1"
+)
+CORPORATE_ACTION_COVERAGE_QUALIFICATION_ENVELOPE_SCHEMA = (
+    "stockdata-corporate-action-coverage-qualification-envelope/1"
+)
 _REVIEWED_CASH_DIVIDENDS = (
     ("2025-09-18", "2025-09-22", "2025-09-23", "2025-09-26", 1.45,
      "ddfaac7c7097b0a15666d6e6787553be48613468e221564bccabfceceb5d0d02", "511010_20250918_FU3S.pdf"),
@@ -111,6 +123,206 @@ def _reference(component, rows, evidence, observed):
     return {"artifact": {"schema_version": COMPONENT_SCHEMAS[component], "component": component,
                          "panel": sorted(rows), "records": records},
             "source_receipts": {receipt_id: receipt}, "source_evidence": evidence}
+
+
+def _coverage_source_files(evidence, panel_entry):
+    symbol = panel_entry.split("@")[0]
+    if symbol == SYMBOL:
+        panel_evidence = evidence
+    else:
+        additional = evidence.get("additional_instruments")
+        panel_evidence = additional.get(symbol) if isinstance(additional, Mapping) else None
+    files = panel_evidence.get("files") if isinstance(panel_evidence, Mapping) else None
+    if not isinstance(files, list):
+        raise ValueError(f"corporate-action coverage {panel_entry}: source evidence is missing")
+    return panel_evidence, {
+        item.get("file"): item for item in files if isinstance(item, Mapping)
+    }
+
+
+def _validate_qualification_receipt(entry, evidence, qualified_at, cutoff):
+    panel_entry = entry["panel_entry"]
+    panel_evidence, files = _coverage_source_files(evidence, panel_entry)
+    response_path = entry["announcement_response_file"]
+    receipt_path = entry["announcement_request_receipt_file"]
+    response_entry = files.get(response_path)
+    receipt_entry = files.get(receipt_path)
+    if response_entry is None or receipt_entry is None:
+        raise ValueError(f"corporate-action coverage {panel_entry}: exact HTTP response/receipt is missing")
+    if (
+        response_entry.get("sha256") != entry["announcement_response_sha256"]
+        or receipt_entry.get("sha256") != entry["announcement_request_receipt_sha256"]
+    ):
+        raise ValueError(f"corporate-action coverage {panel_entry}: evidence file hash differs")
+    if panel_evidence.get("announcement_capture") != {
+        "response_file": response_path,
+        "response_sha256": entry["announcement_response_sha256"],
+        "request_receipt_file": receipt_path,
+        "request_receipt_sha256": entry["announcement_request_receipt_sha256"],
+    }:
+        raise ValueError(
+            f"corporate-action coverage {panel_entry}: qualification differs from reviewed capture"
+        )
+    try:
+        response_raw = base64.b64decode(response_entry["raw_base64"], validate=True)
+        receipt_raw = base64.b64decode(receipt_entry["raw_base64"], validate=True)
+        receipt = json.loads(receipt_raw)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"corporate-action coverage {panel_entry}: HTTP receipt is invalid") from exc
+    request = receipt.get("request")
+    response = receipt.get("response")
+    observed_at = receipt.get("observed_at")
+    symbol = panel_entry.split("@")[0]
+    if symbol.endswith(".SH"):
+        valid_request = isinstance(request, Mapping) and (
+            request.get("method") == "GET"
+            and request.get("url") == "https://query.sse.com.cn/commonQuery.do"
+            and request.get("params") == {
+                "END_DATE": entry["coverage_end"].replace("-", ""), "SECURITY_CODE": symbol[:6],
+                "START_DATE": entry["coverage_start"].replace("-", ""), "isPagination": "true",
+                "pageHelp.pageSize": "1000", "sqlId": "COMMON_PL_JJXX_JJGG_L"}
+        )
+    else:
+        valid_request = isinstance(request, Mapping) and (
+            request.get("method") == "POST"
+            and request.get("url") == "https://www.szse.cn/api/disc/announcement/annList"
+            and request.get("body") == {
+                "stock": [symbol[:6]], "channelCode": ["fundinfoNotice_disc"],
+                "seDate": [entry["coverage_start"], entry["coverage_end"]], "pageSize": 50, "pageNum": 1}
+        )
+    if (
+        not valid_request
+        or not isinstance(response, Mapping)
+        or response.get("status_code") != 200
+        or response_entry.get("sha256") != hashlib.sha256(response_raw).hexdigest()
+        or receipt_entry.get("sha256") != hashlib.sha256(receipt_raw).hexdigest()
+        or response.get("sha256") != hashlib.sha256(response_raw).hexdigest()
+        or response.get("bytes") != len(response_raw)
+        or not _timestamp(observed_at) <= _timestamp(qualified_at) < _timestamp(cutoff)
+    ):
+        raise ValueError(f"corporate-action coverage {panel_entry}: HTTP request/response receipt differs")
+
+
+def _apply_corporate_action_qualification(inputs, qualification, registry, expected_panel):
+    if not isinstance(qualification, Mapping) or set(qualification) != {
+        "schema_version", "algorithm", "payload", "signature_base64"
+    }:
+        raise ValueError("corporate-action coverage qualification envelope is incomplete")
+    if (
+        qualification["schema_version"] != CORPORATE_ACTION_COVERAGE_QUALIFICATION_ENVELOPE_SCHEMA
+        or qualification["algorithm"] != ALGORITHM
+    ):
+        raise ValueError("corporate-action coverage qualification envelope is invalid")
+    payload = qualification["payload"]
+    expected_payload_fields = {
+        "schema_version", "trust_registry_sha256", "publisher_key_id", "trust_root_id",
+        "qualified_at", "decision_cutoff_at", "panel", "entries",
+    }
+    if not isinstance(payload, Mapping) or set(payload) != expected_payload_fields:
+        raise ValueError("corporate-action coverage qualification payload is incomplete")
+    if (
+        payload["schema_version"] != CORPORATE_ACTION_COVERAGE_QUALIFICATION_SCHEMA
+        or payload["trust_registry_sha256"] != registry.registry_sha256
+    ):
+        raise ValueError("corporate-action coverage qualification identity differs")
+    panel = payload["panel"]
+    if not isinstance(panel, list) or any(not isinstance(item, str) for item in panel):
+        raise ValueError("corporate-action coverage qualification panel is invalid")
+    missing = sorted(set(expected_panel) - set(panel))
+    extra = sorted(set(panel) - set(expected_panel))
+    if panel != sorted(panel) or len(panel) != len(set(panel)) or missing or extra:
+        raise ValueError(
+            f"corporate-action coverage qualification panel differs: missing={missing}, extra={extra}"
+        )
+    signer = registry._signers.get(payload["publisher_key_id"])
+    if (
+        signer is None
+        or signer.trust_root_id != payload["trust_root_id"]
+        or "corporate_actions" not in signer.component_roles
+    ):
+        raise ValueError("corporate-action coverage qualification signer is not enrolled")
+    qualified_at = _timestamp(payload["qualified_at"])
+    cutoff = _timestamp(payload["decision_cutoff_at"])
+    if not signer.valid_from <= qualified_at < cutoff <= signer.valid_until:
+        raise ValueError("corporate-action coverage qualification signer interval differs")
+    try:
+        signature = base64.b64decode(qualification["signature_base64"], validate=True)
+        Ed25519PublicKey.from_public_bytes(signer.public_key).verify(signature, _canonical(payload))
+    except (TypeError, ValueError, InvalidSignature) as exc:
+        raise ValueError("corporate-action coverage qualification signature is invalid") from exc
+    entries = payload["entries"]
+    if not isinstance(entries, list):
+        raise ValueError("corporate-action coverage qualification entries are invalid")
+    expected_entry_fields = {
+        "panel_entry", "coverage_start", "coverage_end", "decision_cutoff_at",
+        "coverage_complete_through_decision_cutoff", "source_evidence_sha256",
+        "announcement_response_file", "announcement_response_sha256",
+        "announcement_request_receipt_file", "announcement_request_receipt_sha256",
+    }
+    source_evidence = inputs["source_evidence"]
+    source_sha = _hash(source_evidence)
+    coverage = []
+    seen = []
+    for entry in entries:
+        panel_entry = entry.get("panel_entry") if isinstance(entry, Mapping) else "<unknown>"
+        if not isinstance(entry, Mapping) or set(entry) != expected_entry_fields:
+            raise ValueError(f"corporate-action coverage {panel_entry}: qualification entry is incomplete")
+        seen.append(panel_entry)
+        try:
+            start = date.fromisoformat(entry["coverage_start"])
+            end = date.fromisoformat(entry["coverage_end"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"corporate-action coverage {panel_entry}: coverage dates are invalid") from exc
+        if (
+            panel_entry not in expected_panel
+            or entry["decision_cutoff_at"] != payload["decision_cutoff_at"]
+            or entry["source_evidence_sha256"] != source_sha
+            or entry["coverage_complete_through_decision_cutoff"] is not True
+            or start.isoformat() != entry["coverage_start"]
+            or end.isoformat() != entry["coverage_end"]
+            or start > end
+            or end < cutoff.date()
+        ):
+            raise ValueError(f"corporate-action coverage {panel_entry}: qualification does not reach exact cutoff")
+        _validate_qualification_receipt(
+            entry, source_evidence, payload["qualified_at"], payload["decision_cutoff_at"]
+        )
+        coverage.append({key: entry[key] for key in (
+            "panel_entry", "coverage_start", "coverage_end", "decision_cutoff_at",
+            "coverage_complete_through_decision_cutoff")})
+    missing_entries = sorted(set(expected_panel) - set(seen))
+    duplicate_entries = sorted({item for item in seen if seen.count(item) > 1})
+    if seen != sorted(expected_panel) or missing_entries or duplicate_entries:
+        raise ValueError(
+            "corporate-action coverage qualification entries differ: "
+            f"missing={missing_entries}, duplicated={duplicate_entries}"
+        )
+    receipts = inputs["source_receipts"]
+    if len(receipts) != 1:
+        raise ValueError("corporate-action inputs require one retained source receipt")
+    old_receipt = next(iter(receipts.values()))
+    if old_receipt.get("schema_version") != SOURCE_RECEIPT_SCHEMA:
+        raise ValueError("corporate-action retained source receipt must be legacy schema /1")
+    qualified_evidence = {
+        "schema_version": "stockdata-qualified-corporate-action-source-evidence/1",
+        "retained_source_evidence": source_evidence,
+        "coverage_qualification": qualification,
+    }
+    receipt = {
+        **old_receipt,
+        "schema_version": CORPORATE_ACTION_SOURCE_RECEIPT_SCHEMA,
+        "response_sha256": _hash(qualified_evidence),
+        "corporate_action_coverage": coverage,
+    }
+    receipt_id = _hash(receipt)
+    artifact = {**inputs["artifact"], "records": [
+        {**record, "source_receipt_ids": [receipt_id]} for record in inputs["artifact"]["records"]
+    ]}
+    return {
+        "artifact": artifact,
+        "source_receipts": {receipt_id: receipt},
+        "source_evidence": qualified_evidence,
+    }, payload["decision_cutoff_at"], payload["qualified_at"]
 
 
 def _validate_status_capture(captures, symbol, asof, observed):
@@ -222,19 +434,46 @@ def _validate_announcement_capture(directory, symbol, source_files, observed, *,
     _validate_event_attachments(announcements, evidence or {"files": []}, events,
         reviewed_non_action_urls=reviewed_non_action_urls,
         known_baseline=hashlib.sha256(raw).hexdigest() == _REVIEWED_ANNOUNCEMENT_HASHES[symbol])
+    return {
+        "response_file": name,
+        "response_sha256": hashlib.sha256(raw).hexdigest(),
+        "request_receipt_file": name + ".receipt.json",
+        "request_receipt_sha256": hashlib.sha256(
+            (directory / (name + ".receipt.json")).read_bytes()
+        ).hexdigest(),
+    }
 
 
-def _validate_base_announcements(directory, index, name, observation_end, evidence, events):
+def _validate_base_announcements(directory, index, name, observation_end, observed, evidence, events):
     entry = next(item for item in index["files"] if item["file"] == name)
     source = urlparse(entry["source_url"])
     params = parse_qs(source.query)
     raw = (directory / name).read_bytes()
+    receipt_name = name + ".receipt.json"
+    receipt_entry = next(
+        (item for item in evidence["files"] if item["file"] == receipt_name), None
+    )
+    if receipt_entry is None:
+        raise ValueError(
+            f"corporate-action coverage {SYMBOL}@{index['asof']}: exact HTTP response/receipt is missing"
+        )
+    receipt_raw = (directory / receipt_name).read_bytes()
+    receipt = json.loads(receipt_raw)
     data = json.loads(raw)
     rows, page = data["result"], data["pageHelp"]
+    expected_request = {"method": "GET", "url": "https://query.sse.com.cn/commonQuery.do", "params": {
+        "END_DATE": observation_end.replace("-", ""), "SECURITY_CODE": "561980",
+        "START_DATE": params["START_DATE"][0], "isPagination": "true",
+        "pageHelp.pageSize": "1000", "sqlId": "COMMON_PL_JJXX_JJGG_L"}}
+    response = receipt.get("response")
     if (source.scheme != "https" or source.netloc != "query.sse.com.cn" or source.path != "/commonQuery.do"
             or params.get("sqlId") != ["COMMON_PL_JJXX_JJGG_L"] or params.get("SECURITY_CODE") != ["561980"]
             or params.get("END_DATE") != [observation_end.replace("-", "")]
             or not params.get("START_DATE") or params["START_DATE"][0] > "20250622"
+            or receipt.get("request") != expected_request or not isinstance(response, Mapping)
+            or response.get("status_code") != 200 or response.get("sha256") != hashlib.sha256(raw).hexdigest()
+            or response.get("bytes") != len(raw) or _timestamp(receipt.get("observed_at")) >= _timestamp(observed)
+            or receipt_entry["sha256"] != hashlib.sha256(receipt_raw).hexdigest()
             or page["pageCount"] != 1 or page["pageNo"] != 1 or page["total"] != len(rows)
             or any(row["SECURITY_CODE"] != "561980" for row in rows)):
         raise ValueError("561980 official announcement observation identity or completeness differs")
@@ -242,6 +481,12 @@ def _validate_base_announcements(directory, index, name, observation_end, eviden
         evidence, events, allowed_notice_urls={"https://www.sse.com.cn/disclosure/fund/announcement/c/new/2026-06-22/561980_20260622_1FQ0.pdf"},
         reviewed_non_action_urls=index.get("reviewed_non_action_urls"),
         known_baseline=hashlib.sha256(raw).hexdigest() == _REVIEWED_ANNOUNCEMENT_HASHES[SYMBOL])
+    return {
+        "response_file": name,
+        "response_sha256": hashlib.sha256(raw).hexdigest(),
+        "request_receipt_file": receipt_name,
+        "request_receipt_sha256": hashlib.sha256(receipt_raw).hexdigest(),
+    }
 
 
 def prepare_reference_inputs(*, evidence_dir, liquidity_product, asof, global_snapshot, observation_end=None):
@@ -327,7 +572,8 @@ def prepare_reference_inputs(*, evidence_dir, liquidity_product, asof, global_sn
     events = [event, *[{**item, "announcement_at": observed} for item in extra_events]]
     if len({item["event_id"] for item in events}) != len(events):
         raise ValueError("base corporate-action identities are duplicated")
-    _validate_base_announcements(directory, index, evidence_names["corporate_actions"][0], observation_end,
+    evidence["corporate_actions"]["announcement_capture"] = _validate_base_announcements(
+        directory, index, evidence_names["corporate_actions"][0], observation_end, observed,
         evidence["corporate_actions"], events)
     evidence["corporate_actions"]["split_identity"] = {
         "symbol": SYMBOL, "effective_date": event["effective_date"], "old_units": 1, "new_units": 5,
@@ -378,7 +624,8 @@ def extend_reference_inputs(references, global_inputs, *, evidence_dir, symbols,
             _validate_retained_times(item, observed)
         captures = json.loads((directory / f"{symbol}-status-ca.json").read_bytes())
         state = _validate_status_capture(captures, symbol, asof, observed)
-        _validate_announcement_capture(directory, symbol, facts["source_files"]["corporate_actions"], observed,
+        bound["corporate_actions"]["announcement_capture"] = _validate_announcement_capture(
+            directory, symbol, facts["source_files"]["corporate_actions"], observed,
             observation_end=observation_end, evidence=bound["corporate_actions"], events=facts["events"],
             reviewed_non_action_urls=facts.get("reviewed_non_action_urls"))
         if f"{symbol}-status-ca.json" not in facts["source_files"]["instrument_status"]:
@@ -421,7 +668,8 @@ def extend_reference_inputs(references, global_inputs, *, evidence_dir, symbols,
 
 def publish_main_buy_supplement(*, evidence_dir, liquidity_capture_file, global_snapshot_file,
                                publisher_dir, registry_sha256, provider_manifest_sha256, output_dir,
-                               additional_evidence_dir=None, asof=None, observation_end=None):
+                               corporate_action_coverage_file, additional_evidence_dir=None,
+                               asof=None, observation_end=None):
     directory = Path(publisher_dir)
     registry_raw = (directory / "registry.json").read_bytes()
     registry = load_enrolled_trust_registry_bytes(registry_raw, expected_sha256=registry_sha256)
@@ -443,27 +691,43 @@ def publish_main_buy_supplement(*, evidence_dir, liquidity_capture_file, global_
         symbols = sorted(REVIEWED_MAIN_BUY_SYMBOLS_V1)
         captures.extend(json.loads((Path(additional_evidence_dir) / f"{symbol}-amount.json").read_bytes())
                         for symbol in symbols if symbol != SYMBOL)
+    qualification_path = Path(corporate_action_coverage_file)
+    if not qualification_path.is_file():
+        missing = [f"{symbol}@{asof}: qualification file" for symbol in symbols]
+        raise ValueError(f"corporate-action coverage missing panels: {missing}")
+    qualification_raw = qualification_path.read_bytes()
+    qualification = json.loads(qualification_raw)
+    if _canonical(qualification) != qualification_raw:
+        raise ValueError("corporate-action coverage qualification must be canonical JSON")
+    try:
+        cutoff = qualification["payload"]["decision_cutoff_at"]
+    except (KeyError, TypeError) as exc:
+        raise ValueError("corporate-action coverage qualification payload is incomplete") from exc
     product = build_liquidity_amounts_product(captures, panel=[(symbol, day) for symbol in symbols for day in dates],
-        decision_cutoff=datetime.now(timezone.utc).isoformat(), expected_watermark=asof)
+        decision_cutoff=cutoff, expected_watermark=asof)
     references, global_inputs = prepare_reference_inputs(evidence_dir=evidence_dir, liquidity_product=product,
         asof=asof, global_snapshot=json.loads(Path(global_snapshot_file).read_bytes()), observation_end=observation_end)
     if additional_evidence_dir is not None:
         references, global_inputs = extend_reference_inputs(references, global_inputs,
             evidence_dir=additional_evidence_dir, symbols=symbols, asof=asof, observation_end=observation_end)
+    references["corporate_actions"], cutoff, qualified_at = _apply_corporate_action_qualification(
+        references["corporate_actions"], qualification, registry,
+        [f"{symbol}@{asof}" for symbol in symbols])
+    published_at = datetime.now(timezone.utc).isoformat()
+    if not _timestamp(qualified_at) <= _timestamp(published_at) < _timestamp(cutoff):
+        raise ValueError("publication time is outside the qualified decision cutoff")
     def sign(inputs):
         artifact = inputs["artifact"]
-        observed = datetime.now(timezone.utc).isoformat()
         value = {"component_role": artifact["component"], "artifact": {
             "kind": f"stock-data-{artifact['component'].replace('_', '-')}", "schema_version": artifact["schema_version"],
             "identifier": _hash(artifact)}, "source_receipt_ids": sorted(inputs["source_receipts"]),
-            "effective_at": observed, "available_at": observed, "publisher_key_id": publisher_id,
+            "effective_at": published_at, "available_at": published_at, "publisher_key_id": publisher_id,
             "trust_root_id": signer.trust_root_id, "trust_registry_sha256": registry_sha256}
         return {**inputs, "authority_envelope": {"schema_version": AUTHORITY_ENVELOPE_SCHEMA,
                 "algorithm": ALGORITHM, "payload": value, "signature_base64": _base64(key.sign(_canonical(value)))}}
     liquidity = sign(build_liquidity_authority_inputs(product))
     global_inputs = sign(global_inputs)
     references = {component: sign(inputs) for component, inputs in references.items()}
-    cutoff = datetime.now(timezone.utc).isoformat()
     payload = {"schema_version": SCHEMA_VERSION, "provider_manifest_sha256": provider_manifest_sha256,
                "asof": asof, "decision_cutoff": cutoff, "symbols": symbols, "registry": json.loads(registry_raw),
                "liquidity": liquidity, "global_signals": global_inputs, "references": references}
@@ -479,7 +743,8 @@ def publish_main_buy_supplement(*, evidence_dir, liquidity_capture_file, global_
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("evidence-dir", "liquidity-capture-file", "global-snapshot-file", "publisher-dir",
-                 "registry-sha256", "provider-manifest-sha256", "output-dir"):
+                 "registry-sha256", "provider-manifest-sha256", "output-dir",
+                 "corporate-action-coverage-file"):
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--additional-evidence-dir")
     parser.add_argument("--asof")
