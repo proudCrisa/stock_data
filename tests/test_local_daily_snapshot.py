@@ -39,7 +39,7 @@ def snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr(local, "_capture", _capture)
     result = local.capture_local_daily_snapshot(symbols=["561980.SH", "000300.SH"], asof="2026-09-04",
         publisher_dir=tmp_path / "publisher", expected_registry_sha256=anchor["registry_sha256"],
-        output_dir=tmp_path / "prices")
+        output_dir=tmp_path / "prices", profile=local.PROFILE_V1)
     return json.loads((tmp_path / "prices" / "snapshot.json").read_text()), anchor, result
 
 
@@ -58,6 +58,47 @@ def test_signed_local_prices_replay_without_io(snapshot, monkeypatch):
     assert etf["execution"]["products"][0]["price_identity"]["adjustment_mode"] == "raw"
     assert etf["signal"]["products"][0]["price_identity"]["adjustment_mode"] == "qfq"
     assert etf["signal"]["products"][0]["rows"][0]["volume"] == 100
+
+
+def test_159992_uses_versioned_official_etf_route(tmp_path, monkeypatch):
+    assert local.PROFILE == "trading-current-local-prices/2"
+    assert local._route("159992.SZ", "execution") == [("tencent.ifzq", "raw")]
+    assert local._route("159992.SZ", "signal") == [("tencent.ifzq", "qfq")]
+    with pytest.raises(ValueError, match="outside the local daily profile"):
+        local._route("159992.SZ", "execution", profile=local.PROFILE_V1)
+    anchor = initialize_local_publisher(tmp_path / "publisher")
+    monkeypatch.setattr(local, "_capture", _capture)
+    result = local.capture_local_daily_snapshot(symbols=["159992.SZ"], asof="2026-09-07",
+        publisher_dir=tmp_path / "publisher", expected_registry_sha256=anchor["registry_sha256"],
+        output_dir=tmp_path / "prices")
+    value = json.loads((tmp_path / "prices" / "snapshot.json").read_text())
+    assert local.verify_local_daily_snapshot(value, expected_registry_sha256=anchor["registry_sha256"],
+        expected_symbols=["159992.SZ"], asof="2026-09-07",
+        decision_cutoff=result["decision_cutoff"]) == value
+    execution = value["artifact"]["records"][0]["payload"]["execution"]
+    assert execution["instrument_universe_version"] == local.PROFILE_V2
+    assert execution["products"][0]["universe_version"] == local.PROFILE_V2
+    assert value["artifact"]["records"][0]["available_at"] <= result["decision_cutoff"]
+    assert result["snapshot_file"] == str(tmp_path / "prices" / "snapshot.json")
+
+
+def test_version_two_cannot_backfill_a_prequalification_session(tmp_path):
+    anchor = initialize_local_publisher(tmp_path / "publisher")
+    with pytest.raises(ValueError, match="approved exact profile"):
+        local.capture_local_daily_snapshot(symbols=["159992.SZ"], asof="2026-09-04",
+            publisher_dir=tmp_path / "publisher", expected_registry_sha256=anchor["registry_sha256"],
+            output_dir=tmp_path / "prices")
+
+
+def test_verifier_rejects_version_two_before_effective_date(snapshot):
+    value, anchor, result = snapshot
+    value["artifact"]["records"][0]["payload"]["execution"]["instrument_universe_version"] = local.PROFILE_V2
+    value["snapshot_sha256"] = local._hash({key: item for key, item in value.items()
+                                            if key != "snapshot_sha256"})
+    with pytest.raises(ValueError, match="outside its versioned profile"):
+        local.verify_local_daily_snapshot(value, expected_registry_sha256=anchor["registry_sha256"],
+            expected_symbols=["561980.SH", "000300.SH"], asof="2026-09-04",
+            decision_cutoff=result["decision_cutoff"])
 
 
 @pytest.mark.parametrize("field", ["rows", "raw", "symbol", "signature", "pin"])

@@ -36,6 +36,10 @@ _REVIEWED_ANNOUNCEMENT_HASHES = {
     "560900.SH": "bb8fdcdf6a7ff99017a19711e5626ff261132133a6ae4f6963138cd531fd68d4",
     "588730.SH": "d22466d23c9c8d45390ab0307b1006bf3b45b17f51537b74013c0c150156ab75",
 }
+REVIEWED_MAIN_BUY_SYMBOLS_V1 = frozenset({
+    "561980.SH", "159350.SZ", "159980.SZ", "511010.SH",
+    "513650.SH", "518880.SH", "560900.SH", "588730.SH",
+})
 _REVIEWED_CASH_DIVIDENDS = (
     ("2025-09-18", "2025-09-22", "2025-09-23", "2025-09-26", 1.45,
      "ddfaac7c7097b0a15666d6e6787553be48613468e221564bccabfceceb5d0d02", "511010_20250918_FU3S.pdf"),
@@ -74,7 +78,7 @@ def _validate_universe(directory, symbol, source_files):
     config = json.loads(raw)
     symbols = sorted(row["code"][2:] + "." + row["code"][:2].upper() for row in config["holdings"])
     universe = json.loads((directory / "local-main-universe.json").read_bytes())
-    if (symbols != sorted(ETF_RULE_SCOPES) or universe["symbols"] != symbols or symbol not in symbols
+    if (symbols != sorted(REVIEWED_MAIN_BUY_SYMBOLS_V1) or universe["symbols"] != symbols or symbol not in symbols
             or universe["source_sha256"] != hashlib.sha256(raw).hexdigest()):
         raise ValueError("observed configured universe identity or source hash differs")
     return universe
@@ -345,6 +349,8 @@ def prepare_reference_inputs(*, evidence_dir, liquidity_product, asof, global_sn
 
 
 def extend_reference_inputs(references, global_inputs, *, evidence_dir, symbols, asof, observation_end=None):
+    if len(symbols) != len(REVIEWED_MAIN_BUY_SYMBOLS_V1) or set(symbols) != REVIEWED_MAIN_BUY_SYMBOLS_V1:
+        raise ValueError("requested ETFs differ from the reviewed main reference set")
     directory = Path(evidence_dir)
     index = json.loads((directory / "evidence-index.json").read_bytes())
     expected = set(symbols) - {SYMBOL}
@@ -434,7 +440,7 @@ def publish_main_buy_supplement(*, evidence_dir, liquidity_capture_file, global_
     captures = [capture]
     symbols = [SYMBOL]
     if additional_evidence_dir is not None:
-        symbols = sorted(ETF_RULE_SCOPES)
+        symbols = sorted(REVIEWED_MAIN_BUY_SYMBOLS_V1)
         captures.extend(json.loads((Path(additional_evidence_dir) / f"{symbol}-amount.json").read_bytes())
                         for symbol in symbols if symbol != SYMBOL)
     product = build_liquidity_amounts_product(captures, panel=[(symbol, day) for symbol in symbols for day in dates],

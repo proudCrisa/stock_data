@@ -112,8 +112,7 @@ def test_index_cannot_omit_reviewed_cash_dividends_or_invent_an_etf_event():
 
 def test_universe_is_recomputed_from_retained_config_bytes(tmp_path):
     import hashlib
-    from stockdata.market_rules import ETF_RULE_SCOPES
-    symbols = sorted(ETF_RULE_SCOPES)
+    symbols = sorted(publisher.REVIEWED_MAIN_BUY_SYMBOLS_V1)
     raw = _canonical({"holdings": [{"code": s[-2:].lower() + s[:6]} for s in symbols]})
     universe = {"symbols": symbols, "source_sha256": hashlib.sha256(raw).hexdigest()}
     (tmp_path / "local-main-config.json").write_bytes(raw)
@@ -127,9 +126,8 @@ def test_universe_is_recomputed_from_retained_config_bytes(tmp_path):
 
 @pytest.mark.parametrize("asof", ["2026-09-04", "2026-08-14"])
 def test_extended_market_rules_bind_final_combined_source_receipt(tmp_path, monkeypatch, asof):
-    from stockdata.market_rules import ETF_RULE_SCOPES
     fixture, _, _ = make_supplement(asof=asof)
-    symbols = sorted(ETF_RULE_SCOPES)
+    symbols = sorted(publisher.REVIEWED_MAIN_BUY_SYMBOLS_V1)
     references = {component: {**value, "source_evidence": {"files": []}}
                   for component, value in fixture["references"].items()}
     global_inputs = {**fixture["global_signals"], "source_evidence": {"files": []}}
@@ -156,6 +154,13 @@ def test_extended_market_rules_bind_final_combined_source_receipt(tmp_path, monk
     for row in rules["artifact"]["records"]:
         receipt = rules["source_receipts"][row["source_receipt_ids"][0]]
         assert row["payload"]["source_sha256"] == receipt["response_sha256"]
+
+
+def test_direct_extension_rejects_symbols_outside_reviewed_main_set(tmp_path):
+    symbols = sorted(publisher.REVIEWED_MAIN_BUY_SYMBOLS_V1 | {"159992.SZ"})
+    with pytest.raises(ValueError, match="reviewed main reference set"):
+        publisher.extend_reference_inputs({}, {}, evidence_dir=tmp_path,
+            symbols=symbols, asof="2026-09-07")
 
 
 def test_base_reference_sources_are_selected_by_index_for_another_session(tmp_path):

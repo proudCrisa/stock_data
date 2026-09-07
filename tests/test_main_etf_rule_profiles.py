@@ -34,3 +34,14 @@ def test_unknown_etf_cannot_borrow_known_profile():
                  instrument_id="512800.SH", **ETF_RULE_SCOPES["561980.SH"])
     with pytest.raises(ValueError, match="primary sources"):
         validate_market_rule_payload(rule)
+
+
+def test_159992_price_qualification_does_not_grant_market_rule_scope():
+    from stockdata import local_daily_snapshot
+    assert local_daily_snapshot.PROFILE == "trading-current-local-prices/2"
+    assert "159992.SZ" in local_daily_snapshot.ETF_SYMBOLS
+    assert "159992.SZ" not in ETF_RULE_SCOPES
+    rule = _rule(schema_version=ETF_MARKET_RULE_PAYLOAD_SCHEMA, security_type="ETF", board="ETF",
+                 instrument_id="159992.SZ", **ETF_RULE_SCOPES["159350.SZ"])
+    with pytest.raises(ValueError, match="primary sources"):
+        validate_market_rule_payload(rule, panel_entry="159992.SZ@2026-09-07")

@@ -27,19 +27,27 @@ from .ticker import to_tencent
 SCHEMA_VERSION = "stockdata-trading-daily-snapshot/1"
 COMPONENT = "local_daily_prices"
 ARTIFACT_SCHEMA = "stockdata-local-daily-prices/1"
-PROFILE = "trading-current-local-prices/1"
-ETF_SYMBOLS = frozenset({"588730.SH", "518880.SH", "561980.SH", "159980.SZ",
-                         "560900.SH", "511010.SH", "513650.SH", "159350.SZ"})
+PROFILE_V1 = "trading-current-local-prices/1"
+PROFILE_V2 = "trading-current-local-prices/2"
+PROFILE = PROFILE_V2
+ETF_SYMBOLS_V1 = frozenset({"588730.SH", "518880.SH", "561980.SH", "159980.SZ",
+                            "560900.SH", "511010.SH", "513650.SH", "159350.SZ"})
+ETF_SYMBOLS = ETF_SYMBOLS_V1 | {"159992.SZ"}
+PROFILE_ETF_SYMBOLS = {PROFILE_V1: ETF_SYMBOLS_V1, PROFILE_V2: ETF_SYMBOLS}
+PROFILE_EFFECTIVE_FROM = {PROFILE_V1: None, PROFILE_V2: "2026-09-07"}
 INDEX_SYMBOLS = frozenset({"000300.SH", "000688.SH", "399811.SZ", "399395.SZ", "000933.SH"})
 TENCENT_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 FIELDS = ("date", "open", "high", "low", "close", "volume")
 
 
-def _route(symbol, role):
-    if symbol not in ETF_SYMBOLS | INDEX_SYMBOLS or role not in {"execution", "signal"}:
+def _route(symbol, role, *, profile=PROFILE):
+    if profile not in PROFILE_ETF_SYMBOLS:
+        raise ValueError("local daily profile version is unsupported")
+    etf_symbols = PROFILE_ETF_SYMBOLS[profile]
+    if symbol not in etf_symbols | INDEX_SYMBOLS or role not in {"execution", "signal"}:
         raise ValueError("symbol or price role is outside the local daily profile")
-    adjustment = "qfq" if symbol in ETF_SYMBOLS and role == "signal" else "raw"
-    sources = ["tencent.ifzq"] if symbol in ETF_SYMBOLS else ["baostock", "tencent.ifzq"]
+    adjustment = "qfq" if symbol in etf_symbols and role == "signal" else "raw"
+    sources = ["tencent.ifzq"] if symbol in etf_symbols else ["baostock", "tencent.ifzq"]
     return [(source, adjustment) for source in sources]
 
 
@@ -131,9 +139,9 @@ def _replay(capture, *, source, symbol, start, asof, adjustment, cutoff):
     return selected, actual_adjustment
 
 
-def build_price_manifest(attempts, *, symbol, role, start, asof, decision_cutoff):
+def build_price_manifest(attempts, *, symbol, role, start, asof, decision_cutoff, profile=PROFILE):
     cutoff = _timestamp(decision_cutoff)
-    route = _route(symbol, role)
+    route = _route(symbol, role, profile=profile)
     if not attempts or len(attempts) > len(route):
         raise ValueError("price source attempts do not match the fixed route")
     selected = None
@@ -172,7 +180,7 @@ def build_price_manifest(attempts, *, symbol, role, start, asof, decision_cutoff
         "event_time_range": {"start": rows[0]["date"], "end": asof}, "content_hash": _hash(product_rows),
         "source_receipt_ids": [receipt_id], "available_at": capture["observed_at"],
         "finality": {"status": "source_marked_final", "watermark": asof}, "pit_mode": "current_observation",
-        "corporate_action_version": "not_bound", "universe_version": PROFILE, "trading_calendar_version": "not_bound",
+        "corporate_action_version": "not_bound", "universe_version": profile, "trading_calendar_version": "not_bound",
         "quality_grade": QUALITY_STATUS, "permitted_uses": PERMITTED_USES, "lineage_ids": [],
         "price_identity": {"source": source, "adjustment_mode": mode,
                            "adjustment_version": f"{source}-{mode}", "volume_unit": "share"},
@@ -185,7 +193,7 @@ def build_price_manifest(attempts, *, symbol, role, start, asof, decision_cutoff
         "created_at": decision_cutoff, "decision_cutoff": decision_cutoff,
         "dataset_ids": [product["data_product_id"]], "receipt_ids": [receipt_id],
         "content_hashes": [product["product_sha256"]], "provider_authorities": [], "claimed_sources": [source],
-        "instrument_universe_version": PROFILE, "trading_calendar_version": "not_bound",
+        "instrument_universe_version": profile, "trading_calendar_version": "not_bound",
         "corporate_action_version": "not_bound", "available_at": capture["observed_at"],
         "finality": "source_marked_final", "quality_status": QUALITY_STATUS,
         "fallback_status": "used" if len(attempts) > 1 else "not_used", "permitted_uses": PERMITTED_USES,
@@ -215,6 +223,14 @@ def verify_local_daily_snapshot(payload, *, expected_registry_sha256, expected_s
             or artifact["schema_version"] != ARTIFACT_SCHEMA or artifact["component"] != COMPONENT
             or artifact["panel"] != panel or len(artifact["records"]) != len(panel)):
         raise ValueError("local daily price artifact differs exact panel")
+    try:
+        profile = artifact["records"][0]["payload"]["execution"]["instrument_universe_version"]
+        etf_symbols = PROFILE_ETF_SYMBOLS[profile]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ValueError("local daily profile version is unsupported") from exc
+    effective_from = PROFILE_EFFECTIVE_FROM[profile]
+    if (effective_from is not None and asof < effective_from) or not set(symbols) <= etf_symbols | INDEX_SYMBOLS:
+        raise ValueError("local daily snapshot is outside its versioned profile")
     receipt_ids = []
     for entry, record in zip(panel, artifact["records"]):
         if set(record) != {"panel_entry", "payload", "record_sha256", "source_receipt_ids", "effective_at", "available_at"}:
@@ -226,7 +242,8 @@ def verify_local_daily_snapshot(payload, *, expected_registry_sha256, expected_s
             if _timestamp(manifest["decision_cutoff"]) > cutoff:
                 raise ValueError("price manifest is later than snapshot freeze")
             rebuilt = build_price_manifest(manifest["source_attempts"], symbol=entry.split("@")[0], role=role,
-                                           start=start, asof=asof, decision_cutoff=manifest["decision_cutoff"])
+                                           start=start, asof=asof, decision_cutoff=manifest["decision_cutoff"],
+                                           profile=profile)
             if manifest != rebuilt:
                 raise ValueError("local daily price manifest cannot replay")
         if record["record_sha256"] != _hash(record["payload"]):
@@ -235,7 +252,7 @@ def verify_local_daily_snapshot(payload, *, expected_registry_sha256, expected_s
         if record["available_at"] != observed or record["effective_at"] != f"{asof}T15:00:00+08:00":
             raise ValueError("local daily price record time differs")
         receipt = {"schema_version": "stockdata-source-receipt/1", "observed_at": observed,
-                   "source": PROFILE, "response_sha256": _hash(record["payload"]),
+                   "source": profile, "response_sha256": _hash(record["payload"]),
                    "bindings": [{"component": COMPONENT, "panel_entry": entry, "record_sha256": record["record_sha256"]}]}
         receipt_id = _hash(receipt)
         if record["source_receipt_ids"] != [receipt_id] or payload["source_receipts"].get(receipt_id) != receipt:
@@ -251,9 +268,15 @@ def verify_local_daily_snapshot(payload, *, expected_registry_sha256, expected_s
     return payload
 
 
-def capture_local_daily_snapshot(*, symbols, asof, publisher_dir, expected_registry_sha256, output_dir):
+def capture_local_daily_snapshot(*, symbols, asof, publisher_dir, expected_registry_sha256, output_dir,
+                                 profile=PROFILE):
     symbols = sorted(symbols)
-    if not symbols or len(symbols) != len(set(symbols)) or not set(symbols) <= ETF_SYMBOLS | INDEX_SYMBOLS:
+    if profile not in PROFILE_ETF_SYMBOLS:
+        raise ValueError("local daily profile version is unsupported")
+    effective_from = PROFILE_EFFECTIVE_FROM[profile]
+    if (not symbols or len(symbols) != len(set(symbols))
+            or not set(symbols) <= PROFILE_ETF_SYMBOLS[profile] | INDEX_SYMBOLS
+            or (effective_from is not None and asof < effective_from)):
         raise ValueError("local daily capture symbols are outside the approved exact profile")
     destination = Path(output_dir).expanduser().resolve()
     destination.mkdir(mode=0o700, parents=False, exist_ok=False)
@@ -263,7 +286,7 @@ def capture_local_daily_snapshot(*, symbols, asof, publisher_dir, expected_regis
         captures[symbol] = {}
         for role in ("execution", "signal"):
             attempts = []
-            for source, adjustment in _route(symbol, role):
+            for source, adjustment in _route(symbol, role, profile=profile):
                 identity = (source, symbol, adjustment)
                 if identity not in memo:
                     try:
@@ -278,7 +301,7 @@ def capture_local_daily_snapshot(*, symbols, asof, publisher_dir, expected_regis
                 attempts.append(memo[identity])
                 try:
                     build_price_manifest(attempts, symbol=symbol, role=role, start=start, asof=asof,
-                                         decision_cutoff=datetime.now(timezone.utc).isoformat())
+                                         decision_cutoff=datetime.now(timezone.utc).isoformat(), profile=profile)
                     break
                 except ValueError:
                     pass
@@ -298,10 +321,11 @@ def capture_local_daily_snapshot(*, symbols, asof, publisher_dir, expected_regis
     for symbol, roles in captures.items():
         entry = f"{symbol}@{asof}"
         values = {role: build_price_manifest(attempts, symbol=symbol, role=role, start=start, asof=asof,
-                                             decision_cutoff=cutoff) for role, attempts in roles.items()}
+                                             decision_cutoff=cutoff, profile=profile)
+                  for role, attempts in roles.items()}
         observed = max((m["available_at"] for m in values.values()), key=_timestamp)
         receipt = {"schema_version": "stockdata-source-receipt/1", "observed_at": observed,
-                   "source": PROFILE, "response_sha256": _hash(values),
+                   "source": profile, "response_sha256": _hash(values),
                    "bindings": [{"component": COMPONENT, "panel_entry": entry, "record_sha256": _hash(values)}]}
         receipt_id = _hash(receipt)
         receipts[receipt_id] = receipt
