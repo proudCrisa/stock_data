@@ -171,6 +171,8 @@ python -m stockdata.local_main_buy_publisher \
   --registry-sha256 EXTERNALLY_FIXED_REGISTRY_SHA256 \
   --provider-manifest-sha256 TRADING_LOCAL_PROVIDER_MANIFEST_SHA256 \
   --corporate-action-coverage-file /absolute/signed-ca-coverage.json \
+  --asof 2026-09-07 \
+  --observation-end 2026-09-08 \
   --output-dir /absolute/new-supplement-directory
 ```
 
@@ -191,12 +193,12 @@ exact shape (one sorted entry per requested panel):
       "coverage_end": "2026-09-08",
       "coverage_start": "2025-07-11",
       "decision_cutoff_at": "2026-09-08T09:25:00+08:00",
-      "panel_entry": "561980.SH@2026-09-08",
+      "panel_entry": "561980.SH@2026-09-07",
       "source_evidence_sha256": "<sha256>"
     }],
-    "panel": ["561980.SH@2026-09-08"],
+    "panel": ["561980.SH@2026-09-07"],
     "publisher_key_id": "<enrolled-corporate-actions-signer-id>",
-    "qualified_at": "<canonical-time-before-cutoff>",
+    "qualified_at": "2026-09-08T09:20:00+08:00",
     "schema_version": "stockdata-corporate-action-coverage-qualification/1",
     "trust_registry_sha256": "<externally-fixed-registry-sha256>",
     "trust_root_id": "<enrolled-root-id>"
@@ -216,11 +218,22 @@ Those files, all reviewed attachments, and the review partition remain bound by
 the sole corporate-actions source receipt `/2`; it does not infer them from
 `asof`, `observation_end`, filenames, or wall-clock time.
 
+In this example, `asof=2026-09-07` is the finalized T-1 session and must equal
+the native liquidity capture's `request.end_date`; every panel entry therefore
+ends in `@2026-09-07`. `observation_end=2026-09-08`, `coverage_end=2026-09-08`,
+and the 2026-09-08 09:25 cutoff describe the distinct T-day announcement
+window. The coverage end is not reduced to T-1. A same-day
+`561980.SH@2026-09-08` panel paired with this cutoff would not match the
+finalized input session used by the CLI.
+
 The qualification cutoff is also the liquidity-product and outer-supplement
 cutoff. Preparation may record current observation times; the final publication
-time is read once and must be after `qualified_at` and before that cutoff. Missing or duplicate panels,
-expired or false coverage, a different cutoff, an evidence hash change, or a
-missing HTTP receipt rejects before the output directory is created.
+time is read once. For every bound source, the required order is source receipt
+`observed_at` <= qualification `qualified_at` <= signed component `available_at`
+(`published_at`) < `decision_cutoff_at`.
+Missing or duplicate panels, expired or false coverage, a different cutoff, an
+evidence hash change, or a missing HTTP receipt rejects before the output
+directory is created.
 
 Legacy corporate-actions source receipts `/1` remain valid historical bytes,
 but they cannot qualify a new publication. Existing retained main-ETF evidence
