@@ -32,6 +32,7 @@ from stockdata.future_panel_registration import (
 )
 from stockdata.market_rules import MARKET_RULE_PAYLOAD_SCHEMA
 from stockdata.provider_authority_admission import (
+    CORPORATE_ACTION_SOURCE_RECEIPT_SCHEMA,
     SOURCE_RECEIPT_SCHEMA,
     admit_signed_component_authority,
     require_predecision_authority,
@@ -226,7 +227,7 @@ def _generic_market_rules_artifact(panel: list[str]) -> tuple[dict[str, object],
 
 
 def _source_receipt(component: str, artifact: dict[str, object]) -> dict[str, object]:
-    return {
+    receipt = {
         "schema_version": SOURCE_RECEIPT_SCHEMA,
         "source": "official-calendar",
         "observed_at": "2026-08-13T08:00:00+08:00",
@@ -245,6 +246,21 @@ def _source_receipt(component: str, artifact: dict[str, object]) -> dict[str, ob
             ),
         ),
     }
+    if component == "corporate_actions":
+        receipt["schema_version"] = CORPORATE_ACTION_SOURCE_RECEIPT_SCHEMA
+        receipt["corporate_action_coverage"] = [
+            {
+                "panel_entry": record["panel_entry"],
+                "coverage_start": "2025-07-11",
+                "coverage_end": record["panel_entry"].split("@")[1],
+                "decision_cutoff_at": (
+                    f"{record['panel_entry'].split('@')[1]}T09:25:00+08:00"
+                ),
+                "coverage_complete_through_decision_cutoff": True,
+            }
+            for record in artifact["records"]
+        ]
+    return receipt
 
 
 def _envelope(component, artifact, receipt_id, registry, root, signer):
@@ -416,6 +432,63 @@ def test_admits_each_strict_component_payload(tmp_path, component) -> None:
     )
 
     assert admitted.component == component
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("legacy", "exactly one signed coverage declaration"),
+        ("missing", "source receipt schema is incomplete"),
+        ("incomplete", "not complete through decision cutoff"),
+        ("wrong_panel", "coverage differs from bindings"),
+        ("wrong_cutoff", "decision cutoff differs from authority"),
+        ("early_end", "interval does not reach decision cutoff"),
+        ("duplicate", "coverage must be sorted unique"),
+    ],
+)
+def test_corporate_actions_rejects_incomplete_signed_coverage(
+    tmp_path, mutation, message
+) -> None:
+    panel = ["000001.SZ@2026-08-13"]
+    root = Ed25519PrivateKey.generate()
+    signer = Ed25519PrivateKey.generate()
+    registry = _registry(tmp_path, root, signer, "corporate_actions")
+    artifact = _artifact("corporate_actions", panel, "0" * 64)
+    receipt = _source_receipt("corporate_actions", artifact)
+    coverage = receipt["corporate_action_coverage"]
+    if mutation == "legacy":
+        receipt["schema_version"] = SOURCE_RECEIPT_SCHEMA
+        del receipt["corporate_action_coverage"]
+    elif mutation == "missing":
+        del receipt["corporate_action_coverage"]
+    elif mutation == "incomplete":
+        coverage[0]["coverage_complete_through_decision_cutoff"] = False
+    elif mutation == "wrong_panel":
+        coverage[0]["panel_entry"] = "000002.SZ@2026-08-13"
+    elif mutation == "wrong_cutoff":
+        coverage[0]["decision_cutoff_at"] = "2026-08-13T09:24:59+08:00"
+    elif mutation == "early_end":
+        coverage[0]["coverage_end"] = "2026-08-12"
+    else:
+        coverage.append(deepcopy(coverage[0]))
+    receipt_id = hashlib.sha256(_canonical(receipt)).hexdigest()
+    artifact["records"][0]["source_receipt_ids"] = [receipt_id]
+    envelope = _envelope(
+        "corporate_actions", artifact, receipt_id, registry, root, signer
+    )
+
+    with pytest.raises(ValueError, match=message):
+        admit_signed_component_authority(
+            component="corporate_actions",
+            artifact_value=artifact,
+            authority_envelope=envelope,
+            expected_panel=panel,
+            bound_source_receipts={receipt_id: receipt},
+            registry=registry,
+            decision_cutoff_by_panel={
+                panel[0]: "2026-08-13T09:25:00+08:00"
+            },
+        )
 
 
 @pytest.mark.parametrize(

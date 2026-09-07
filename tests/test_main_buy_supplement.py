@@ -11,7 +11,10 @@ from stockdata.main_buy_supplement import (
     SCHEMA_VERSION, build_global_signals_authority_inputs, verify_main_buy_supplement,
 )
 from stockdata.market_rules import ETF_MARKET_RULE_PAYLOAD_SCHEMA, ETF_RULE_SCOPES
-from stockdata.provider_authority_admission import SOURCE_RECEIPT_SCHEMA
+from stockdata.provider_authority_admission import (
+    CORPORATE_ACTION_SOURCE_RECEIPT_SCHEMA,
+    SOURCE_RECEIPT_SCHEMA,
+)
 from stockdata.provider_authority_publisher import publish_authority_envelope
 from stockdata.rqgm_provider_contract import COMPONENT_SCHEMAS
 from test_liquidity_amount_product import _receipt
@@ -41,7 +44,13 @@ def _signed(inputs, *, registry_sha, root, signer, observed="2026-08-28T16:05:00
     }}
 
 
-def _reference(component, rows, *, observed="2026-08-28T16:05:00+08:00"):
+def _reference(
+    component,
+    rows,
+    *,
+    observed="2026-08-28T16:05:00+08:00",
+    decision_cutoff=None,
+):
     records = [{"panel_entry": entry, "payload": payload, "record_sha256": _hash(payload),
                 "source_receipt_ids": [], "effective_at": f"{entry.split('@')[1]}T00:00:00+08:00",
                 "available_at": observed} for entry, payload in sorted(rows.items())]
@@ -52,6 +61,20 @@ def _reference(component, rows, *, observed="2026-08-28T16:05:00+08:00"):
         "bindings": [{"component": component, "panel_entry": row["panel_entry"],
                       "record_sha256": row["record_sha256"]} for row in records],
     }
+    if component == "corporate_actions":
+        if decision_cutoff is None:
+            raise ValueError("corporate_actions fixture requires decision cutoff")
+        receipt["schema_version"] = CORPORATE_ACTION_SOURCE_RECEIPT_SCHEMA
+        receipt["corporate_action_coverage"] = [
+            {
+                "panel_entry": row["panel_entry"],
+                "coverage_start": "2025-07-11",
+                "coverage_end": decision_cutoff.split("T")[0],
+                "decision_cutoff_at": decision_cutoff,
+                "coverage_complete_through_decision_cutoff": True,
+            }
+            for row in records
+        ]
     receipt_id = _hash(receipt)
     for record in records:
         record["source_receipt_ids"] = [receipt_id]
@@ -119,7 +142,12 @@ def make_supplement(*, asof=ASOF, snapshot=None, rule_overrides=None,
         "universe": {"is_member": True, "universe_id": _hash([SYMBOL])},
         "corporate_actions": {"events": []},
     }
-    references = {component: sign(_reference(component, {panel[0]: row}, observed=observed))
+    references = {component: sign(_reference(
+        component,
+        {panel[0]: row},
+        observed=observed,
+        decision_cutoff=cutoff,
+    ))
                   for component, row in reference_rows.items()}
     references["trading_calendar"] = sign(
         _reference("trading_calendar", calendar_rows, observed=early), observed=early,
@@ -145,6 +173,30 @@ def test_offline_supplement_admits_real_etf_identity_with_all_signed_inputs(monk
     payload, pin, _ = make_supplement()
     monkeypatch.setattr("pathlib.Path.read_bytes", lambda *args: pytest.fail("hidden filesystem read"))
     assert _verify(payload, pin) == payload
+
+
+def test_supplement_rejects_resigned_incomplete_corporate_action_coverage():
+    payload, pin, signer = make_supplement()
+    inputs = payload["references"]["corporate_actions"]
+    receipt = next(iter(inputs["source_receipts"].values()))
+    receipt["corporate_action_coverage"][0][
+        "coverage_complete_through_decision_cutoff"
+    ] = False
+    receipt_id = _hash(receipt)
+    inputs["artifact"]["records"][0]["source_receipt_ids"] = [receipt_id]
+    payload["references"]["corporate_actions"] = _signed(
+        {
+            "artifact": inputs["artifact"],
+            "source_receipts": {receipt_id: receipt},
+        },
+        registry_sha=pin,
+        root=Ed25519PrivateKey.from_private_bytes(bytes([1]) * 32),
+        signer=signer,
+        observed=inputs["authority_envelope"]["payload"]["available_at"],
+    )
+
+    with pytest.raises(ValueError, match="not complete through decision cutoff"):
+        _verify(payload, pin)
 
 
 @pytest.mark.parametrize("mutation", ["pin", "signature", "amount", "calendar_gap", "global", "universe", "manifest", "etf"])
@@ -346,12 +398,13 @@ def test_current_observation_cutoff_is_calendar_only():
             current_decision_observation_cutoff=CUTOFF)
 
 
-def test_liquidity_product_can_freeze_before_final_signed_supplement():
+def test_later_supplement_cutoff_cannot_exceed_signed_corporate_action_cutoff():
     payload, pin, _ = make_supplement()
     original_product = _canonical(payload["liquidity"]["product"])
     payload["decision_cutoff"] = f"{ASOF}T16:11:00+08:00"
-    assert verify_main_buy_supplement(payload, expected_registry_sha256=pin,
-        provider_manifest_sha256="a" * 64, asof=ASOF, decision_cutoff=payload["decision_cutoff"]) == payload
+    with pytest.raises(ValueError, match="decision cutoff differs from authority"):
+        verify_main_buy_supplement(payload, expected_registry_sha256=pin,
+            provider_manifest_sha256="a" * 64, asof=ASOF, decision_cutoff=payload["decision_cutoff"])
     assert _canonical(payload["liquidity"]["product"]) == original_product
     payload["decision_cutoff"] = f"{ASOF}T16:09:00+08:00"
     with pytest.raises(ValueError, match="product freeze is after authority cutoff"):

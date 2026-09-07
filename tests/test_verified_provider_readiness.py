@@ -38,6 +38,7 @@ from stockdata.forward_context import (
 )
 from stockdata.market_rules import MARKET_RULE_PAYLOAD_SCHEMA, _symbol_board
 from stockdata.provider_authority_admission import (
+    CORPORATE_ACTION_SOURCE_RECEIPT_SCHEMA,
     SIGNED_COMPONENTS,
     SOURCE_RECEIPT_SCHEMA,
     admit_signed_component_authority,
@@ -452,6 +453,20 @@ def _external_authority(
             for record in records
         ],
     }
+    if component == "corporate_actions":
+        receipt["schema_version"] = CORPORATE_ACTION_SOURCE_RECEIPT_SCHEMA
+        receipt["corporate_action_coverage"] = [
+            {
+                "panel_entry": record["panel_entry"],
+                "coverage_start": "2025-07-11",
+                "coverage_end": record["panel_entry"].split("@")[1],
+                "decision_cutoff_at": (
+                    f"{record['panel_entry'].split('@')[1]}T09:25:00+08:00"
+                ),
+                "coverage_complete_through_decision_cutoff": True,
+            }
+            for record in records
+        ]
     receipt_id = _sha256(receipt)
     for record in records:
         record["source_receipt_ids"] = [receipt_id]

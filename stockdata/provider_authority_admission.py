@@ -31,6 +31,16 @@ SUPPORTED_SIGNED_COMPONENTS = SIGNED_COMPONENTS | {
     "fund_flow",
 }
 SOURCE_RECEIPT_SCHEMA = "stockdata-provider-component-source-receipt/1"
+CORPORATE_ACTION_SOURCE_RECEIPT_SCHEMA = (
+    "stockdata-provider-component-source-receipt/2"
+)
+_ReceiptBindings = tuple[
+    set[tuple[str, str, str]],
+    str,
+    str,
+    str,
+    Mapping[str, tuple[str, str, str, bool]],
+]
 GENERIC_MARKET_RULEBOOK_PREREQUISITE_SCHEMA = (
     "stockdata-preregistered-generic-market-rulebook/1"
 )
@@ -267,17 +277,23 @@ def _component_payload(
 
 def _receipt_bindings(
     value: object, receipt_id: str
-) -> tuple[set[tuple[str, str, str]], str, str, str]:
-    if not isinstance(value, Mapping) or set(value) != {
+) -> _ReceiptBindings:
+    if not isinstance(value, Mapping):
+        raise ValueError("provider authority source receipt schema is incomplete")
+    schema_version = value.get("schema_version")
+    expected_fields = {
         "schema_version",
         "bindings",
         "observed_at",
         "response_sha256",
         "source",
-    }:
-        raise ValueError("provider authority source receipt schema is incomplete")
-    if value["schema_version"] != SOURCE_RECEIPT_SCHEMA:
+    }
+    if schema_version == CORPORATE_ACTION_SOURCE_RECEIPT_SCHEMA:
+        expected_fields.add("corporate_action_coverage")
+    elif schema_version != SOURCE_RECEIPT_SCHEMA:
         raise ValueError("provider authority source receipt schema is invalid")
+    if set(value) != expected_fields:
+        raise ValueError("provider authority source receipt schema is incomplete")
     if not isinstance(value["source"], str) or not value["source"]:
         raise ValueError("provider authority source receipt source is invalid")
     source = value["source"]
@@ -307,9 +323,71 @@ def _receipt_bindings(
         )
     if result != sorted(result) or len(result) != len(set(result)):
         raise ValueError("provider authority source receipt bindings must be sorted unique")
+    corporate_action_coverage: dict[str, tuple[str, str, str, bool]] = {}
+    if schema_version == CORPORATE_ACTION_SOURCE_RECEIPT_SCHEMA:
+        if any(component != "corporate_actions" for component, _, _ in result):
+            raise ValueError("corporate-action source receipt binds another component")
+        coverage = value["corporate_action_coverage"]
+        if not isinstance(coverage, list) or not coverage:
+            raise ValueError("corporate-action source receipt coverage is empty")
+        coverage_entries: list[str] = []
+        for item in coverage:
+            if not isinstance(item, Mapping) or set(item) != {
+                "panel_entry",
+                "coverage_start",
+                "coverage_end",
+                "decision_cutoff_at",
+                "coverage_complete_through_decision_cutoff",
+            }:
+                raise ValueError("corporate-action source receipt coverage is incomplete")
+            entry = _panel_entry(item["panel_entry"])
+            coverage_entries.append(entry)
+            try:
+                coverage_start = date.fromisoformat(str(item["coverage_start"]))
+                coverage_end = date.fromisoformat(str(item["coverage_end"]))
+            except ValueError as exc:
+                raise ValueError(
+                    "corporate-action source receipt coverage dates are invalid"
+                ) from exc
+            if (
+                coverage_start.isoformat() != item["coverage_start"]
+                or coverage_end.isoformat() != item["coverage_end"]
+                or coverage_start > coverage_end
+            ):
+                raise ValueError(
+                    "corporate-action source receipt coverage dates are invalid"
+                )
+            complete = item["coverage_complete_through_decision_cutoff"]
+            if type(complete) is not bool:
+                raise ValueError(
+                    "corporate-action source receipt coverage completeness is invalid"
+                )
+            corporate_action_coverage[entry] = (
+                coverage_start.isoformat(),
+                coverage_end.isoformat(),
+                _timestamp(item["decision_cutoff_at"], "corporate-action decision cutoff"),
+                complete,
+            )
+        if coverage_entries != sorted(coverage_entries) or len(coverage_entries) != len(
+            set(coverage_entries)
+        ):
+            raise ValueError(
+                "corporate-action source receipt coverage must be sorted unique"
+            )
+        bound_entries = {entry for _, entry, _ in result}
+        if set(coverage_entries) != bound_entries:
+            raise ValueError(
+                "corporate-action source receipt coverage differs from bindings"
+            )
     if receipt_id != hashlib.sha256(_canonical(dict(value))).hexdigest():
         raise ValueError("provider authority source receipt identity drifted")
-    return set(result), observed_at, source, response_sha256
+    return (
+        set(result),
+        observed_at,
+        source,
+        response_sha256,
+        corporate_action_coverage,
+    )
 
 
 def validate_local_mechanical_prerequisites(
@@ -338,7 +416,7 @@ def validate_local_mechanical_prerequisites(
     if has_authority_shape(calendar_artifact) or has_authority_shape(market_rules_artifact):
         raise ValueError("local prerequisites contain authority-shaped fields")
     expected = tuple(sorted(_panel_entry(entry) for entry in expected_panel))
-    receipts: dict[str, tuple[set[tuple[str, str, str]], str, str, str]] = {}
+    receipts: dict[str, _ReceiptBindings] = {}
     referenced_receipts: set[str] = set()
     referenced_bindings: dict[str, set[tuple[str, str, str]]] = {}
 
@@ -354,7 +432,7 @@ def validate_local_mechanical_prerequisites(
         )
         referenced_bindings[receipt_id] = set()
 
-    def bound_receipt(receipt_id: str) -> tuple[set[tuple[str, str, str]], str, str, str]:
+    def bound_receipt(receipt_id: str) -> _ReceiptBindings:
         if receipt_id not in bound_source_receipts:
             raise ValueError("local prerequisite uses an unbound source receipt")
         return receipts[receipt_id]
@@ -402,7 +480,7 @@ def validate_local_mechanical_prerequisites(
             referenced_receipts.update(normalized_receipts)
             binding = (component, entry, record_sha256)
             for receipt_id in normalized_receipts:
-                bindings, _, source, response_sha256 = bound_receipt(receipt_id)
+                bindings, _, source, response_sha256, _ = bound_receipt(receipt_id)
                 if binding not in bindings:
                     raise ValueError(f"local {component} receipt does not bind record")
                 referenced_bindings[receipt_id].add(binding)
@@ -469,7 +547,7 @@ def validate_local_mechanical_prerequisites(
         raise ValueError("local prerequisite source receipt closure is not exact")
     if any(
         bindings != referenced_bindings[receipt_id]
-        for receipt_id, (bindings, _, _, _) in receipts.items()
+        for receipt_id, (bindings, _, _, _, _) in receipts.items()
     ):
         raise ValueError("local prerequisite receipt binding closure is not exact")
     used_receipts = sorted(referenced_receipts)
@@ -539,9 +617,7 @@ def admit_signed_component_authority(
     ):
         raise ValueError(f"{component} authority artifact differs exact panel")
 
-    bound_receipts: dict[
-        str, tuple[set[tuple[str, str, str]], str, str, str]
-    ] = {}
+    bound_receipts: dict[str, _ReceiptBindings] = {}
     records = artifact_value["records"]
     if not isinstance(records, list) or len(records) != len(normalized_expected):
         raise ValueError(f"{component} authority records do not cover exact panel")
@@ -554,6 +630,7 @@ def admit_signed_component_authority(
     market_rule_payloads: list[Mapping[str, object]] = []
     payload_by_panel: dict[str, Mapping[str, object]] = {}
     corporate_action_announcements: dict[str, tuple[datetime, ...]] = {}
+    corporate_action_receipts: dict[str, set[str]] = {}
     status_payloads: Mapping[str, Mapping[str, object]] | None = None
     if component == "market_rules":
         if (
@@ -631,6 +708,7 @@ def admit_signed_component_authority(
             market_rule_payloads.append(payload)
         payload_by_panel[entry] = dict(payload)
         if component == "corporate_actions":
+            corporate_action_receipts[entry] = normalized_receipts
             corporate_action_announcements[entry] = tuple(
                 datetime.fromisoformat(
                     _timestamp(event["announcement_at"], "announcement_at")
@@ -701,6 +779,38 @@ def admit_signed_component_authority(
         cutoffs = {entry: cutoff for entry in normalized_expected}
     if cutoffs is None:
         raise ValueError(f"{component} authority requires signed calendar cutoffs")
+    if component == "corporate_actions":
+        if set(cutoffs) != set(normalized_expected):
+            raise ValueError("corporate_actions coverage requires exact calendar cutoffs")
+        for entry, receipt_ids in corporate_action_receipts.items():
+            declarations = [
+                bound_receipts[receipt_id][4][entry]
+                for receipt_id in receipt_ids
+                if entry in bound_receipts[receipt_id][4]
+            ]
+            if len(declarations) != 1:
+                raise ValueError(
+                    "corporate_actions authority requires exactly one signed coverage declaration"
+                )
+            coverage_start, coverage_end, declared_cutoff, complete = declarations[0]
+            cutoff = _timestamp(cutoffs[entry], "decision cutoff")
+            cutoff_day = datetime.fromisoformat(cutoff).date()
+            panel_day = date.fromisoformat(entry.split("@")[1])
+            if declared_cutoff != cutoff:
+                raise ValueError(
+                    "corporate_actions coverage decision cutoff differs from authority"
+                )
+            if (
+                date.fromisoformat(coverage_start) > panel_day
+                or date.fromisoformat(coverage_end) < cutoff_day
+            ):
+                raise ValueError(
+                    "corporate_actions coverage interval does not reach decision cutoff"
+                )
+            if complete is not True:
+                raise ValueError(
+                    "corporate_actions coverage is not complete through decision cutoff"
+                )
     admitted = AdmittedProviderAuthority(
         component=component,
         artifact=artifact,
@@ -805,9 +915,7 @@ def preregister_generic_market_rulebook(
     if not isinstance(records, list) or not records:
         raise ValueError("generic market_rules records are empty")
 
-    bound_receipts: dict[
-        str, tuple[set[tuple[str, str, str]], str, str, str]
-    ] = {}
+    bound_receipts: dict[str, _ReceiptBindings] = {}
     payloads_by_panel: dict[str, list[Mapping[str, object]]] = {
         entry: [] for entry in normalized_expected
     }
@@ -981,9 +1089,9 @@ def verify_trusted_local_forward_prerequisites(
     if forbidden(calendar_value) or forbidden(market_rules_value):
         raise ValueError("trusted local prerequisites contain authority-shaped fields")
 
-    receipts: dict[str, tuple[set[tuple[str, str, str]], str, str, str]] = {}
+    receipts: dict[str, _ReceiptBindings] = {}
 
-    def receipt(receipt_id: str) -> tuple[set[tuple[str, str, str]], str, str, str]:
+    def receipt(receipt_id: str) -> _ReceiptBindings:
         if receipt_id not in receipts:
             try:
                 receipts[receipt_id] = _receipt_bindings(
@@ -1142,6 +1250,7 @@ def require_predecision_authority(
 __all__ = [
     "SIGNED_COMPONENTS",
     "SOURCE_RECEIPT_SCHEMA",
+    "CORPORATE_ACTION_SOURCE_RECEIPT_SCHEMA",
     "AdmittedProviderAuthority",
     "GENERIC_MARKET_RULEBOOK_PREREQUISITE_SCHEMA",
     "PreregisteredGenericMarketRulebook",

@@ -29,6 +29,7 @@ from .authority import (
 )
 from .provider_authority_admission import (
     AdmittedProviderAuthority,
+    CORPORATE_ACTION_SOURCE_RECEIPT_SCHEMA,
     PreregisteredGenericMarketRulebook,
     SOURCE_RECEIPT_SCHEMA,
     admit_signed_component_authority,
@@ -136,7 +137,10 @@ def _signing_key_from_env(env_name: str) -> Ed25519PrivateKey:
 def _receipt_id(receipt: object) -> str:
     if not isinstance(receipt, Mapping):
         raise ValueError("source receipt must be an object")
-    if receipt.get("schema_version") != SOURCE_RECEIPT_SCHEMA:
+    if receipt.get("schema_version") not in {
+        SOURCE_RECEIPT_SCHEMA,
+        CORPORATE_ACTION_SOURCE_RECEIPT_SCHEMA,
+    }:
         raise ValueError("source receipt schema is invalid")
     return hashlib.sha256(_canonical(dict(receipt))).hexdigest()
 

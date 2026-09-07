@@ -22,6 +22,7 @@ from stockdata.authority import (
 )
 from stockdata.market_rules import MARKET_RULE_PAYLOAD_SCHEMA
 from stockdata.provider_authority_admission import (
+    CORPORATE_ACTION_SOURCE_RECEIPT_SCHEMA,
     GENERIC_MARKET_RULEBOOK_PREREQUISITE_SCHEMA,
     PreregisteredGenericMarketRulebook,
     SOURCE_RECEIPT_SCHEMA,
@@ -380,6 +381,82 @@ def test_publishes_authority_envelope_and_production_admits_it(
     assert output_file.read_bytes() == _canonical(published.envelope)
     assert published.admitted.source_receipt_ids == (publisher_fixture["receipt_id"],)
     assert published.admitted.readiness_evidence()["ready"] is True
+
+
+def test_incomplete_corporate_action_coverage_publishes_no_envelope(
+    publisher_fixture, tmp_path
+):
+    root = publisher_fixture["root"]
+    signer = publisher_fixture["signer"]
+    enrollment_file = tmp_path / "corporate-actions-enrollment.json"
+    registry_file = tmp_path / "corporate-actions-registry.json"
+    _write_json(
+        enrollment_file,
+        _enrollment(root, signer, roles=["corporate_actions"]),
+    )
+    registry = build_canonical_registry(
+        root_public_key_file=publisher_fixture["root_file"],
+        enrollment_file=enrollment_file,
+        output_file=registry_file,
+    )
+    panel = ["000001.SZ@2026-08-13"]
+    payload = {"events": []}
+    record_sha256 = hashlib.sha256(_canonical(payload)).hexdigest()
+    receipt = {
+        "schema_version": CORPORATE_ACTION_SOURCE_RECEIPT_SCHEMA,
+        "source": "external-fixture",
+        "observed_at": "2026-08-13T08:00:00+08:00",
+        "response_sha256": hashlib.sha256(b"provider-response").hexdigest(),
+        "bindings": [{
+            "component": "corporate_actions",
+            "panel_entry": panel[0],
+            "record_sha256": record_sha256,
+        }],
+        "corporate_action_coverage": [{
+            "panel_entry": panel[0],
+            "coverage_start": "2025-07-11",
+            "coverage_end": "2026-08-13",
+            "decision_cutoff_at": "2026-08-13T09:25:00+08:00",
+            "coverage_complete_through_decision_cutoff": False,
+        }],
+    }
+    receipt_id = hashlib.sha256(_canonical(receipt)).hexdigest()
+    artifact = {
+        "schema_version": COMPONENT_SCHEMAS["corporate_actions"],
+        "component": "corporate_actions",
+        "panel": panel,
+        "records": [{
+            "panel_entry": panel[0],
+            "payload": payload,
+            "record_sha256": record_sha256,
+            "source_receipt_ids": [receipt_id],
+            "effective_at": "2026-08-13T00:00:00+08:00",
+            "available_at": "2026-08-13T08:00:00+08:00",
+        }],
+    }
+    artifact_file = tmp_path / "corporate-actions.json"
+    receipt_file = tmp_path / "corporate-actions-receipt.json"
+    output_file = tmp_path / "corporate-actions-envelope.json"
+    _write_json(artifact_file, artifact)
+    _write_json(receipt_file, receipt)
+
+    with pytest.raises(ValueError, match="not complete through decision cutoff"):
+        publish_authority_envelope(
+            component="corporate_actions",
+            registry_file=registry_file,
+            registry_sha256=registry.registry_sha256,
+            artifact_file=artifact_file,
+            source_receipt_files=[receipt_file],
+            signer_private_key_env="SIGNER_PRIVATE_KEY_B64",
+            output_file=output_file,
+            effective_at="2026-08-13T00:00:00+08:00",
+            available_at="2026-08-13T08:00:00+08:00",
+            decision_cutoff_by_panel={
+                panel[0]: "2026-08-13T09:25:00+08:00"
+            },
+        )
+
+    assert not output_file.exists()
 
 
 def test_publishes_generic_market_rulebook_as_prerequisite(
