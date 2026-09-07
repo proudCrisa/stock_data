@@ -1,0 +1,21 @@
+stockdata/cache.py
+  s_896fb1e7e0a671::t_d8060bfad9d5ba 326,331-336
+tests/test_cache.py
+  s_896fb1e7e0a671::t_a02b932961082c 368-373
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "90da793e5a3f268c1beaa5ff6f75dcb6302caa3d",
+  "prompts": {},
+  "sessions": {
+    "s_896fb1e7e0a671": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a075b8-7fae-72c3-a8f0-aa12bed02633",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
