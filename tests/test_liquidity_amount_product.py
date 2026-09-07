@@ -9,6 +9,9 @@ import pytest
 
 from stockdata.liquidity_amount_product import (
     ETF_SOURCES,
+    ETF_SOURCES_V2,
+    LIQUIDITY_QUALIFICATION_PROFILE_V1,
+    LIQUIDITY_QUALIFICATION_PROFILE_V2,
     LiquidityAmountProductError,
     build_liquidity_amounts_product,
     load_liquidity_amounts_product,
@@ -142,6 +145,16 @@ def test_content_addressed_write_and_canonical_load_are_idempotent(tmp_path):
     assert load_liquidity_amounts_product(first) == product
 
 
+def test_explicit_v1_profile_is_byte_identical_to_default():
+    assert _build(_captures()) == build_liquidity_amounts_product(
+        _captures(),
+        panel=_panel(),
+        decision_cutoff=DECISION_CUTOFF,
+        expected_watermark=_sessions()[-1],
+        qualification_profile=LIQUIDITY_QUALIFICATION_PROFILE_V1,
+    )
+
+
 def test_rejects_missing_target_etf_panel_entry(tmp_path):
     missing = (TARGET_ETFS[1], _sessions()[7])
     captures = _captures(missing=missing)
@@ -163,7 +176,7 @@ def test_rejects_non_etf_target(tmp_path):
         )
 
 
-def test_new_rule_scope_does_not_implicitly_grant_liquidity_authority():
+def test_new_rule_scope_does_not_implicitly_grant_v1_liquidity_qualification():
     sessions = _sessions()
     code = "159992.SZ"
 
@@ -174,6 +187,86 @@ def test_new_rule_scope_does_not_implicitly_grant_liquidity_authority():
             panel=[(code, day) for day in sessions],
             decision_cutoff=DECISION_CUTOFF,
             expected_watermark=sessions[-1],
+        )
+
+
+def test_v2_explicitly_qualifies_159992_native_cny_amounts():
+    sessions = _sessions()
+    code = "159992.SZ"
+    panel = [(code, day) for day in sessions]
+
+    product = build_liquidity_amounts_product(
+        [_receipt(code, sessions)],
+        panel=panel,
+        decision_cutoff=DECISION_CUTOFF,
+        expected_watermark=sessions[-1],
+        qualification_profile=LIQUIDITY_QUALIFICATION_PROFILE_V2,
+    )
+
+    assert product["qualification_profile"] == LIQUIDITY_QUALIFICATION_PROFILE_V2
+    assert product["instrument_sources"] == {
+        code: ETF_SOURCES_V2[code],
+    }
+    assert verify_liquidity_amounts_product(
+        product,
+        expected_panel=panel,
+        decision_cutoff=DECISION_CUTOFF,
+        expected_watermark=sessions[-1],
+    ) == product
+
+
+def test_v2_profile_cannot_be_resealed_as_v1():
+    sessions = _sessions()
+    code = "159992.SZ"
+    product = build_liquidity_amounts_product(
+        [_receipt(code, sessions)],
+        panel=[(code, day) for day in sessions],
+        decision_cutoff=DECISION_CUTOFF,
+        expected_watermark=sessions[-1],
+        qualification_profile=LIQUIDITY_QUALIFICATION_PROFILE_V2,
+    )
+    product["qualification_profile"] = LIQUIDITY_QUALIFICATION_PROFILE_V1
+    unsigned = {key: value for key, value in product.items() if key != "product_sha256"}
+    product["product_sha256"] = hashlib.sha256(_canonical(unsigned)).hexdigest()
+
+    with pytest.raises(LiquidityAmountProductError, match="approved issuer source"):
+        verify_liquidity_amounts_product(product)
+
+
+def test_rejects_unknown_liquidity_qualification_profile():
+    sessions = _sessions()
+
+    with pytest.raises(LiquidityAmountProductError, match="qualification profile"):
+        build_liquidity_amounts_product(
+            [_receipt("159992.SZ", sessions)],
+            panel=[("159992.SZ", day) for day in sessions],
+            decision_cutoff=DECISION_CUTOFF,
+            expected_watermark=sessions[-1],
+            qualification_profile="stockdata-liquidity-etf-qualification/3",
+        )
+
+
+@pytest.mark.parametrize("failure", ["short", "missing", "no_amount"])
+def test_v2_does_not_relax_liquidity_evidence_requirements(failure):
+    sessions = _sessions()
+    code = "159992.SZ"
+    capture = _receipt(code, sessions, include_amount=failure != "no_amount")
+    panel_sessions = sessions
+    error = "native amount"
+    if failure == "short":
+        panel_sessions = sessions[1:]
+        error = "20 observations"
+    elif failure == "missing":
+        capture["response"]["rows"].pop(7)
+        error = "exact panel"
+
+    with pytest.raises(LiquidityAmountProductError, match=error):
+        build_liquidity_amounts_product(
+            [capture],
+            panel=[(code, day) for day in panel_sessions],
+            decision_cutoff=DECISION_CUTOFF,
+            expected_watermark=sessions[-1],
+            qualification_profile=LIQUIDITY_QUALIFICATION_PROFILE_V2,
         )
 
 

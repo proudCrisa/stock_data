@@ -18,11 +18,14 @@ IDENTITY = {
     "adjustment_mode": "raw", "adjustment_version": "baostock-adjustflag-3",
 }
 # Exact issuer-confirmed ETF identities, not security-code prefix inference.
+LIQUIDITY_QUALIFICATION_PROFILE_V1 = "stockdata-liquidity-etf-qualification/1"
+LIQUIDITY_QUALIFICATION_PROFILE_V2 = "stockdata-liquidity-etf-qualification/2"
 LIQUIDITY_ETF_SYMBOLS_V1 = (
     "561980.SH", "588730.SH", "560900.SH", "159350.SZ",
     "518880.SH", "511010.SH", "513650.SH", "159980.SZ",
 )
-ETF_SOURCES = {
+LIQUIDITY_ETF_SYMBOLS_V2 = (*LIQUIDITY_ETF_SYMBOLS_V1, "159992.SZ")
+ETF_SOURCES_V1 = {
     **{
         symbol: ETF_RULE_SCOPES[symbol]["classification_source"]
         for symbol in LIQUIDITY_ETF_SYMBOLS_V1
@@ -30,6 +33,11 @@ ETF_SOURCES = {
     "159980.SZ": "https://www.dcfund.com.cn/home/working/download/autoupload/1742473215380.pdf",
     "561980.SH": "https://static.cmfchina.com/web/noticedetails/225146/index.html",
 }
+ETF_SOURCES_V2 = {
+    **ETF_SOURCES_V1,
+    "159992.SZ": ETF_RULE_SCOPES["159992.SZ"]["classification_source"],
+}
+ETF_SOURCES = ETF_SOURCES_V1
 
 
 class LiquidityAmountProductError(ValueError):
@@ -67,18 +75,28 @@ def _timestamp(value: str) -> datetime:
     raise LiquidityAmountProductError("timestamp must be timezone aware")
 
 
+def _qualification_sources(profile: str) -> dict[str, str]:
+    if profile == LIQUIDITY_QUALIFICATION_PROFILE_V1:
+        return ETF_SOURCES_V1
+    if profile == LIQUIDITY_QUALIFICATION_PROFILE_V2:
+        return ETF_SOURCES_V2
+    raise LiquidityAmountProductError("liquidity qualification profile is unsupported")
+
+
 def build_liquidity_amounts_product(
     captures, *, panel, decision_cutoff: str, expected_watermark: str,
+    qualification_profile: str = LIQUIDITY_QUALIFICATION_PROFILE_V1,
 ) -> dict:
     """Build a complete independently receipted native-amount authority candidate."""
     cutoff = _timestamp(decision_cutoff)
     watermark = _day(expected_watermark)
+    issuer_sources = _qualification_sources(qualification_profile)
     pairs = [(normalize(code), _day(day)) for code, day in panel]
     if not pairs or len(set(pairs)) != len(pairs):
         raise LiquidityAmountProductError("exact panel must be nonempty and unique")
     pairs.sort()
     codes = sorted({code for code, _ in pairs})
-    if any(code not in ETF_SOURCES for code in codes):
+    if any(code not in issuer_sources for code in codes):
         raise LiquidityAmountProductError("ETF identity lacks an approved issuer source")
     for code in codes:
         days = [day for symbol, day in pairs if symbol == code]
@@ -153,13 +171,15 @@ def build_liquidity_amounts_product(
         "amount_unit": "CNY", "liquidity_identity": deepcopy(IDENTITY),
         "instrument_scope": {"instrument_type": "ETF", "codes": codes,
                              "minimum_observations_per_code": 20},
-        "instrument_sources": {code: ETF_SOURCES[code] for code in codes},
+        "instrument_sources": {code: issuer_sources[code] for code in codes},
         "panel": [f"{code}@{day}" for code, day in pairs],
         "decision_cutoff": decision_cutoff,
         "finality": {"status": "decision_watermark_bound", "watermark": watermark},
         "records": [amounts[pair] for pair in pairs],
         "source_receipts": [receipts[key] for key in sorted(receipts)],
     }
+    if qualification_profile != LIQUIDITY_QUALIFICATION_PROFILE_V1:
+        product["qualification_profile"] = qualification_profile
     return {**product, "product_sha256": _hash(product)}
 
 
@@ -176,10 +196,14 @@ def verify_liquidity_amounts_product(
     panel = expected_panel if expected_panel is not None else [
         entry.split("@") for entry in product["panel"]
     ]
+    qualification_profile = product.get(
+        "qualification_profile", LIQUIDITY_QUALIFICATION_PROFILE_V1
+    )
     rebuilt = build_liquidity_amounts_product(
         product["source_receipts"], panel=panel,
         decision_cutoff=decision_cutoff or product["decision_cutoff"],
         expected_watermark=expected_watermark or product["finality"]["watermark"],
+        qualification_profile=qualification_profile,
     )
     if product != rebuilt:
         raise LiquidityAmountProductError("native amount product does not replay receipts")
