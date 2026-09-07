@@ -1,0 +1,46 @@
+stockdata/local_daily_snapshot.py
+  s_dcf78773457488::t_ffe8d060db2766 30-37,43-47,49-50,142,144,183,196,226-233,245-246,255,271-272,274-279,289,304,324-325,328
+tests/test_main_etf_rule_profiles.py
+  s_dcf78773457488::t_f6af08e3ca0369 37-38,44
+  s_dcf78773457488::t_fee6ae0153d360 39,43,45-47
+  s_dcf78773457488::t_d6af3297e6830b 40-42
+tests/test_local_main_buy_publisher.py
+  s_dcf78773457488::t_fee6ae0153d360 115,130,159-163
+  s_896fb1e7e0a671::t_a749ce029abb03 164-165
+tests/test_local_daily_snapshot.py
+  s_dcf78773457488::t_d6af3297e6830b 78-82
+  s_dcf78773457488::t_f6af08e3ca0369 63-66,69-70,72-75,77,91-92
+  s_dcf78773457488::t_0ace21f75d54ff 96-97
+  s_dcf78773457488::t_fee6ae0153d360 42,67-68,71,76,83-90
+  s_dcf78773457488::t_9acc6947266770 93-95,98-103
+stockdata/local_main_buy_publisher.py
+  s_dcf78773457488::t_9acc6947266770 352
+  s_dcf78773457488::t_ffe8d060db2766 39-42,81,353,443
+docs/local-daily-snapshot.md
+  s_dcf78773457488::t_f6af08e3ca0369 6,50-63
+  s_dcf78773457488::t_9acc6947266770 64-81
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "64ea76a00b08dee2d08dced5bb2fe92c96e0e5e8",
+  "prompts": {},
+  "sessions": {
+    "s_896fb1e7e0a671": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a075b8-7fae-72c3-a8f0-aa12bed02633",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    },
+    "s_dcf78773457488": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a075b9-2944-7c12-8f61-2b0ba86cf3fb",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
