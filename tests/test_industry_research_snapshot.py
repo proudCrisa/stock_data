@@ -56,6 +56,7 @@ def test_snapshot_replays_exact_current_observation_and_writes_by_hash(tmp_path)
 
     assert path.name == f"{snapshot['snapshot_sha256']}.json"
     assert industry.load_industry_research_snapshot(path) == snapshot
+    assert snapshot["schema_version"] == "stockdata-industry-research-snapshot/1"
     assert snapshot["asof"] == ASOF
     assert snapshot["observed_at"] == snapshot["available_at"] == OBSERVED
     assert snapshot["source"] == {

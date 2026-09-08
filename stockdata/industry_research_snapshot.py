@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from . import candidate_admission_capture
 
 
-SCHEMA_VERSION = "stockdata-current-industry-research-snapshot/1"
+SCHEMA_VERSION = "stockdata-industry-research-snapshot/1"
 TAXONOMY_ID = "baostock.query_stock_industry"
 TAXONOMY_VERSION = "unknown"
 SHANGHAI = ZoneInfo("Asia/Shanghai")
