@@ -126,6 +126,20 @@ def test_candidate_profile_allows_existing_fixed_holding_in_exact_panel():
         symbols=profile["required_symbols"], asof=profile["asof"]) == profile
 
 
+def test_candidate_profile_cannot_reclassify_index_as_dynamic_etf():
+    profile = _candidate_profile()
+    profile["required_symbols"] = ["000300.SH"]
+    profile["candidates"][0].update(code="sh000300", symbol="000300.SH")
+    profile["profile_sha256"] = local._hash({
+        key: value for key, value in profile.items()
+        if key != "profile_sha256"})
+
+    with pytest.raises(ValueError, match="exact symbols differ"):
+        local.verify_candidate_profile(
+            profile, expected_sha256=profile["profile_sha256"],
+            symbols=profile["required_symbols"], asof=profile["asof"])
+
+
 @pytest.mark.parametrize("mutation", ["hash", "asof", "rule", "marker",
                                        "extra_symbol", "missing_benchmark"])
 def test_candidate_profile_rejects_unbound_scope_before_capture(

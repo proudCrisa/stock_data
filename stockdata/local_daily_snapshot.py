@@ -114,6 +114,7 @@ def verify_candidate_profile(payload, *, expected_sha256, symbols, asof):
     candidate_symbols = set(candidate_symbols)
     unknown_symbols = set(required) - ETF_SYMBOLS - INDEX_SYMBOLS
     if len(candidate_symbols) != len(candidates) \
+            or candidate_symbols & INDEX_SYMBOLS \
             or not candidate_symbols <= set(required) \
             or not unknown_symbols <= candidate_symbols:
         raise ValueError("candidate local daily exact symbols differ")
