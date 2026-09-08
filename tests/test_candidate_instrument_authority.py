@@ -218,7 +218,8 @@ def test_dynamic_authority_rejects_resealed_scope_or_source_drift(mutation):
 
 
 @pytest.mark.parametrize("mutation", ["signature", "unenrolled_resign",
-                                      "future_effective_at", "predates_source"])
+                                      "future_effective_at", "predates_source",
+                                      "effective_after_signer_validity"])
 def test_dynamic_authority_requires_enrolled_independent_review_signature(mutation):
     authority = candidate_authority()
     registry_value, pin, root, _, _ = candidate_registry()
@@ -238,14 +239,23 @@ def test_dynamic_authority_requires_enrolled_independent_review_signature(mutati
         envelope["payload"]["effective_at"] = CUTOFF
         envelope["signature_base64"] = _b64(
             reviewer.sign(_canonical(envelope["payload"])))
-    else:
+    elif mutation == "predates_source":
         reviewer = Ed25519PrivateKey.from_private_bytes(bytes([3]) * 32)
         envelope = authority["review_envelope"]
         envelope["payload"]["effective_at"] = "2026-08-28T15:59:00+08:00"
         envelope["payload"]["available_at"] = "2026-08-28T15:59:00+08:00"
         envelope["signature_base64"] = _b64(
             reviewer.sign(_canonical(envelope["payload"])))
+    else:
+        reviewer = Ed25519PrivateKey.from_private_bytes(bytes([3]) * 32)
+        envelope = authority["review_envelope"]
+        envelope["payload"]["effective_at"] = "2027-06-01T00:00:00+08:00"
+        envelope["signature_base64"] = _b64(
+            reviewer.sign(_canonical(envelope["payload"])))
     _reseal(authority)
     with pytest.raises(ValueError):
         verify_candidate_instrument_authority(
-            authority, decision_cutoff=CUTOFF, registry=registry)
+            authority, decision_cutoff=(
+                "2027-07-01T00:00:00+08:00"
+                if mutation == "effective_after_signer_validity" else CUTOFF),
+            registry=registry)

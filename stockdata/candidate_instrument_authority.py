@@ -133,6 +133,10 @@ def verify_candidate_instrument_authority(value, *, decision_cutoff, registry=No
             }, expected_source_receipt_ids=sorted(expected_receipts))
         effective = datetime.fromisoformat(accepted.effective_at)
         available = datetime.fromisoformat(accepted.available_at)
+        signer = registry._signers[accepted.publisher_key_id]
+        if not (signer.valid_from <= effective <= signer.valid_until
+                and signer.valid_from <= available <= signer.valid_until):
+            raise ValueError("candidate instrument review is outside signer validity")
         cutoff = datetime.fromisoformat(decision_cutoff.replace("Z", "+00:00"))
         if expected_receipts:
             source_observed = max(datetime.fromisoformat(receipt["observed_at"])
