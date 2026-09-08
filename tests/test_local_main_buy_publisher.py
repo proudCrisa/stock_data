@@ -204,8 +204,9 @@ def test_dynamic_extension_derives_all_reference_panels_from_candidate_authority
         == verified["scopes"][symbol]
 
 
-def test_dynamic_publisher_needs_no_561980_capture_or_instrument_evidence(
-        tmp_path, monkeypatch):
+@pytest.mark.parametrize("symbol", ["512480.SH", "561980.SH"])
+def test_dynamic_publisher_uses_exact_candidate_profile_without_fixed_base(
+        tmp_path, monkeypatch, symbol):
     from stockdata.authority import load_enrolled_trust_registry_bytes
     from stockdata.main_buy_supplement import validate_global_snapshot
     from test_candidate_instrument_authority import (
@@ -215,25 +216,26 @@ def test_dynamic_publisher_needs_no_561980_capture_or_instrument_evidence(
 
     registry_value, pin, root, signer, reviewer = candidate_registry()
     profile = candidate_profile()
-    profile["required_symbols"] = ["000300.SH", "512480.SH"]
-    profile["candidates"] = profile["candidates"][:1]
+    profile["required_symbols"] = ["000300.SH", symbol]
+    profile["candidates"] = [row for row in profile["candidates"]
+                             if row["symbol"] == symbol]
     profile["profile_sha256"] = publisher._hash({
         key: value for key, value in profile.items() if key != "profile_sha256"})
     authority = candidate_authority(
         registry_sha=pin, root=root, reviewer=reviewer, profile=profile)
     evidence = tmp_path / "dynamic"
     evidence.mkdir()
-    symbol, asof = "512480.SH", profile["asof"]
+    asof = profile["asof"]
     days = _sessions()
     amount = _receipt(symbol, days)
     (evidence / f"{symbol}-amount.json").write_bytes(_canonical(amount))
     status = [{
-        "request": {"method": "query_stock_basic", "code": "sh.512480"},
+        "request": {"method": "query_stock_basic", "code": "sh." + symbol[:6]},
         "observed_at": f"{asof}T16:00:00+08:00",
         "response": {"error_code": "0", "fields": ["code", "type", "status"],
-                     "rows": [["sh.512480", "5", "1"]]},
+                     "rows": [["sh." + symbol[:6], "5", "1"]]},
     }, {
-        "request": {"method": "query_history_k_data_plus", "code": "sh.512480",
+        "request": {"method": "query_history_k_data_plus", "code": "sh." + symbol[:6],
                     "fields": "date,tradestatus,isST", "start_date": asof,
                     "end_date": asof, "frequency": "d", "adjustflag": "3"},
         "observed_at": f"{asof}T16:00:00+08:00",
@@ -263,7 +265,7 @@ def test_dynamic_publisher_needs_no_561980_capture_or_instrument_evidence(
     (evidence / announcement_name).write_bytes(announcement_raw)
     announcement_receipt = {"observed_at": f"{asof}T16:00:00+08:00",
         "request": {"method": "GET", "url": "https://query.sse.com.cn/commonQuery.do",
-                    "params": {"END_DATE": asof.replace("-", ""), "SECURITY_CODE": "512480",
+                    "params": {"END_DATE": asof.replace("-", ""), "SECURITY_CODE": symbol[:6],
                                "START_DATE": "20250711", "isPagination": "true",
                                "pageHelp.pageSize": "1000", "sqlId": "COMMON_PL_JJXX_JJGG_L"}},
         "response": {"status_code": 200,
@@ -337,7 +339,8 @@ def test_dynamic_publisher_needs_no_561980_capture_or_instrument_evidence(
     assert payload["symbols"] == [symbol]
     assert all(input_["artifact"]["panel"][-1].startswith(symbol + "@")
                for input_ in payload["references"].values())
-    assert not any("561980" in path.name for path in evidence.iterdir())
+    if symbol == "512480.SH":
+        assert not any("561980" in path.name for path in evidence.iterdir())
     registry = load_enrolled_trust_registry_bytes(_canonical(registry_value), expected_sha256=pin)
     assert registry.registry_sha256 == pin
 

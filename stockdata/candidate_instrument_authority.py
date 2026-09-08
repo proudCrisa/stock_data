@@ -117,7 +117,11 @@ def verify_candidate_instrument_authority(value, *, decision_cutoff, registry=No
         scopes[symbol] = deepcopy(scope)
     if value["review_receipts"] != expected_receipts:
         raise ValueError("candidate instrument review receipt closure differs")
-    if registry is not None:
+    reviewer_key_id = None
+    if not expected_receipts:
+        if value["review_envelope"] is not None:
+            raise ValueError("fixed candidate profile cannot claim instrument review")
+    elif registry is not None:
         reviewed = {key: item for key, item in value.items()
                     if key not in {"review_envelope", "authority_sha256"}}
         accepted = verify_authority_envelope(
@@ -130,15 +134,17 @@ def verify_candidate_instrument_authority(value, *, decision_cutoff, registry=No
         effective = datetime.fromisoformat(accepted.effective_at)
         available = datetime.fromisoformat(accepted.available_at)
         cutoff = datetime.fromisoformat(decision_cutoff.replace("Z", "+00:00"))
-        source_observed = max(datetime.fromisoformat(receipt["observed_at"])
-                              for receipt in expected_receipts.values())
-        if min(effective, available) < source_observed:
-            raise ValueError("candidate instrument review predates source evidence")
+        if expected_receipts:
+            source_observed = max(datetime.fromisoformat(receipt["observed_at"])
+                                  for receipt in expected_receipts.values())
+            if min(effective, available) < source_observed:
+                raise ValueError("candidate instrument review predates source evidence")
         if max(effective, available) >= cutoff:
             raise ValueError("candidate instrument review is not pre-decision")
+        reviewer_key_id = accepted.publisher_key_id
     return {"profile": deepcopy(profile), "scopes": scopes,
             "authority_sha256": value["authority_sha256"],
-            "reviewer_key_id": (accepted.publisher_key_id if registry is not None else None)}
+            "reviewer_key_id": reviewer_key_id}
 
 
 def load_candidate_instrument_authority(path, *, decision_cutoff, registry):

@@ -79,52 +79,58 @@ def candidate_authority(*, registry_sha=None, root=None, reviewer=None, profile=
         _, registry_sha, root, _, reviewer = candidate_registry()
     classification = "https://issuer.example/512480/profile"
     rules = "https://www.sse.com.cn/rules/etf"
+    profile = deepcopy(profile or candidate_profile())
+    instrument = {
+        "symbol": "512480.SH", "instrument_class": "etf",
+        "rule_scope": {
+            "fund_type": "DOMESTIC_EQUITY",
+            "classification_source": classification,
+            "rule_source": rules, "effective_from": "2026-07-06",
+            "exchange": "SH", "t_plus_one": True,
+            "price_limit_up": .1, "price_limit_down": .1,
+            "lot_size": 100, "price_tick": .001,
+        },
+        "classification_evidence": _source(classification, b"reviewed issuer fixture"),
+        "rule_evidence": _source(rules, b"reviewed exchange rule fixture"),
+    }
     reviewed = {
         "schema_version": SCHEMA_VERSION,
         "review_attestation": "enrolled-publisher-reviewed-issuer-and-rule-sources",
-        "candidate_profile": deepcopy(profile or candidate_profile()),
-        "instruments": [{
-            "symbol": "512480.SH", "instrument_class": "etf",
-            "rule_scope": {
-                "fund_type": "DOMESTIC_EQUITY",
-                "classification_source": classification,
-                "rule_source": rules, "effective_from": "2026-07-06",
-                "exchange": "SH", "t_plus_one": True,
-                "price_limit_up": .1, "price_limit_down": .1,
-                "lot_size": 100, "price_tick": .001,
-            },
-            "classification_evidence": _source(classification, b"reviewed issuer fixture"),
-            "rule_evidence": _source(rules, b"reviewed exchange rule fixture"),
-        }],
+        "candidate_profile": profile,
+        "instruments": ([instrument] if any(
+            row["symbol"] == "512480.SH" for row in profile["candidates"]) else []),
     }
-    scope_hash = _hash(reviewed["instruments"][0]["rule_scope"])
     receipts = {}
-    for kind, evidence in (
-            ("classification", reviewed["instruments"][0]["classification_evidence"]),
-            ("rule", reviewed["instruments"][0]["rule_evidence"])):
-        receipt = {"schema_version": "stockdata-candidate-instrument-review-receipt/1",
-                   "symbol": "512480.SH", "source_kind": kind,
-                   "source_url": evidence["url"],
-                   "observed_at": evidence["receipt"]["observed_at"],
-                   "response_sha256": evidence["receipt"]["response"]["sha256"],
-                   "rule_scope_sha256": scope_hash}
-        receipts[_hash(receipt)] = receipt
+    for row in reviewed["instruments"]:
+        scope_hash = _hash(row["rule_scope"])
+        for kind, evidence in (("classification", row["classification_evidence"]),
+                               ("rule", row["rule_evidence"])):
+            receipt = {"schema_version": "stockdata-candidate-instrument-review-receipt/1",
+                       "symbol": row["symbol"], "source_kind": kind,
+                       "source_url": evidence["url"],
+                       "observed_at": evidence["receipt"]["observed_at"],
+                       "response_sha256": evidence["receipt"]["response"]["sha256"],
+                       "rule_scope_sha256": scope_hash}
+            receipts[_hash(receipt)] = receipt
     reviewed["review_receipts"] = receipts
-    artifact = {"kind": "stock-data-candidate-instrument-authority",
-                "identifier": _hash(reviewed), "schema_version": SCHEMA_VERSION}
-    envelope_payload = {
-        "component_role": "market_rules", "artifact": artifact,
-        "source_receipt_ids": sorted(receipts),
-        "effective_at": "2026-08-28T16:00:00+08:00",
-        "available_at": "2026-08-28T16:00:00+08:00",
-        "publisher_key_id": _key_id(reviewer), "trust_root_id": _key_id(root),
-        "trust_registry_sha256": registry_sha,
-    }
-    body = {**reviewed, "review_envelope": {
-        "schema_version": AUTHORITY_ENVELOPE_SCHEMA, "algorithm": ALGORITHM,
-        "payload": envelope_payload,
-        "signature_base64": _b64(reviewer.sign(_canonical(envelope_payload))),
-    }}
+    envelope = None
+    if receipts:
+        artifact = {"kind": "stock-data-candidate-instrument-authority",
+                    "identifier": _hash(reviewed), "schema_version": SCHEMA_VERSION}
+        envelope_payload = {
+            "component_role": "market_rules", "artifact": artifact,
+            "source_receipt_ids": sorted(receipts),
+            "effective_at": "2026-08-28T16:00:00+08:00",
+            "available_at": "2026-08-28T16:00:00+08:00",
+            "publisher_key_id": _key_id(reviewer), "trust_root_id": _key_id(root),
+            "trust_registry_sha256": registry_sha,
+        }
+        envelope = {
+            "schema_version": AUTHORITY_ENVELOPE_SCHEMA, "algorithm": ALGORITHM,
+            "payload": envelope_payload,
+            "signature_base64": _b64(reviewer.sign(_canonical(envelope_payload))),
+        }
+    body = {**reviewed, "review_envelope": envelope}
     return {**body, "authority_sha256": _hash(body)}
 
 
@@ -151,6 +157,45 @@ def test_dynamic_authority_and_liquidity_replay_exact_two_candidate_panel():
     assert product["instrument_scope"]["codes"] == ["512480.SH", "561980.SH"]
     assert product["candidate_instrument_authority"] == authority
     assert verify_liquidity_amounts_product(product) == product
+
+
+def test_signed_candidate_authority_accepts_profile_with_only_fixed_etf_scope():
+    profile = candidate_profile()
+    profile["candidates"] = [profile["candidates"][1]]
+    profile["required_symbols"] = ["000300.SH", "561980.SH"]
+    profile["profile_sha256"] = _hash({
+        key: value for key, value in profile.items() if key != "profile_sha256"})
+    registry_value, pin, root, _, reviewer = candidate_registry()
+    authority = candidate_authority(
+        registry_sha=pin, root=root, reviewer=reviewer, profile=profile)
+    registry = load_enrolled_trust_registry_bytes(
+        _canonical(registry_value), expected_sha256=pin)
+
+    verified = verify_candidate_instrument_authority(
+        authority, decision_cutoff=CUTOFF, registry=registry)
+
+    assert verified["scopes"] == {}
+    assert authority["instruments"] == []
+    assert authority["review_receipts"] == {}
+
+
+def test_empty_review_scope_cannot_add_an_unknown_candidate():
+    profile = candidate_profile()
+    profile["candidates"] = [profile["candidates"][1]]
+    profile["required_symbols"] = ["000300.SH", "561980.SH"]
+    profile["profile_sha256"] = _hash({
+        key: value for key, value in profile.items() if key != "profile_sha256"})
+    registry_value, pin, root, _, reviewer = candidate_registry()
+    authority = candidate_authority(
+        registry_sha=pin, root=root, reviewer=reviewer, profile=profile)
+    authority["candidate_profile"] = candidate_profile()
+    _reseal(authority)
+    registry = load_enrolled_trust_registry_bytes(
+        _canonical(registry_value), expected_sha256=pin)
+
+    with pytest.raises(ValueError, match="exact dynamic candidates"):
+        verify_candidate_instrument_authority(
+            authority, decision_cutoff=CUTOFF, registry=registry)
 
 
 @pytest.mark.parametrize("mutation", ["extra", "unknown", "type", "source", "receipt"])
