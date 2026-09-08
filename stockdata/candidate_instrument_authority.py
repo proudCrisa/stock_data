@@ -128,7 +128,8 @@ def verify_candidate_instrument_authority(value, *, decision_cutoff, registry=No
                 "identifier": _hash(reviewed), "schema_version": SCHEMA_VERSION,
             }, expected_source_receipt_ids=sorted(expected_receipts))
         cutoff = datetime.fromisoformat(decision_cutoff.replace("Z", "+00:00"))
-        if datetime.fromisoformat(accepted.available_at) >= cutoff:
+        if max(datetime.fromisoformat(accepted.effective_at),
+               datetime.fromisoformat(accepted.available_at)) >= cutoff:
             raise ValueError("candidate instrument review is not pre-decision")
     return {"profile": deepcopy(profile), "scopes": scopes,
             "authority_sha256": value["authority_sha256"],

@@ -172,7 +172,8 @@ def test_dynamic_authority_rejects_resealed_scope_or_source_drift(mutation):
         verify_candidate_instrument_authority(authority, decision_cutoff=CUTOFF)
 
 
-@pytest.mark.parametrize("mutation", ["signature", "unenrolled_resign"])
+@pytest.mark.parametrize("mutation", ["signature", "unenrolled_resign",
+                                      "future_effective_at"])
 def test_dynamic_authority_requires_enrolled_independent_review_signature(mutation):
     authority = candidate_authority()
     registry_value, pin, root, _, _ = candidate_registry()
@@ -180,12 +181,18 @@ def test_dynamic_authority_requires_enrolled_independent_review_signature(mutati
         _canonical(registry_value), expected_sha256=pin)
     if mutation == "signature":
         authority["review_envelope"]["signature_base64"] = _b64(bytes(64))
-    else:
+    elif mutation == "unenrolled_resign":
         unknown = Ed25519PrivateKey.from_private_bytes(bytes([4]) * 32)
         envelope = authority["review_envelope"]
         envelope["payload"]["publisher_key_id"] = _key_id(unknown)
         envelope["signature_base64"] = _b64(
             unknown.sign(_canonical(envelope["payload"])))
+    else:
+        reviewer = Ed25519PrivateKey.from_private_bytes(bytes([3]) * 32)
+        envelope = authority["review_envelope"]
+        envelope["payload"]["effective_at"] = CUTOFF
+        envelope["signature_base64"] = _b64(
+            reviewer.sign(_canonical(envelope["payload"])))
     _reseal(authority)
     with pytest.raises(ValueError):
         verify_candidate_instrument_authority(
