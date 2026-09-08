@@ -23,6 +23,7 @@ jqdata = ["jqdatasdk>=1.9,<2"]
 [project.scripts]
 stockdata = "stockdata.server:main"
 stockdata-cli = "stockdata.cli:main"
+stockdata-industry-snapshot = "stockdata.industry_research_snapshot:main"
 
 [tool.setuptools.packages.find]
 include = ["stockdata*"]
