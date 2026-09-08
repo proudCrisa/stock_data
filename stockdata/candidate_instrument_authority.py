@@ -127,9 +127,14 @@ def verify_candidate_instrument_authority(value, *, decision_cutoff, registry=No
                 "kind": "stock-data-candidate-instrument-authority",
                 "identifier": _hash(reviewed), "schema_version": SCHEMA_VERSION,
             }, expected_source_receipt_ids=sorted(expected_receipts))
+        effective = datetime.fromisoformat(accepted.effective_at)
+        available = datetime.fromisoformat(accepted.available_at)
         cutoff = datetime.fromisoformat(decision_cutoff.replace("Z", "+00:00"))
-        if max(datetime.fromisoformat(accepted.effective_at),
-               datetime.fromisoformat(accepted.available_at)) >= cutoff:
+        source_observed = max(datetime.fromisoformat(receipt["observed_at"])
+                              for receipt in expected_receipts.values())
+        if min(effective, available) < source_observed:
+            raise ValueError("candidate instrument review predates source evidence")
+        if max(effective, available) >= cutoff:
             raise ValueError("candidate instrument review is not pre-decision")
     return {"profile": deepcopy(profile), "scopes": scopes,
             "authority_sha256": value["authority_sha256"],
