@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .authority import ALGORITHM, AUTHORITY_ENVELOPE_SCHEMA, load_enrolled_trust_registry_bytes
+from .candidate_instrument_authority import load_candidate_instrument_authority, verify_candidate_instrument_authority
 from .liquidity_amount_product import (
     _canonical, _day, _hash, _timestamp, build_liquidity_amounts_product, build_liquidity_authority_inputs,
 )
@@ -66,16 +67,23 @@ def _validate_reviewed_events(facts, symbol):
         raise ValueError("reviewed exact ETF corporate-action set differs")
 
 
-def _validate_universe(directory, symbol, source_files):
+def _validate_universe(directory, symbol, source_files, *, candidate_profile=None):
     names = {"local-main-universe.json", "local-main-config.json"}
     if not names <= set(source_files):
         raise ValueError("additional ETF universe is not receipt-bound")
-    raw = (directory / "local-main-config.json").read_bytes()
-    config = json.loads(raw)
-    symbols = sorted(row["code"][2:] + "." + row["code"][:2].upper() for row in config["holdings"])
     universe = json.loads((directory / "local-main-universe.json").read_bytes())
-    if (symbols != sorted(ETF_RULE_SCOPES) or universe["symbols"] != symbols or symbol not in symbols
-            or universe["source_sha256"] != hashlib.sha256(raw).hexdigest()):
+    if candidate_profile is None:
+        raw = (directory / "local-main-config.json").read_bytes()
+        config = json.loads(raw)
+        symbols = sorted(row["code"][2:] + "." + row["code"][:2].upper()
+                         for row in config["holdings"])
+        source_sha256 = hashlib.sha256(raw).hexdigest()
+    else:
+        symbols = sorted(candidate_profile["required_symbols"])
+        source_sha256 = candidate_profile["profile_sha256"]
+    if (universe["symbols"] != symbols or symbol not in symbols
+            or universe["source_sha256"] != source_sha256
+            or candidate_profile is None and symbols != sorted(ETF_RULE_SCOPES)):
         raise ValueError("observed configured universe identity or source hash differs")
     return universe
 
@@ -344,12 +352,18 @@ def prepare_reference_inputs(*, evidence_dir, liquidity_product, asof, global_sn
     return references, global_inputs
 
 
-def extend_reference_inputs(references, global_inputs, *, evidence_dir, symbols, asof, observation_end=None):
+def extend_reference_inputs(references, global_inputs, *, evidence_dir, symbols, asof,
+                            observation_end=None, candidate_instrument_authority=None):
     directory = Path(evidence_dir)
     index = json.loads((directory / "evidence-index.json").read_bytes())
     expected = set(symbols) - {SYMBOL}
+    verified_authority = (verify_candidate_instrument_authority(
+        candidate_instrument_authority, decision_cutoff=datetime.now(timezone.utc).isoformat())
+        if candidate_instrument_authority is not None else None)
+    dynamic_scopes = verified_authority["scopes"] if verified_authority else {}
+    scopes = {**ETF_RULE_SCOPES, **dynamic_scopes}
     if (index["schema_version"] != "stockdata-main-etf-reviewed-facts/1" or index["asof"] != asof
-            or set(index["instruments"]) != expected or not expected <= set(ETF_RULE_SCOPES)):
+            or set(index["instruments"]) != expected or not expected <= set(scopes)):
         raise ValueError("additional reviewed ETF facts differ from the exact amount panel")
     observed = datetime.now(timezone.utc).isoformat()
     observation_end = _day(observation_end or _timestamp(observed).astimezone(timezone(timedelta(hours=8))).date().isoformat())
@@ -359,6 +373,10 @@ def extend_reference_inputs(references, global_inputs, *, evidence_dir, symbols,
             for component, value in references.items()}
     evidence = {component: {**value["source_evidence"], "additional_instruments": {}}
                 for component, value in references.items()}
+    if verified_authority:
+        for value in evidence.values():
+            value["candidate_instrument_authority_sha256"] = \
+                verified_authority["authority_sha256"]
     evidence["corporate_actions"]["cash_dividend_identities"] = []
     base_entry = f"{SYMBOL}@{asof}"
     for symbol in sorted(expected):
@@ -377,7 +395,10 @@ def extend_reference_inputs(references, global_inputs, *, evidence_dir, symbols,
             reviewed_non_action_urls=facts.get("reviewed_non_action_urls"))
         if f"{symbol}-status-ca.json" not in facts["source_files"]["instrument_status"]:
             raise ValueError("additional ETF status facts are not receipt-bound")
-        universe = _validate_universe(directory, symbol, facts["source_files"]["universe"])
+        universe_args = (directory, symbol, facts["source_files"]["universe"])
+        universe = (_validate_universe(
+            *universe_args, candidate_profile=verified_authority["profile"])
+            if verified_authority else _validate_universe(*universe_args))
         bound["instrument_status"]["derivation"] = {
             "is_st": "not applicable to an exchange-listed ETF; false selects the non-stock-ST rule branch",
             "raw_baostock_isST": state["isST"],
@@ -393,7 +414,7 @@ def extend_reference_inputs(references, global_inputs, *, evidence_dir, symbols,
         evidence["corporate_actions"]["cash_dividend_identities"].extend(facts.get("cash_dividend_identities", []))
         bound["corporate_actions"]["coverage"] = facts["corporate_actions_coverage"]
         entry = f"{symbol}@{asof}"
-        rule = {**rows["market_rules"][base_entry], **ETF_RULE_SCOPES[symbol], "instrument_id": symbol,
+        rule = {**rows["market_rules"][base_entry], **scopes[symbol], "instrument_id": symbol,
                 "policy_id": f"{symbol}-current-local-v1", "source_sha256": _hash(bound["market_rules"])}
         rows["market_rules"][entry] = rule
         rows["instrument_status"][entry] = {"is_st": False, "is_suspended": False, "listing_status": "listed"}
@@ -415,7 +436,8 @@ def extend_reference_inputs(references, global_inputs, *, evidence_dir, symbols,
 
 def publish_main_buy_supplement(*, evidence_dir, liquidity_capture_file, global_snapshot_file,
                                publisher_dir, registry_sha256, provider_manifest_sha256, output_dir,
-                               additional_evidence_dir=None, asof=None, observation_end=None):
+                               additional_evidence_dir=None, candidate_instrument_authority_file=None,
+                               asof=None, observation_end=None):
     directory = Path(publisher_dir)
     registry_raw = (directory / "registry.json").read_bytes()
     registry = load_enrolled_trust_registry_bytes(registry_raw, expected_sha256=registry_sha256)
@@ -433,17 +455,30 @@ def publish_main_buy_supplement(*, evidence_dir, liquidity_capture_file, global_
     dates = sorted(row[fields.index("date")] for row in capture["response"]["rows"])[-20:]
     captures = [capture]
     symbols = [SYMBOL]
+    candidate_authority = None
+    if candidate_instrument_authority_file is not None:
+        candidate_authority = load_candidate_instrument_authority(
+            candidate_instrument_authority_file,
+            decision_cutoff=datetime.now(timezone.utc).isoformat())
+        symbols = sorted(item["symbol"] for item in
+                         candidate_authority["candidate_profile"]["candidates"])
+        if additional_evidence_dir is None or SYMBOL not in symbols:
+            raise ValueError("dynamic candidate supplement requires base and additional evidence")
     if additional_evidence_dir is not None:
-        symbols = sorted(ETF_RULE_SCOPES)
+        if candidate_authority is None:
+            symbols = sorted(ETF_RULE_SCOPES)
         captures.extend(json.loads((Path(additional_evidence_dir) / f"{symbol}-amount.json").read_bytes())
                         for symbol in symbols if symbol != SYMBOL)
     product = build_liquidity_amounts_product(captures, panel=[(symbol, day) for symbol in symbols for day in dates],
-        decision_cutoff=datetime.now(timezone.utc).isoformat(), expected_watermark=asof)
+        decision_cutoff=datetime.now(timezone.utc).isoformat(), expected_watermark=asof,
+        candidate_instrument_authority=candidate_authority)
     references, global_inputs = prepare_reference_inputs(evidence_dir=evidence_dir, liquidity_product=product,
         asof=asof, global_snapshot=json.loads(Path(global_snapshot_file).read_bytes()), observation_end=observation_end)
     if additional_evidence_dir is not None:
         references, global_inputs = extend_reference_inputs(references, global_inputs,
-            evidence_dir=additional_evidence_dir, symbols=symbols, asof=asof, observation_end=observation_end)
+            evidence_dir=additional_evidence_dir, symbols=symbols, asof=asof,
+            observation_end=observation_end,
+            candidate_instrument_authority=candidate_authority)
     def sign(inputs):
         artifact = inputs["artifact"]
         observed = datetime.now(timezone.utc).isoformat()
@@ -461,6 +496,8 @@ def publish_main_buy_supplement(*, evidence_dir, liquidity_capture_file, global_
     payload = {"schema_version": SCHEMA_VERSION, "provider_manifest_sha256": provider_manifest_sha256,
                "asof": asof, "decision_cutoff": cutoff, "symbols": symbols, "registry": json.loads(registry_raw),
                "liquidity": liquidity, "global_signals": global_inputs, "references": references}
+    if candidate_authority is not None:
+        payload["candidate_instrument_authority"] = candidate_authority
     verify_main_buy_supplement(payload, expected_registry_sha256=registry_sha256,
         provider_manifest_sha256=provider_manifest_sha256, asof=asof, decision_cutoff=cutoff)
     destination = Path(output_dir).expanduser().resolve()
@@ -476,6 +513,7 @@ def main(argv=None):
                  "registry-sha256", "provider-manifest-sha256", "output-dir"):
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--additional-evidence-dir")
+    parser.add_argument("--candidate-instrument-authority-file")
     parser.add_argument("--asof")
     parser.add_argument("--observation-end")
     result = publish_main_buy_supplement(**vars(parser.parse_args(argv)))

@@ -158,6 +158,50 @@ def test_extended_market_rules_bind_final_combined_source_receipt(tmp_path, monk
         assert row["payload"]["source_sha256"] == receipt["response_sha256"]
 
 
+def test_dynamic_extension_derives_all_reference_panels_from_candidate_authority(
+        tmp_path, monkeypatch):
+    from stockdata.candidate_instrument_authority import verify_candidate_instrument_authority
+    from test_candidate_instrument_authority import candidate_authority
+
+    asof = "2026-08-28"
+    fixture, _, _ = make_supplement(asof=asof)
+    references = {component: {**value, "source_evidence": {"files": []}}
+                  for component, value in fixture["references"].items()}
+    global_inputs = {**fixture["global_signals"], "source_evidence": {"files": []}}
+    authority = candidate_authority()
+    verified = verify_candidate_instrument_authority(
+        authority, decision_cutoff="2026-08-31T09:25:00+08:00")
+    symbol = "512480.SH"
+    (tmp_path / f"{symbol}-status-ca.json").write_bytes(b"[]")
+    facts = {"events": [], "corporate_actions_coverage": {
+        "start_date": "2025-07-11", "end_date": asof, "complete": True},
+        "source_files": {component: [f"{symbol}-status-ca.json"]
+                         for component in references},
+        "assessments": {component: "fixture" for component in references}}
+    (tmp_path / "evidence-index.json").write_bytes(_canonical({
+        "schema_version": "stockdata-main-etf-reviewed-facts/1", "asof": asof,
+        "instruments": {symbol: facts}}))
+    monkeypatch.setattr(publisher, "_evidence", lambda *args: {"files": []})
+    monkeypatch.setattr(publisher, "_validate_reviewed_events", lambda *args: None)
+    monkeypatch.setattr(publisher, "_validate_status_capture", lambda *args: {"isST": "1"})
+    monkeypatch.setattr(publisher, "_validate_announcement_capture", lambda *args, **kwargs: None)
+    monkeypatch.setattr(publisher, "_validate_universe",
+                        lambda *args, **kwargs: {"source_sha256": authority["candidate_profile"]["profile_sha256"]})
+    refs, _ = publisher.extend_reference_inputs(
+        references, global_inputs, evidence_dir=tmp_path,
+        symbols=[symbol, "561980.SH"], asof=asof,
+        candidate_instrument_authority=authority)
+    for component, inputs in refs.items():
+        assert inputs["artifact"]["panel"][-1] == "561980.SH@2026-08-28"
+        assert f"{symbol}@{asof}" in inputs["artifact"]["panel"]
+        assert inputs["source_evidence"]["candidate_instrument_authority_sha256"] \
+            == verified["authority_sha256"]
+    rule = next(row["payload"] for row in refs["market_rules"]["artifact"]["records"]
+                if row["panel_entry"] == f"{symbol}@{asof}")
+    assert {key: rule[key] for key in verified["scopes"][symbol]} \
+        == verified["scopes"][symbol]
+
+
 def test_base_reference_sources_are_selected_by_index_for_another_session(tmp_path):
     import hashlib
     asof = "2026-08-14"
