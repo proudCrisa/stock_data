@@ -1,0 +1,24 @@
+tests/prospective_panel_fixture.py
+  s_dcf78773457488::t_c008934ef7bf06 99
+  s_dcf78773457488::t_ba6074e8dfb06d 43,71,74-86
+  s_dcf78773457488::t_e6cba858f25efc 65,307-309
+  s_dcf78773457488::t_3ff07ad1cb6220 72
+  s_dcf78773457488::t_4765f0726dc5ba 66-70,73,87-98,100-111,124,132-135,152-153,310-322
+  s_dcf78773457488::t_c6301d9a4d10c9 10-11,15-24,45,154,160,181-194,246
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "6a697ead4785371529afb9db0ffdde39da15482d",
+  "prompts": {},
+  "sessions": {
+    "s_dcf78773457488": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a075b9-2944-7c12-8f61-2b0ba86cf3fb",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Crisa Zhang <zhangcrisa@gmail.com>"
+    }
+  }
+}
