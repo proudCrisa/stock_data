@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
@@ -200,6 +202,167 @@ def test_dynamic_extension_derives_all_reference_panels_from_candidate_authority
                 if row["panel_entry"] == f"{symbol}@{asof}")
     assert {key: rule[key] for key in verified["scopes"][symbol]} \
         == verified["scopes"][symbol]
+
+
+def test_dynamic_publisher_needs_no_561980_capture_or_instrument_evidence(
+        tmp_path, monkeypatch):
+    from stockdata.authority import load_enrolled_trust_registry_bytes
+    from stockdata.main_buy_supplement import validate_global_snapshot
+    from test_candidate_instrument_authority import (
+        candidate_authority, candidate_profile, candidate_registry,
+    )
+    from test_liquidity_amount_product import _receipt, _sessions
+
+    registry_value, pin, root, signer, reviewer = candidate_registry()
+    profile = candidate_profile()
+    profile["required_symbols"] = ["000300.SH", "512480.SH"]
+    profile["candidates"] = profile["candidates"][:1]
+    profile["profile_sha256"] = publisher._hash({
+        key: value for key, value in profile.items() if key != "profile_sha256"})
+    authority = candidate_authority(
+        registry_sha=pin, root=root, reviewer=reviewer, profile=profile)
+    evidence = tmp_path / "dynamic"
+    evidence.mkdir()
+    symbol, asof = "512480.SH", profile["asof"]
+    days = _sessions()
+    amount = _receipt(symbol, days)
+    (evidence / f"{symbol}-amount.json").write_bytes(_canonical(amount))
+    status = [{
+        "request": {"method": "query_stock_basic", "code": "sh.512480"},
+        "observed_at": f"{asof}T16:00:00+08:00",
+        "response": {"error_code": "0", "fields": ["code", "type", "status"],
+                     "rows": [["sh.512480", "5", "1"]]},
+    }, {
+        "request": {"method": "query_history_k_data_plus", "code": "sh.512480",
+                    "fields": "date,tradestatus,isST", "start_date": asof,
+                    "end_date": asof, "frequency": "d", "adjustflag": "3"},
+        "observed_at": f"{asof}T16:00:00+08:00",
+        "response": {"error_code": "0", "fields": ["date", "tradestatus", "isST"],
+                     "rows": [[asof, "1", "0"]]},
+    }]
+    status_name = f"{symbol}-status-ca.json"
+    (evidence / status_name).write_bytes(_canonical(status))
+    next_day = "2026-08-31"
+    calendar = {"request": {"method": "query_trade_dates", "start_date": days[0],
+                             "end_date": next_day},
+                "response": {"error_code": "0", "rows": [
+                    [day, "1"] for day in [*days, next_day]]}}
+    (evidence / "calendar.json").write_bytes(_canonical(calendar))
+    fees = {"policy_version": "broker-fee-v1", "commission_rate": .0003,
+            "min_commission_cny": 5., "etf_stamp_tax": 0.}
+    (evidence / "fees.json").write_bytes(_canonical(fees))
+    config_raw = _canonical({"holdings": []})
+    (evidence / "local-main-config.json").write_bytes(config_raw)
+    universe = {"symbols": profile["required_symbols"],
+                "source_sha256": profile["profile_sha256"]}
+    (evidence / "local-main-universe.json").write_bytes(_canonical(universe))
+    announcement_name = f"{symbol}-sse-announcements.json"
+    announcement = {"result": [], "pageHelp": {
+        "pageCount": 1, "pageNo": 1, "total": 0}}
+    announcement_raw = _canonical(announcement)
+    (evidence / announcement_name).write_bytes(announcement_raw)
+    announcement_receipt = {"observed_at": f"{asof}T16:00:00+08:00",
+        "request": {"method": "GET", "url": "https://query.sse.com.cn/commonQuery.do",
+                    "params": {"END_DATE": asof.replace("-", ""), "SECURITY_CODE": "512480",
+                               "START_DATE": "20250711", "isPagination": "true",
+                               "pageHelp.pageSize": "1000", "sqlId": "COMMON_PL_JJXX_JJGG_L"}},
+        "response": {"status_code": 200,
+                     "sha256": hashlib.sha256(announcement_raw).hexdigest(),
+                     "bytes": len(announcement_raw)}}
+    receipt_name = announcement_name + ".receipt.json"
+    (evidence / receipt_name).write_bytes(_canonical(announcement_receipt))
+    global_name = "global-quotes.json"
+    global_source = {"fixture": {"price": 1., "chg_pct": 0., "chg_20d": 0.,
+                                  "last_date": asof}}
+    (evidence / global_name).write_bytes(_canonical(global_source))
+    names = [status_name, "calendar.json", "fees.json", "local-main-config.json",
+             "local-main-universe.json", announcement_name, receipt_name,
+             global_name]
+    files = [{"file": name,
+              "sha256": hashlib.sha256((evidence / name).read_bytes()).hexdigest()}
+             for name in names]
+    facts = {"events": [], "reviewed_non_action_urls": [],
+             "corporate_actions_coverage": {
+                 "start_date": "2025-07-11", "end_date": asof, "complete": True},
+             "source_files": {
+                 "trading_calendar": ["calendar.json"],
+                 "instrument_status": [status_name],
+                 "market_rules": ["fees.json"],
+                 "universe": ["local-main-config.json", "local-main-universe.json"],
+                 "corporate_actions": [announcement_name, receipt_name]},
+             "assessments": {component: "isolated synthetic source fixture"
+                             for component in ("trading_calendar", "instrument_status",
+                                               "market_rules", "universe",
+                                               "corporate_actions")}}
+    (evidence / "evidence-index.json").write_bytes(_canonical({
+        "schema_version": "stockdata-main-etf-reviewed-facts/1", "asof": asof,
+        "instruments": {symbol: facts}, "files": files,
+        "source_files": {"global_signals": [global_name]},
+        "assessments": {"global_signals": "isolated synthetic source fixture"}}))
+    authority_file = tmp_path / "authority.json"
+    authority_file.write_bytes(_canonical(authority))
+    publisher_dir = tmp_path / "publisher"
+    publisher_dir.mkdir()
+    (publisher_dir / "registry.json").write_bytes(_canonical(registry_value))
+    (publisher_dir / "publisher.key").write_bytes(_private_raw(signer))
+    (publisher_dir / "publisher.key").chmod(0o600)
+    snapshot = {"schema_version": "trading-global-snapshot/1", "asof": asof,
+                "quotes": {"fixture": {"price": 1., "chg_pct": 0., "chg_20d": 0.,
+                                        "date": asof}},
+                "risk": {"level": "normal", "allow_buy": True}}
+    snapshot["snapshot_sha256"] = publisher._hash(snapshot)
+    validate_global_snapshot(snapshot)
+    snapshot_file = tmp_path / "global.json"
+    snapshot_file.write_bytes(_canonical(snapshot))
+    class FixedDateTime(datetime):
+        tick = 0
+
+        @classmethod
+        def now(cls, tz=None):
+            cls.tick += 1
+            value = datetime.fromisoformat(
+                f"{asof}T17:00:00+08:00") + timedelta(microseconds=cls.tick)
+            return value if tz is None else value.astimezone(tz)
+    monkeypatch.setattr(publisher, "datetime", FixedDateTime)
+
+    result = publisher.publish_main_buy_supplement(
+        evidence_dir=tmp_path / "absent-561980-evidence",
+        global_snapshot_file=snapshot_file, publisher_dir=publisher_dir,
+        registry_sha256=pin, provider_manifest_sha256="a" * 64,
+        output_dir=tmp_path / "output", additional_evidence_dir=evidence,
+        candidate_instrument_authority_file=authority_file, asof=asof,
+        observation_end=asof)
+
+    payload = json.loads(Path(result["supplement_file"]).read_bytes())
+    assert payload["symbols"] == [symbol]
+    assert all(input_["artifact"]["panel"][-1].startswith(symbol + "@")
+               for input_ in payload["references"].values())
+    assert not any("561980" in path.name for path in evidence.iterdir())
+    registry = load_enrolled_trust_registry_bytes(_canonical(registry_value), expected_sha256=pin)
+    assert registry.registry_sha256 == pin
+
+    changed = deepcopy(snapshot)
+    changed["quotes"]["fixture"]["price"] = 2.
+    changed["snapshot_sha256"] = publisher._hash({
+        key: value for key, value in changed.items() if key != "snapshot_sha256"})
+    snapshot_file.write_bytes(_canonical(changed))
+    with pytest.raises(ValueError, match="differs retained source facts"):
+        publisher.publish_main_buy_supplement(
+            evidence_dir=tmp_path / "absent-561980-evidence",
+            global_snapshot_file=snapshot_file, publisher_dir=publisher_dir,
+            registry_sha256=pin, provider_manifest_sha256="a" * 64,
+            output_dir=tmp_path / "global-drift", additional_evidence_dir=evidence,
+            candidate_instrument_authority_file=authority_file, asof=asof,
+            observation_end=asof)
+    snapshot_file.write_bytes(_canonical(snapshot))
+    with pytest.raises(ValueError, match="observation window"):
+        publisher.publish_main_buy_supplement(
+            evidence_dir=tmp_path / "absent-561980-evidence",
+            global_snapshot_file=snapshot_file, publisher_dir=publisher_dir,
+            registry_sha256=pin, provider_manifest_sha256="a" * 64,
+            output_dir=tmp_path / "bad-window", additional_evidence_dir=evidence,
+            candidate_instrument_authority_file=authority_file, asof=asof,
+            observation_end="2026-08-27")
 
 
 def test_base_reference_sources_are_selected_by_index_for_another_session(tmp_path):

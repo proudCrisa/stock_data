@@ -156,16 +156,22 @@ def _dynamic_supplement():
 
     payload, pin, signer = make_supplement()
     root = Ed25519PrivateKey.from_private_bytes(bytes([1]) * 32)
-    authority = candidate_authority()
-    profile = authority["candidate_profile"]
+    reviewer = Ed25519PrivateKey.from_private_bytes(bytes([3]) * 32)
+    payload["registry"]["signer_enrollments"].append(
+        _enrollment(root, reviewer, roles=["market_rules"]))
+    payload["registry"]["signer_enrollments"].sort(
+        key=lambda row: row["publisher_key_id"])
+    pin = _hash(payload["registry"])
+    from test_candidate_instrument_authority import candidate_profile
+    profile = candidate_profile()
     profile["asof"] = ASOF
     for row in profile["candidates"]:
         row["promoted_asof"] = ASOF
     profile["source_authorization"]["scan_asof"] = ASOF
     profile["profile_sha256"] = _hash({key: value for key, value in profile.items()
                                        if key != "profile_sha256"})
-    authority["authority_sha256"] = _hash({key: value for key, value in authority.items()
-                                           if key != "authority_sha256"})
+    authority = candidate_authority(
+        registry_sha=pin, root=root, reviewer=reviewer, profile=profile)
     verified = verify_candidate_instrument_authority(
         authority, decision_cutoff=payload["decision_cutoff"])
     symbols = ["512480.SH", SYMBOL]
@@ -241,7 +247,21 @@ def test_dynamic_candidate_supplement_rejects_resealed_unbound_authority():
     authority = payload["candidate_instrument_authority"]
     authority["authority_sha256"] = _hash({key: value for key, value in authority.items()
                                            if key != "authority_sha256"})
-    with pytest.raises(ValueError, match="candidate authority"):
+    with pytest.raises(ValueError, match="candidate instrument"):
+        _verify(payload, pin)
+
+
+def test_dynamic_candidate_review_signer_cannot_sign_product_components():
+    payload, pin = _dynamic_supplement()
+    signer = Ed25519PrivateKey.from_private_bytes(bytes([2]) * 32)
+    authority = payload["candidate_instrument_authority"]
+    envelope = authority["review_envelope"]
+    envelope["payload"]["publisher_key_id"] = _key_id(signer)
+    envelope["signature_base64"] = _b64(
+        signer.sign(_canonical(envelope["payload"])))
+    authority["authority_sha256"] = _hash({
+        key: value for key, value in authority.items() if key != "authority_sha256"})
+    with pytest.raises(ValueError, match="review signer must be independent"):
         _verify(payload, pin)
 
 

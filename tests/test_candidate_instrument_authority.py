@@ -3,14 +3,17 @@ import base64
 import hashlib
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from stockdata.authority import ALGORITHM, AUTHORITY_ENVELOPE_SCHEMA, TRUST_REGISTRY_SCHEMA, load_enrolled_trust_registry_bytes
 from stockdata.candidate_instrument_authority import (
     SCHEMA_VERSION, verify_candidate_instrument_authority,
 )
 from stockdata.liquidity_amount_product import (
-    _hash, build_liquidity_amounts_product, verify_liquidity_amounts_product,
+    _canonical, _hash, build_liquidity_amounts_product, verify_liquidity_amounts_product,
 )
 from test_liquidity_amount_product import _receipt, _sessions
+from test_provider_authority_publisher import _b64, _enrollment, _key_id, _root_entry
 
 
 ASOF = _sessions()[-1]
@@ -55,13 +58,31 @@ def _source(url, raw):
     }}
 
 
-def candidate_authority():
+def candidate_registry():
+    root = Ed25519PrivateKey.from_private_bytes(bytes([1]) * 32)
+    signer = Ed25519PrivateKey.from_private_bytes(bytes([2]) * 32)
+    reviewer = Ed25519PrivateKey.from_private_bytes(bytes([3]) * 32)
+    roles = sorted(["liquidity_amounts", "global_signals", "trading_calendar",
+                    "instrument_status", "market_rules", "universe",
+                    "corporate_actions"])
+    value = {"schema_version": TRUST_REGISTRY_SCHEMA, "registry_version": 1,
+             "trust_roots": [_root_entry(root)],
+             "signer_enrollments": [
+                 _enrollment(root, signer, roles=roles),
+                 _enrollment(root, reviewer, roles=["market_rules"])]}
+    value["signer_enrollments"].sort(key=lambda row: row["publisher_key_id"])
+    return value, _hash(value), root, signer, reviewer
+
+
+def candidate_authority(*, registry_sha=None, root=None, reviewer=None, profile=None):
+    if registry_sha is None:
+        _, registry_sha, root, _, reviewer = candidate_registry()
     classification = "https://issuer.example/512480/profile"
     rules = "https://www.sse.com.cn/rules/etf"
-    body = {
+    reviewed = {
         "schema_version": SCHEMA_VERSION,
         "review_attestation": "enrolled-publisher-reviewed-issuer-and-rule-sources",
-        "candidate_profile": candidate_profile(),
+        "candidate_profile": deepcopy(profile or candidate_profile()),
         "instruments": [{
             "symbol": "512480.SH", "instrument_class": "etf",
             "rule_scope": {
@@ -76,6 +97,34 @@ def candidate_authority():
             "rule_evidence": _source(rules, b"reviewed exchange rule fixture"),
         }],
     }
+    scope_hash = _hash(reviewed["instruments"][0]["rule_scope"])
+    receipts = {}
+    for kind, evidence in (
+            ("classification", reviewed["instruments"][0]["classification_evidence"]),
+            ("rule", reviewed["instruments"][0]["rule_evidence"])):
+        receipt = {"schema_version": "stockdata-candidate-instrument-review-receipt/1",
+                   "symbol": "512480.SH", "source_kind": kind,
+                   "source_url": evidence["url"],
+                   "observed_at": evidence["receipt"]["observed_at"],
+                   "response_sha256": evidence["receipt"]["response"]["sha256"],
+                   "rule_scope_sha256": scope_hash}
+        receipts[_hash(receipt)] = receipt
+    reviewed["review_receipts"] = receipts
+    artifact = {"kind": "stock-data-candidate-instrument-authority",
+                "identifier": _hash(reviewed), "schema_version": SCHEMA_VERSION}
+    envelope_payload = {
+        "component_role": "market_rules", "artifact": artifact,
+        "source_receipt_ids": sorted(receipts),
+        "effective_at": "2026-08-28T16:00:00+08:00",
+        "available_at": "2026-08-28T16:00:00+08:00",
+        "publisher_key_id": _key_id(reviewer), "trust_root_id": _key_id(root),
+        "trust_registry_sha256": registry_sha,
+    }
+    body = {**reviewed, "review_envelope": {
+        "schema_version": AUTHORITY_ENVELOPE_SCHEMA, "algorithm": ALGORITHM,
+        "payload": envelope_payload,
+        "signature_base64": _b64(reviewer.sign(_canonical(envelope_payload))),
+    }}
     return {**body, "authority_sha256": _hash(body)}
 
 
@@ -86,8 +135,10 @@ def _reseal(value):
 
 def test_dynamic_authority_and_liquidity_replay_exact_two_candidate_panel():
     authority = candidate_authority()
+    registry_value, pin, _, _, _ = candidate_registry()
+    registry = load_enrolled_trust_registry_bytes(_canonical(registry_value), expected_sha256=pin)
     verified = verify_candidate_instrument_authority(
-        authority, decision_cutoff=CUTOFF)
+        authority, decision_cutoff=CUTOFF, registry=registry)
     assert set(verified["scopes"]) == {"512480.SH"}
     captures = [_receipt(symbol, _sessions())
                 for symbol in ("512480.SH", "561980.SH")]
@@ -119,3 +170,23 @@ def test_dynamic_authority_rejects_resealed_scope_or_source_drift(mutation):
     _reseal(authority)
     with pytest.raises(ValueError):
         verify_candidate_instrument_authority(authority, decision_cutoff=CUTOFF)
+
+
+@pytest.mark.parametrize("mutation", ["signature", "unenrolled_resign"])
+def test_dynamic_authority_requires_enrolled_independent_review_signature(mutation):
+    authority = candidate_authority()
+    registry_value, pin, root, _, _ = candidate_registry()
+    registry = load_enrolled_trust_registry_bytes(
+        _canonical(registry_value), expected_sha256=pin)
+    if mutation == "signature":
+        authority["review_envelope"]["signature_base64"] = _b64(bytes(64))
+    else:
+        unknown = Ed25519PrivateKey.from_private_bytes(bytes([4]) * 32)
+        envelope = authority["review_envelope"]
+        envelope["payload"]["publisher_key_id"] = _key_id(unknown)
+        envelope["signature_base64"] = _b64(
+            unknown.sign(_canonical(envelope["payload"])))
+    _reseal(authority)
+    with pytest.raises(ValueError):
+        verify_candidate_instrument_authority(
+            authority, decision_cutoff=CUTOFF, registry=registry)

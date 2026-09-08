@@ -136,21 +136,28 @@ def verify_main_buy_supplement(
     if (not isinstance(symbols, list) or not symbols or symbols != sorted(set(symbols))
             or any(normalize(symbol) != symbol for symbol in symbols)):
         raise ValueError("main BUY symbols must be canonical, sorted, and unique")
+    registry = load_enrolled_trust_registry_bytes(
+        _canonical(payload["registry"]), expected_sha256=expected_registry_sha256,
+    )
     trusted_etf_scopes = None
     authority_hash = None
     if dynamic:
         authority = verify_candidate_instrument_authority(
             payload["candidate_instrument_authority"],
-            decision_cutoff=payload["decision_cutoff"])
+            decision_cutoff=payload["decision_cutoff"], registry=registry)
         profile_symbols = sorted(item["symbol"]
                                  for item in authority["profile"]["candidates"])
-        if symbols != profile_symbols:
+        if authority["profile"]["asof"] != payload["asof"] \
+                or symbols != profile_symbols:
             raise ValueError("main BUY symbols differ candidate profile")
         trusted_etf_scopes = authority["scopes"]
         authority_hash = authority["authority_sha256"]
-    registry = load_enrolled_trust_registry_bytes(
-        _canonical(payload["registry"]), expected_sha256=expected_registry_sha256,
-    )
+        component_inputs = [payload["liquidity"], payload["global_signals"],
+                            *payload["references"].values()]
+        if any(inputs.get("authority_envelope", {}).get("payload", {}).get(
+                "publisher_key_id") == authority["reviewer_key_id"]
+                for inputs in component_inputs):
+            raise ValueError("candidate instrument review signer must be independent")
     current_panel = [f"{symbol}@{asof}" for symbol in symbols]
     cutoffs = {entry: decision_cutoff for entry in current_panel}
     liquidity = payload["liquidity"]

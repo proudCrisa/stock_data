@@ -10,12 +10,14 @@ import json
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .authority import verify_authority_envelope
 from .local_daily_snapshot import verify_candidate_profile
 from .market_rules import ETF_RULE_SCOPES
 from .ticker import normalize
 
 
 SCHEMA_VERSION = "stockdata-candidate-instrument-authority/1"
+REVIEW_RECEIPT_SCHEMA = "stockdata-candidate-instrument-review-receipt/1"
 _SCOPE_FIELDS = {
     "fund_type", "classification_source", "rule_source", "effective_from",
     "exchange", "t_plus_one", "price_limit_up", "price_limit_down",
@@ -60,10 +62,10 @@ def _source(value, *, url, cutoff):
     return digest
 
 
-def verify_candidate_instrument_authority(value, *, decision_cutoff):
+def verify_candidate_instrument_authority(value, *, decision_cutoff, registry=None):
     if not isinstance(value, dict) or set(value) != {
             "schema_version", "review_attestation", "candidate_profile", "instruments",
-            "authority_sha256"}:
+            "review_receipts", "review_envelope", "authority_sha256"}:
         raise ValueError("candidate instrument authority schema differs")
     unsigned = {key: item for key, item in value.items()
                 if key != "authority_sha256"}
@@ -83,6 +85,7 @@ def verify_candidate_instrument_authority(value, *, decision_cutoff):
             != sorted(expected):
         raise ValueError("candidate instrument authority differs exact dynamic candidates")
     scopes = {}
+    expected_receipts = {}
     for row in instruments:
         if not isinstance(row, dict) or set(row) != {
                 "symbol", "instrument_class", "rule_scope",
@@ -98,16 +101,41 @@ def verify_candidate_instrument_authority(value, *, decision_cutoff):
                 or scope["price_limit_up"] not in {.1, .2} \
                 or scope["price_limit_down"] != scope["price_limit_up"]:
             raise ValueError("candidate instrument rule scope is invalid")
-        _source(row["classification_evidence"],
-                url=scope["classification_source"], cutoff=decision_cutoff)
-        _source(row["rule_evidence"], url=scope["rule_source"],
-                cutoff=decision_cutoff)
+        for kind, evidence, url in (
+                ("classification", row["classification_evidence"],
+                 scope["classification_source"]),
+                ("rule", row["rule_evidence"], scope["rule_source"])):
+            digest = _source(evidence, url=url, cutoff=decision_cutoff)
+            receipt = {
+                "schema_version": REVIEW_RECEIPT_SCHEMA, "symbol": symbol,
+                "source_kind": kind, "source_url": url,
+                "observed_at": evidence["receipt"]["observed_at"],
+                "response_sha256": digest,
+                "rule_scope_sha256": _hash(scope),
+            }
+            expected_receipts[_hash(receipt)] = receipt
         scopes[symbol] = deepcopy(scope)
+    if value["review_receipts"] != expected_receipts:
+        raise ValueError("candidate instrument review receipt closure differs")
+    if registry is not None:
+        reviewed = {key: item for key, item in value.items()
+                    if key not in {"review_envelope", "authority_sha256"}}
+        accepted = verify_authority_envelope(
+            value["review_envelope"], registry=registry,
+            expected_component="market_rules",
+            expected_artifact={
+                "kind": "stock-data-candidate-instrument-authority",
+                "identifier": _hash(reviewed), "schema_version": SCHEMA_VERSION,
+            }, expected_source_receipt_ids=sorted(expected_receipts))
+        cutoff = datetime.fromisoformat(decision_cutoff.replace("Z", "+00:00"))
+        if datetime.fromisoformat(accepted.available_at) >= cutoff:
+            raise ValueError("candidate instrument review is not pre-decision")
     return {"profile": deepcopy(profile), "scopes": scopes,
-            "authority_sha256": value["authority_sha256"]}
+            "authority_sha256": value["authority_sha256"],
+            "reviewer_key_id": (accepted.publisher_key_id if registry is not None else None)}
 
 
-def load_candidate_instrument_authority(path, *, decision_cutoff):
+def load_candidate_instrument_authority(path, *, decision_cutoff, registry):
     raw = Path(path).read_bytes()
     try:
         value = json.loads(raw)
@@ -115,5 +143,6 @@ def load_candidate_instrument_authority(path, *, decision_cutoff):
         raise ValueError("candidate instrument authority is not JSON") from exc
     if raw != _canonical(value):
         raise ValueError("candidate instrument authority bytes are not canonical")
-    verify_candidate_instrument_authority(value, decision_cutoff=decision_cutoff)
+    verify_candidate_instrument_authority(
+        value, decision_cutoff=decision_cutoff, registry=registry)
     return value
