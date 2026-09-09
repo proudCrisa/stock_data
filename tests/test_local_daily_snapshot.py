@@ -126,6 +126,20 @@ def test_candidate_profile_allows_existing_fixed_holding_in_exact_panel():
         symbols=profile["required_symbols"], asof=profile["asof"]) == profile
 
 
+def test_candidate_profile_allows_only_exact_sector_scan_extension():
+    profile = _candidate_profile()
+    symbols = sorted(set(profile["required_symbols"]) | local.SECTOR_SCAN_SYMBOLS)
+
+    assert local.verify_candidate_profile(
+        profile, expected_sha256=profile["profile_sha256"],
+        symbols=symbols, asof=profile["asof"]) == profile
+
+    with pytest.raises(ValueError, match="scope differs"):
+        local.verify_candidate_profile(
+            profile, expected_sha256=profile["profile_sha256"],
+            symbols=symbols[:-1], asof=profile["asof"])
+
+
 def test_candidate_profile_cannot_reclassify_index_as_dynamic_etf():
     profile = _candidate_profile()
     profile["required_symbols"] = ["000300.SH"]

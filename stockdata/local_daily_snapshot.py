@@ -34,16 +34,22 @@ OBSERVATION_CONTRACT = "candidate-observation-v1"
 PROMOTION_RULE_VERSION = "ma20-observation-window/2"
 ETF_SYMBOLS = frozenset({"588730.SH", "518880.SH", "561980.SH", "159980.SZ",
                          "560900.SH", "511010.SH", "513650.SH", "159350.SZ"})
+SECTOR_SCAN_SYMBOLS = frozenset({
+    "159611.SZ", "159892.SZ", "159915.SZ", "159928.SZ", "159949.SZ",
+    "159981.SZ", "510880.SH", "512000.SH", "512010.SH", "512070.SH",
+    "512480.SH", "512800.SH", "513180.SH", "515880.SH", "515980.SH",
+    "562500.SH",
+})
 INDEX_SYMBOLS = frozenset({"000300.SH", "000688.SH", "399811.SZ", "399395.SZ", "000933.SH"})
 TENCENT_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 FIELDS = ("date", "open", "high", "low", "close", "volume")
 
 
 def _route(symbol, role, candidate_symbols=frozenset()):
-    if symbol not in ETF_SYMBOLS | INDEX_SYMBOLS | set(candidate_symbols) \
+    if symbol not in ETF_SYMBOLS | SECTOR_SCAN_SYMBOLS | INDEX_SYMBOLS | set(candidate_symbols) \
             or role not in {"execution", "signal"}:
         raise ValueError("symbol or price role is outside the local daily profile")
-    is_etf = symbol in ETF_SYMBOLS | set(candidate_symbols)
+    is_etf = symbol in ETF_SYMBOLS | SECTOR_SCAN_SYMBOLS | set(candidate_symbols)
     adjustment = "qfq" if is_etf and role == "signal" else "raw"
     sources = ["tencent.ifzq"] if is_etf else ["baostock", "tencent.ifzq"]
     return [(source, adjustment) for source in sources]
@@ -63,9 +69,12 @@ def verify_candidate_profile(payload, *, expected_sha256, symbols, asof):
         raise ValueError("candidate local daily profile identity differs")
     required = sorted(payload["required_symbols"])
     benchmarks = sorted(payload["benchmark_symbols"])
+    allowed_scopes = {
+        tuple(required), tuple(sorted(set(required) | SECTOR_SCAN_SYMBOLS))}
     if payload["asof"] != asof or payload["decision_authority"] is not False \
             or payload["purpose"] != "formal-validation-input" \
-            or required != sorted(symbols) or len(required) != len(set(required)) \
+            or tuple(sorted(symbols)) not in allowed_scopes \
+            or len(required) != len(set(required)) \
             or benchmarks != ["000300.SH"] or not set(benchmarks) <= set(required):
         raise ValueError("candidate local daily profile scope differs")
     source = payload["source_authorization"]
@@ -373,7 +382,7 @@ def capture_local_daily_snapshot(*, symbols, asof, publisher_dir,
             candidate["symbol"] for candidate in verified_profile["candidates"])
         profile = DYNAMIC_PROFILE
     if not symbols or len(symbols) != len(set(symbols)) \
-            or not set(symbols) <= ETF_SYMBOLS | INDEX_SYMBOLS | candidate_symbols:
+            or not set(symbols) <= ETF_SYMBOLS | SECTOR_SCAN_SYMBOLS | INDEX_SYMBOLS | candidate_symbols:
         raise ValueError("local daily capture symbols are outside the approved exact profile")
     destination = Path(output_dir).expanduser().resolve()
     destination.mkdir(mode=0o700, parents=False, exist_ok=False)
