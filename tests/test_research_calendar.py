@@ -7,6 +7,8 @@ import pytest
 from stockdata.research_calendar import (
     ResearchCalendarError,
     build_calendar_artifact,
+    canonical_receipt_observed_at,
+    materialize_calendar_authority_timing,
     verify_calendar_artifact,
 )
 
@@ -38,6 +40,30 @@ def test_calendar_artifact_is_content_addressed_and_research_only(tmp_path):
     assert manifest["authority_status"] == "research_vendor_only"
     assert manifest["row_count"] == 3
     assert _build(tmp_path) == artifact
+
+
+def test_derived_receipt_observed_at_canonicalizes_z_without_mutating_source():
+    source_observed_at = "2026-09-11T13:58:00.918220Z"
+
+    assert canonical_receipt_observed_at(source_observed_at) == (
+        "2026-09-11T13:58:00.918220+00:00"
+    )
+    assert source_observed_at == "2026-09-11T13:58:00.918220Z"
+
+
+def test_derived_calendar_authority_uses_one_canonical_observed_at_everywhere():
+    source = {"observed_at": "2026-09-11T13:58:00.918220Z"}
+    receipt = {"source": "baostock:query_trade_dates/1"}
+    records = [{"panel_entry": "159980.SZ@2026-09-11"}]
+
+    derived_receipt, derived_records = materialize_calendar_authority_timing(
+        receipt, records, source_observed_at=source["observed_at"]
+    )
+
+    expected = "2026-09-11T13:58:00.918220+00:00"
+    assert derived_receipt["observed_at"] == expected
+    assert [record["available_at"] for record in derived_records] == [expected]
+    assert source["observed_at"] == "2026-09-11T13:58:00.918220Z"
 
 
 def test_calendar_requires_contiguous_ordered_coverage(tmp_path):
