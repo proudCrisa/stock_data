@@ -158,6 +158,11 @@ def _capture(source, symbol, start, asof, adjustment):
 
 
 def _replay(capture, *, source, symbol, start, asof, adjustment, cutoff):
+    if source == "qmt.fulldata":
+        from . import qmt_fulldata_offline
+        return qmt_fulldata_offline.replay(
+            capture, symbol=symbol, start=start, asof=asof,
+            adjustment=adjustment, cutoff=cutoff)
     if capture["source"] != source or _timestamp(capture["observed_at"]) >= cutoff:
         raise ValueError("price capture source or availability differs")
     request, response = capture["request"], capture["response"]
@@ -218,10 +223,26 @@ def _replay(capture, *, source, symbol, start, asof, adjustment, cutoff):
     return selected, actual_adjustment
 
 
+def _manifest_route(attempts, symbol, role, candidate_symbols):
+    qmt_attempts = [attempt for attempt in attempts if isinstance(attempt, dict)
+                    and attempt.get("source") == "qmt.fulldata"]
+    if qmt_attempts:
+        from .qmt_fulldata_offline import APPROVED_VOLUME_PAIRS, SOURCE
+        if role not in {"execution", "signal"}:
+            raise ValueError("QMT full-data role differs sealed profile")
+        adjustment = "raw" if role == "execution" else "qfq"
+        if len(attempts) != 1 or len(qmt_attempts) != 1 \
+                or symbol not in {key[0] for key in APPROVED_VOLUME_PAIRS} \
+                or (symbol, adjustment) not in APPROVED_VOLUME_PAIRS:
+            raise ValueError("QMT full-data attempts differ sealed profile")
+        return [(SOURCE, adjustment)]
+    return _route(symbol, role, candidate_symbols)
+
+
 def build_price_manifest(attempts, *, symbol, role, start, asof, decision_cutoff,
                          candidate_symbols=frozenset(), profile=PROFILE):
     cutoff = _timestamp(decision_cutoff)
-    route = _route(symbol, role, candidate_symbols)
+    route = _manifest_route(attempts, symbol, role, candidate_symbols)
     if not attempts or len(attempts) > len(route):
         raise ValueError("price source attempts do not match the fixed route")
     selected = None
@@ -367,7 +388,8 @@ def verify_local_daily_snapshot(payload, *, expected_registry_sha256,
 def capture_local_daily_snapshot(*, symbols, asof, publisher_dir,
                                  expected_registry_sha256, output_dir,
                                  candidate_profile=None,
-                                 expected_candidate_profile_sha256=None):
+                                 expected_candidate_profile_sha256=None,
+                                 sealed_qmt_captures=None):
     symbols = sorted(symbols)
     candidate_symbols = frozenset()
     profile = PROFILE
@@ -384,6 +406,18 @@ def capture_local_daily_snapshot(*, symbols, asof, publisher_dir,
     if not symbols or len(symbols) != len(set(symbols)) \
             or not set(symbols) <= ETF_SYMBOLS | SECTOR_SCAN_SYMBOLS | INDEX_SYMBOLS | candidate_symbols:
         raise ValueError("local daily capture symbols are outside the approved exact profile")
+    if sealed_qmt_captures is not None:
+        from .qmt_fulldata_offline import APPROVED_VOLUME_PAIRS, SOURCE
+        approved_symbols = sorted({key[0] for key in APPROVED_VOLUME_PAIRS})
+        expected = {(symbol, role) for symbol in approved_symbols
+                    for role in ("execution", "signal")}
+        if not set(approved_symbols) <= set(symbols) \
+                or not isinstance(sealed_qmt_captures, dict) \
+                or set(sealed_qmt_captures) != expected:
+            raise ValueError("sealed QMT captures require the exact approved six-role panel")
+        if any(not isinstance(capture, dict) or capture.get("source") != SOURCE
+               for capture in sealed_qmt_captures.values()):
+            raise ValueError("sealed QMT capture identity differs")
     destination = Path(output_dir).expanduser().resolve()
     destination.mkdir(mode=0o700, parents=False, exist_ok=False)
     start = (date.fromisoformat(asof) - timedelta(days=420)).isoformat()
@@ -391,27 +425,32 @@ def capture_local_daily_snapshot(*, symbols, asof, publisher_dir,
     for symbol in symbols:
         captures[symbol] = {}
         for role in ("execution", "signal"):
-            attempts = []
-            for source, adjustment in _route(symbol, role, candidate_symbols):
-                identity = (source, symbol, adjustment)
-                if identity not in memo:
+            if sealed_qmt_captures is not None and (symbol, role) in sealed_qmt_captures:
+                capture = sealed_qmt_captures[(symbol, role)]
+                attempts = [{"source": "qmt.fulldata", "observed_at": capture["observed_at"],
+                             "capture": capture, "error": None}]
+            else:
+                attempts = []
+                for source, adjustment in _route(symbol, role, candidate_symbols):
+                    identity = (source, symbol, adjustment)
+                    if identity not in memo:
+                        try:
+                            capture = _capture(source, symbol, start, asof, adjustment)
+                            attempt = {"source": source, "observed_at": datetime.now(timezone.utc).isoformat(),
+                                       "capture": capture, "error": None}
+                        except Exception as exc:
+                            attempt = {"source": source, "observed_at": datetime.now(timezone.utc).isoformat(),
+                                       "capture": None, "error": f"{type(exc).__name__}: {exc}"}
+                        memo[identity] = attempt
+                        _write_private(destination / f"{symbol}-{source}-{adjustment}.json", _canonical(attempt))
+                    attempts.append(memo[identity])
                     try:
-                        capture = _capture(source, symbol, start, asof, adjustment)
-                        attempt = {"source": source, "observed_at": datetime.now(timezone.utc).isoformat(),
-                                   "capture": capture, "error": None}
-                    except Exception as exc:
-                        attempt = {"source": source, "observed_at": datetime.now(timezone.utc).isoformat(),
-                                   "capture": None, "error": f"{type(exc).__name__}: {exc}"}
-                    memo[identity] = attempt
-                    _write_private(destination / f"{symbol}-{source}-{adjustment}.json", _canonical(attempt))
-                attempts.append(memo[identity])
-                try:
-                    build_price_manifest(attempts, symbol=symbol, role=role, start=start, asof=asof,
-                                         decision_cutoff=datetime.now(timezone.utc).isoformat(),
-                                         candidate_symbols=candidate_symbols, profile=profile)
-                    break
-                except ValueError:
-                    pass
+                        build_price_manifest(attempts, symbol=symbol, role=role, start=start, asof=asof,
+                                             decision_cutoff=datetime.now(timezone.utc).isoformat(),
+                                             candidate_symbols=candidate_symbols, profile=profile)
+                        break
+                    except ValueError:
+                        pass
             captures[symbol][role] = attempts
         print(json.dumps({"captured_symbol": symbol}), flush=True)
     publisher = Path(publisher_dir)
