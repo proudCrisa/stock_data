@@ -330,8 +330,9 @@ class QmtChannelClient:
             src = (snap.get("market_adj") or {}).get("front")
         if not isinstance(src, dict) or not src:
             raise QmtChannelError("快照不含 front 复权数据(需在 Windows 端配置导出)")
-        return {sym: rec for sym, rec in src.items()
-                if isinstance(rec, dict) and rec.get("index")}
+        # 保留全部键:畸形记录(空 index 等)交由解析层分类为协议/数据错误,
+        # 不能在这里静默丢弃而被下游误判为 not_in_pool
+        return dict(src)
 
     def history_front(
         self,
@@ -402,58 +403,60 @@ def _prepare_sync(cache, client: QmtChannelClient):
 def _absorb(cache, code: str, bars: list[dict], suspended: set[str],
             invalid: list[str], nonpositive: set[str], cutoff: str,
             calendar: set[str], result: dict) -> None:
-    """全量刷新单标的:upsert 全部返回行 + 删除超范围/旧因子残留行 + 覆盖声明。
+    """原子化全量刷新单标的:先完整验证,通过才写库;写则替换式覆盖声明。
 
-    前复权在分红除权后会重述全部历史,因此每次都把库内序列对齐到通道
-    当前返回的同一因子版本。删除规则:
-    - ``date < 本次首个正价行``:通道够不到的更早日行(快照 1300 行约 5 年);
-    - 本次观测为非正价的日期:旧因子版本可能残留的正价行。
-    覆盖声明的区间左端取所有已观测日(含停牌/非正价证据)的最小值。
+    fail-closed 顺序(任一步不过,该标的整批不写,库内保持旧因子版本的一致序列):
+    1. 本次返回含非法行 → 整标的新版本不可信,拒收;
+    2. 库内他源日历为空 → 无法验证完整性,拒收;
+    3. [lo,hi] 内存在无证据解释的日历交易日 → 版本不完整,拒收。
+
+    通过后才写库:
+    - upsert 全部正价行(同一复权因子版本);
+    - 删除 ``date < 首个正价行``(通道够不到的更早日行);
+    - 删除停牌/非正价证据日的残留行(旧因子版本的正价行);
+    - 覆盖声明**替换**为本次实际验证的 [lo, hi](lo/hi 取所有已观测日,
+      含尾部的停牌/零成交证据),不做 MIN/MAX 合并——刷新是破坏性的,
+      合并会让覆盖声明超出库内实际数据。
     """
     result["invalid"].extend(invalid)
     if nonpositive:
         result["nonpositive"][code] = len(nonpositive)
+    if invalid:
+        result["errors"][code] = f"返回含 {len(invalid)} 条非法行,整标的拒收"
+        return
     if not bars:
         result["errors"][code] = "无合法日线"
         return
+    observed = {b["date"] for b in bars} | suspended | nonpositive
+    lo, hi = min(observed), max(observed)
+    if not calendar:
+        result["coverage_holes"][code] = ["trading calendar empty"]
+        return
+    unexplained = [d for d in calendar if lo <= d <= hi and d not in observed]
+    if unexplained:
+        result["coverage_holes"][code] = unexplained[:5]
+        return
+
     first_bar = bars[0]["date"]
-    lo = min([first_bar, *suspended, *nonpositive])
-    hi = bars[-1]["date"]
     result["rows"] += cache.upsert(
         code, bars, source=SOURCE, adjustment_mode=ADJ_MODE,
         adjustment_version=ADJ_VERSION)
+    stale_dates = sorted((suspended | nonpositive))
     cache._conn.execute(
         "DELETE FROM daily WHERE code=? AND source=? AND adjustment_mode=?"
         " AND adjustment_version=? AND date < ?",
         (code, SOURCE, ADJ_MODE, ADJ_VERSION, first_bar))
-    if nonpositive:
+    if stale_dates:
         cache._conn.executemany(
             "DELETE FROM daily WHERE code=? AND source=? AND adjustment_mode=?"
             " AND adjustment_version=? AND date = ?",
-            [(code, SOURCE, ADJ_MODE, ADJ_VERSION, d) for d in nonpositive])
+            [(code, SOURCE, ADJ_MODE, ADJ_VERSION, d) for d in stale_dates])
+    # 替换式覆盖声明:删除旧区间,写入本次验证区间
+    cache._conn.execute(
+        "DELETE FROM sync_coverage WHERE code=? AND source=?"
+        " AND adjustment_mode=? AND adjustment_version=?",
+        (code, SOURCE, ADJ_MODE, ADJ_VERSION))
     cache._conn.commit()
-    if not calendar:
-        result["coverage_holes"][code] = ["trading calendar empty"]
-        return
-    have = {b["date"] for b in bars} | suspended | nonpositive
-    unexplained = [d for d in calendar if lo <= d <= hi and d not in have]
-    if unexplained:
-        result["coverage_holes"][code] = unexplained[:5]
-        return
-    # 拒绝与既有覆盖区间合并出未验证空洞:既有区间右端早于本次左端,
-    # 且夹缝中夹着库内交易日(宕机超窗)时,本次声明只覆盖 [lo,hi] 已验证段,
-    # 不允许 MIN/MAX 合并把未检查的夹缝一并声明为已覆盖。
-    existing = cache._conn.execute(
-        "SELECT MIN(start_date), MAX(end_date) FROM sync_coverage WHERE code=?"
-        " AND source=? AND adjustment_mode=? AND adjustment_version=?",
-        (code, SOURCE, ADJ_MODE, ADJ_VERSION)).fetchone()
-    if existing and existing[1] and existing[1] < lo:
-        gap = [d for d in calendar if existing[1] < d < lo]
-        if gap:
-            result["coverage_holes"][code] = [
-                f"disjoint with existing coverage ending {existing[1]}: "
-                f"{len(gap)} unexplained calendar days between"]
-            return
     cache.record_sync_coverage(code, SOURCE, ADJ_MODE, ADJ_VERSION, lo, hi)
     result["codes_ok"].append(code)
 
@@ -504,9 +507,12 @@ def sync_qmt_daily_from_snapshot(
     pool = client.snapshot_front()
     for raw_code in codes:
         code = normalize(raw_code)
-        rec = pool.get(code)
-        if rec is None:
+        if code not in pool:
             result["not_in_pool"].append(code)
+            continue
+        rec = pool[code]
+        if not isinstance(rec, dict) or not rec.get("index"):
+            result["errors"][code] = "快照中该标的记录缺失/畸形"
             continue
         try:
             bars, suspended, invalid, nonpositive = parse_history_records(

@@ -457,6 +457,9 @@ class TestSync:
         assert cache._conn.execute(
             "SELECT COUNT(*) FROM sync_coverage WHERE source=?",
             (SOURCE,)).fetchone()[0] == 0
+        # fail-closed:无法验证完整性的版本,一行都不写(防新旧因子混排)
+        assert cache._conn.execute(
+            "SELECT COUNT(*) FROM daily WHERE source='qmt'").fetchone()[0] == 0
         cache.close()
 
     def test_empty_calendar_never_declares_coverage(self, tmp_path):
@@ -465,6 +468,8 @@ class TestSync:
         client = self._sync_client({"600519.SH": payload})
         result = sync_qmt_daily(cache, client, ["600519.SH"])
         assert result["coverage_holes"]["600519.SH"] == ["trading calendar empty"]
+        assert cache._conn.execute(
+            "SELECT COUNT(*) FROM daily WHERE source='qmt'").fetchone()[0] == 0
         cache.close()
 
     def test_suspension_explains_gap(self, tmp_path):
@@ -479,6 +484,11 @@ class TestSync:
         result = sync_qmt_daily(cache, client, ["600519.SH"])
         assert result["coverage_holes"] == {}
         assert result["rows"] == 1
+        # 尾部停牌证据推进覆盖右界
+        row = cache._conn.execute(
+            "SELECT start_date, end_date FROM sync_coverage WHERE source='qmt'"
+        ).fetchone()
+        assert tuple(row) == ("2026-09-10", "2026-09-11")
         cache.close()
 
     def test_full_refresh_deletes_rows_beyond_channel_reach(self, tmp_path):
@@ -526,38 +536,58 @@ class TestSync:
         assert result["nonpositive"] == {"600519.SH": 1}
         cache.close()
 
-    def test_disjoint_coverage_not_merged(self, tmp_path):
-        """既有覆盖与本次区间夹缝含交易日:拒绝 MIN/MAX 合并式声明。"""
+    def test_coverage_replaced_to_current_interval(self, tmp_path):
+        """刷新是破坏性的:覆盖声明替换为本次验证区间,不做 MIN/MAX 合并。"""
         cache = Cache(tmp_path / "t.sqlite")
         _seed_calendar(cache, ["2026-09-08", "2026-09-09", "2026-09-10"])
-        # 既有覆盖止于 09-08(模拟早期运行)
+        # 既有覆盖止于 09-08(模拟早期运行,其日行已被窗口滑动删除)
         cache.record_sync_coverage("600519.SH", SOURCE, ADJ_MODE, ADJ_VERSION,
                                    "2026-09-08", "2026-09-08")
-        # 本次只验证 [09-10, 09-10](宕机超窗后),09-09 无人检查
-        payload = _payload("600519.SH", [("2026-09-10", _bar())])
-        client = self._sync_client({"600519.SH": payload})
-        result = sync_qmt_daily(cache, client, ["600519.SH"])
-        assert "600519.SH" in result["coverage_holes"]
-        row = cache._conn.execute(
-            "SELECT start_date, end_date FROM sync_coverage WHERE code='600519.SH'"
-            " AND source='qmt'").fetchone()
-        assert tuple(row) == ("2026-09-08", "2026-09-08")  # 未被合并夸大
-        cache.close()
-
-    def test_adjacent_coverage_merges(self, tmp_path):
-        """夹缝无交易日(相邻区间):正常合并声明。"""
-        cache = Cache(tmp_path / "t.sqlite")
-        _seed_calendar(cache, ["2026-09-08", "2026-09-10"])  # 09-09 非交易日
-        cache.record_sync_coverage("600519.SH", SOURCE, ADJ_MODE, ADJ_VERSION,
-                                   "2026-09-08", "2026-09-08")
-        payload = _payload("600519.SH", [("2026-09-10", _bar())])
+        payload = _payload("600519.SH", [("2026-09-09", _bar()),
+                                         ("2026-09-10", _bar())])
         client = self._sync_client({"600519.SH": payload})
         result = sync_qmt_daily(cache, client, ["600519.SH"])
         assert result["coverage_holes"] == {}
         row = cache._conn.execute(
             "SELECT start_date, end_date FROM sync_coverage WHERE code='600519.SH'"
             " AND source='qmt'").fetchone()
-        assert tuple(row) == ("2026-09-08", "2026-09-10")
+        assert tuple(row) == ("2026-09-09", "2026-09-10")  # 替换,不含旧左端
+        cache.close()
+
+    def test_invalid_row_rejects_whole_symbol(self, tmp_path):
+        """本次返回含非法行:整标的新版本不可信,一行不写。"""
+        cache = Cache(tmp_path / "t.sqlite")
+        days = ["2026-09-10", "2026-09-11"]
+        _seed_calendar(cache, days)
+        payload = _payload("600519.SH", [
+            ("2026-09-10", _bar(o=12.0, h=11.0)),  # open > high:非法
+            ("2026-09-11", _bar()),
+        ])
+        client = self._sync_client({"600519.SH": payload})
+        result = sync_qmt_daily(cache, client, ["600519.SH"])
+        assert result["rows"] == 0
+        assert "拒收" in result["errors"]["600519.SH"]
+        assert cache._conn.execute(
+            "SELECT COUNT(*) FROM daily WHERE source='qmt'").fetchone()[0] == 0
+        cache.close()
+
+    def test_suspended_day_deletes_previously_stored_row(self, tmp_path):
+        """某日由有量 bar 重述为停牌:旧行删除,不得残留旧因子价。"""
+        cache = Cache(tmp_path / "t.sqlite")
+        days = ["2026-09-10", "2026-09-11"]
+        _seed_calendar(cache, days)
+        old = _payload("600519.SH", [(d, _bar()) for d in days])
+        sync_qmt_daily(cache, self._sync_client({"600519.SH": old}),
+                       ["600519.SH"])
+        new = _payload("600519.SH", [
+            ("2026-09-10", _bar()),
+            ("2026-09-11", _bar(suspendFlag=True)),
+        ])
+        sync_qmt_daily(cache, self._sync_client({"600519.SH": new}),
+                       ["600519.SH"])
+        stored = sorted(r[0] for r in cache._conn.execute(
+            "SELECT date FROM daily WHERE source='qmt'"))
+        assert stored == ["2026-09-10"]
         cache.close()
 
     def test_unfinished_current_session_bar_excluded(self, tmp_path, monkeypatch):
@@ -641,6 +671,21 @@ class TestSnapshotSync:
         result = fetch_qmt.sync_qmt_daily_from_snapshot(
             cache, client, ["600519.SH"])
         assert result["rows"] == 1
+        cache.close()
+
+    def test_malformed_pool_record_is_error_not_pool_miss(self, tmp_path):
+        """快照里池内标的记录畸形(空 index):记错误,不得归入 not_in_pool。"""
+        cache = Cache(tmp_path / "t.sqlite")
+        _seed_calendar(cache, ["2026-09-10"])
+        rec_ok = {"index": ["2026-09-10"], "columns": {
+            "open": [1.0], "high": [2.0], "low": [0.5], "close": [1.5],
+            "volume": [10.0]}}
+        client = _snapshot_client({"600519.SH": rec_ok, "000001.SH": {}})
+        result = fetch_qmt.sync_qmt_daily_from_snapshot(
+            cache, client, ["600519.SH", "000001.SH"])
+        assert result["codes_ok"] == ["600519.SH"]
+        assert "000001.SH" in result["errors"]
+        assert result["not_in_pool"] == []
         cache.close()
 
     def test_snapshot_without_front_data_rejected(self, tmp_path):

@@ -57,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: codes file not found: {codes_path}")
         return 1
     codes = [line.strip() for line in codes_path.read_text().splitlines()
-             if line.strip() and not line.startswith("#")]
+             if line.strip() and not line.lstrip().startswith("#")]
     if not codes:
         print(f"ERROR: no codes in {codes_path}")
         return 1
@@ -104,9 +104,11 @@ def main(argv: list[str] | None = None) -> int:
           f"errors={len(result['errors'])}, invalid={len(result['invalid'])}, "
           f"nonpositive={nonpositive}(复权口径产物,观测但不入库), "
           f"coverage-holes={len(result['coverage_holes'])}")
-    if result["rows"] == 0:
-        return 1
-    return 2 if problems else 0
+    if problems:
+        return 2
+    if result["rows"] == 0 and not not_in_pool:
+        return 1  # 一行未入库且并非全部合理地不在池内
+    return 0
 
 
 if __name__ == "__main__":

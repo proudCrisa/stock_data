@@ -39,6 +39,16 @@
 - Then 只发起 `/` 与 `/latest` 两个请求,池∩面板标的全部入库
 - And 池外面板标的列入 not_in_pool,不影响退出码
 
+#### Scenario: 池内标的记录畸形
+- Given 快照中某池内标的的记录为空/缺 index
+- When 执行日更
+- Then 该标的记入 errors(而非 not_in_pool),退出码为 2
+
+#### Scenario: 全部标的均不在池
+- Given 请求的代码全部不在常驻池
+- When 执行日更
+- Then 退出码为 0(合法状况,不产生失败告警)
+
 ### Requirement: 通道交互只读、禁止池回退
 
 QMT 客户端 SHALL 只使用 GET 类端点与 `/fulldata` 按需通道;
@@ -79,22 +89,34 @@ SHALL 跳过入库(Cache 正价不变量),但作为已观测证据参与覆盖�
 - When 同步
 - Then 当日演化中的 bar 不入库,上界为最新已定稿交易日
 
-### Requirement: 覆盖声明可验证
+### Requirement: 覆盖声明可验证且与刷新一致
 
-`sync_coverage` SHALL 只在「库内他源交易日历 + 已观测停牌/非正价证据日」
-能完整解释 `[min,max]` 区间时记录;库内交易日历为空时 MUST NOT 记录。
-当既有覆盖区间与本次验证区间不相交、且夹缝中含库内交易日时,
-MUST NOT 以 MIN/MAX 合并方式夸大覆盖(拒绝记录并报告)。
+同步 SHALL 先完整验证再写库(fail-closed):返回含非法行、库内他源日历为空、
+或 `[min,max]` 内存在无证据解释的日历交易日时,该标的**一行不写**。
+验证通过后,`sync_coverage` SHALL **替换**为本次实际验证的区间
+(上下界取所有已观测日,含尾部停牌/零成交证据),MUST NOT 以 MIN/MAX
+合并旧区间——刷新是破坏性的,合并会让声明超出库内实际数据。
+
+#### Scenario: 非法行整标的拒收
+- Given 本次返回中某行 OHLC 关系被破坏
+- When 同步
+- Then 该标的整批不写库,记 errors,库内保持旧因子版本的一致序列
 
 #### Scenario: 覆盖空洞
 - Given 区间内某库内交易日既无 bar 又无停牌/非正价证据
 - When 同步完成
-- Then 该标的不记录 sync_coverage,并在输出中列示 COVERAGE-HOLE
+- Then 该标的一行不写、不记录 sync_coverage,输出列示 COVERAGE-HOLE
 
-#### Scenario: 宕机超窗后的不相交覆盖
-- Given 既有覆盖止于 T1,本次验证区间为 [T2, T3],(T1, T2) 内有库内交易日
+#### Scenario: 窗口滑动后覆盖收缩
+- Given 上次验证区间 [D1, D2],本次通道返回区间 [D2, D3](左端右移)
 - When 同步完成
-- Then 既有区间不被合并扩展,报告 disjoint coverage
+- Then sync_coverage 为 [D2, D3],不再保留 D1 起点
+- And daily 表中早于 D2 的 qmt 行已删除,声明与库内数据一致
+
+#### Scenario: 尾部停牌推进覆盖
+- Given 最后一个有效 bar 在 D1,之后 D2 为停牌证据日
+- When 同步完成
+- Then 覆盖区间右界为 D2
 
 ### Requirement: 同步对主链路非阻塞
 
