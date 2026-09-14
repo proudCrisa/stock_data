@@ -248,40 +248,49 @@ class QmtFulldataShadowCaptureClient:
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
                 status = response.getcode()
         except urllib.error.HTTPError as exc:
-            if exc.code == 404 and method == "GET":
-                return 404, b""
             try:
-                error_raw = exc.read(MAX_ERROR_BYTES + 1)
-            except OSError:
-                error_raw = b""
-            diagnostic = "generic_protocol_or_server_error"
-            if len(error_raw) <= MAX_ERROR_BYTES and self._token.encode("utf-8") not in error_raw:
                 try:
-                    payload = _json(error_raw, "QMT HTTP error")
-                except QmtFulldataShadowCaptureError:
-                    payload = None
-                if isinstance(payload, dict) and not _contains_token(payload, self._token) \
-                        and set(payload) == _ERROR_FIELDS:
-                    status = _safe_error_value(payload.get("status"), limit=64)
-                    error = _safe_error_value(payload.get("error"), limit=256)
-                    identifier = _safe_error_value(payload.get("id"), limit=128)
-                    if phase == "poll" and exc.code == 500 and status is not None and status != "ok" \
-                            and error is not None and identifier is not None \
-                            and expected_id is not None and identifier == expected_id \
-                            and _SAFE_ID.fullmatch(identifier):
-                        diagnostic = (
-                            "terminal_business_error "
-                            f"status={status} error={error} id={identifier}"
-                        )
-            raise QmtFulldataShadowCaptureError(
-                f"QMT {phase} {method} {path} HTTP {exc.code} {diagnostic}"
-            ) from exc
+                    if exc.code == 404 and method == "GET":
+                        return 404, b""
+                    error_raw = exc.read(MAX_ERROR_BYTES + 1)
+                except OSError:
+                    error_raw = b""
+                diagnostic = "generic_protocol_or_server_error"
+                if len(error_raw) <= MAX_ERROR_BYTES and self._token.encode("utf-8") not in error_raw:
+                    try:
+                        payload = _json(error_raw, "QMT HTTP error")
+                    except QmtFulldataShadowCaptureError:
+                        payload = None
+                    if isinstance(payload, dict) and not _contains_token(payload, self._token) \
+                            and set(payload) == _ERROR_FIELDS:
+                        status = _safe_error_value(payload.get("status"), limit=64)
+                        error = _safe_error_value(payload.get("error"), limit=256)
+                        identifier = _safe_error_value(payload.get("id"), limit=128)
+                        if phase == "poll" and exc.code == 500 and status is not None and status != "ok" \
+                                and error is not None and identifier is not None \
+                                and expected_id is not None and identifier == expected_id \
+                                and _SAFE_ID.fullmatch(identifier):
+                            diagnostic = (
+                                "terminal_business_error "
+                                f"status={status} error={error} id={identifier}"
+                            )
+                raise QmtFulldataShadowCaptureError(
+                    f"QMT {phase} {method} {path} HTTP {exc.code} {diagnostic}"
+                ) from None
+            finally:
+                exc.close()
         except (OSError, urllib.error.URLError) as exc:
-            raise QmtFulldataShadowCaptureError("QMT loopback channel is unavailable") from exc
+            raise QmtFulldataShadowCaptureError(
+                f"QMT {phase} {method} {path} loopback channel is unavailable"
+            ) from None
         if len(raw) > MAX_RESPONSE_BYTES:
-            raise QmtFulldataShadowCaptureError("QMT response exceeds the memory limit")
+            raise QmtFulldataShadowCaptureError(
+                f"QMT {phase} {method} {path} response exceeds the memory limit"
+            )
         if status != 200:
-            raise QmtFulldataShadowCaptureError(f"QMT HTTP {status}")
+            raise QmtFulldataShadowCaptureError(
+                f"QMT {phase} {method} {path} HTTP {status} generic_protocol_or_server_error"
+            )
         return status, raw
 
     def capture(self, *, symbol: str, start: str, end: str, count: int,

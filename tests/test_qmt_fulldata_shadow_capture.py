@@ -2,6 +2,7 @@ import base64
 from copy import deepcopy
 import io
 import json
+import traceback
 import urllib.error
 from datetime import date, timedelta
 
@@ -126,15 +127,19 @@ def test_terminal_identity_and_rows_fail_closed(monkeypatch, mutate, message):
 
 def test_only_404_is_pending_and_other_http_or_oversize_fails(monkeypatch):
     request, response = _request(), _response(_request(), "job-1")
+    pending_body = io.BytesIO()
+    pending = urllib.error.HTTPError("http://127.0.0.1/fulldata/job-1", 404, "pending", {},
+                                     pending_body)
     client, _ = _client(monkeypatch, iter([
         b'{"id":"job-1"}',
-        urllib.error.HTTPError("http://127.0.0.1/fulldata/job-1", 404, "pending", {}, io.BytesIO()),
+        pending,
         json.dumps(response).encode(),
     ]))
     monkeypatch.setattr(qmt, "build_qmt_fulldata_request", lambda **_kwargs: request)
     monkeypatch.setattr(qmt.time, "sleep", lambda _seconds: None)
     assert client.capture(symbol=SYMBOL, start="2026-08-01", end="2026-09-11", count=21,
                           adjustment="raw", wait_timeout=1)["terminal"]["response"]["id"] == "job-1"
+    assert pending_body.closed
 
     client, _ = _client(monkeypatch, iter([
         urllib.error.HTTPError("http://127.0.0.1/fulldata", 500, "bad", {}, io.BytesIO()),
@@ -212,15 +217,20 @@ def test_http500_diagnostics_are_phase_bound_redacted_and_never_retried(monkeypa
                        adjustment="raw", wait_timeout=1)
     assert [call.get_method() for call in calls] == ["POST", "GET"]
 
+    token_body = io.BytesIO(b'{"status":"failed","error":"test\\u002dtoken","id":"job-1"}')
     client, _ = _client(monkeypatch, iter([
-        urllib.error.HTTPError("http://127.0.0.1/fulldata", 500, "test-token",
-                               {}, io.BytesIO(b'{"status":"failed","error":"test\\u002dtoken","id":"job-1"}')),
+        urllib.error.HTTPError("http://127.0.0.1/fulldata", 500, "test-token", {}, token_body),
     ]))
-    with pytest.raises(qmt.QmtFulldataShadowCaptureError,
-                       match=r"submit POST /fulldata HTTP 500 generic") as raised:
+    try:
         client.capture(symbol=SYMBOL, start="2026-08-01", end="2026-09-11", count=21,
                        adjustment="raw", wait_timeout=1)
-    assert "test-token" not in str(raised.value)
+    except qmt.QmtFulldataShadowCaptureError as raised:
+        assert "submit POST /fulldata HTTP 500 generic" in str(raised)
+        assert raised.__cause__ is None
+        assert "test-token" not in traceback.format_exc()
+    else:
+        pytest.fail("HTTP 500 should fail closed")
+    assert token_body.closed
 
     client, _ = _client(monkeypatch, iter([
         b'{"id":"job-1"}',
