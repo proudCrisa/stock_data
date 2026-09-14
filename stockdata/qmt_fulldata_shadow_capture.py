@@ -15,7 +15,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -31,7 +30,7 @@ SOURCE = "qmt.fulldata"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_COUNT = 1300
 _SYMBOL = re.compile(r"^[0-9]{6}\.(?:SH|SZ|BJ)$")
-_SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _MODES = {"raw": "none", "qfq": "front"}
 _RESPONSE_FIELDS = {"data", "dividend_type", "id", "status", "type"}
 _BAR_FIELDS = ("open", "high", "low", "close", "volume", "amount")
@@ -72,6 +71,18 @@ def _iso(value: datetime, field: str) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
+def _timestamp(value: object, field: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise QmtFulldataShadowCaptureError(f"{field} must be timezone aware")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise QmtFulldataShadowCaptureError(f"{field} must be timezone aware") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise QmtFulldataShadowCaptureError(f"{field} must be timezone aware")
+    return parsed.astimezone(timezone.utc)
+
+
 def _date(value: str, field: str) -> str:
     if not isinstance(value, str):
         raise QmtFulldataShadowCaptureError(f"{field} must be an ISO date")
@@ -94,7 +105,7 @@ def _number(value: object, field: str) -> float:
 
 
 def build_qmt_fulldata_request(*, symbol: str, start: str, end: str, count: int,
-                               adjustment: str, request_id: str | None = None) -> dict[str, object]:
+                               adjustment: str) -> dict[str, object]:
     """Build the sole supported single-symbol QMT fulldata request."""
     symbol = str(symbol).upper()
     if not _SYMBOL.fullmatch(symbol):
@@ -106,13 +117,11 @@ def build_qmt_fulldata_request(*, symbol: str, start: str, end: str, count: int,
         raise QmtFulldataShadowCaptureError(f"count must be an integer in 1..{MAX_COUNT}")
     if adjustment not in _MODES:
         raise QmtFulldataShadowCaptureError("adjustment must be raw or qfq")
-    identifier = request_id or str(uuid.uuid4())
-    if not isinstance(identifier, str) or not identifier:
-        raise QmtFulldataShadowCaptureError("request_id must be non-empty")
-    return {"type": "history_kline", "request_id": identifier,
-            "params": {"symbol": symbol, "period": "1d", "start": start,
-                       "end": end, "count": count,
-                       "dividend_type": _MODES[adjustment]}}
+    return {"type": "history_kline", "params": {
+        "symbol": symbol, "period": "1d", "start": start.replace("-", ""),
+        "end": end.replace("-", ""),
+        "count": count, "dividend_type": _MODES[adjustment],
+    }}
 
 
 def _json(raw: bytes, field: str) -> dict[str, object]:
@@ -127,8 +136,22 @@ def _json(raw: bytes, field: str) -> dict[str, object]:
 
 
 def _bound_response(response: object, request: dict[str, object]) -> dict[str, object]:
-    params = request["params"]
-    assert isinstance(params, dict)
+    if not isinstance(request, dict) or set(request) != {"type", "params", "request_id"} \
+            or request.get("type") != "history_kline" \
+            or not isinstance(request.get("request_id"), str):
+        raise QmtFulldataShadowCaptureError("QMT bound request schema differs")
+    params = request.get("params")
+    if not isinstance(params, dict) or set(params) != {"symbol", "period", "start", "end", "count",
+                                                        "dividend_type"} \
+            or not _SYMBOL.fullmatch(str(params.get("symbol"))) \
+            or params.get("period") != "1d" \
+            or not isinstance(params.get("count"), int) \
+            or not 1 <= params["count"] <= MAX_COUNT \
+            or params.get("dividend_type") not in set(_MODES.values()) \
+            or any(not isinstance(params.get(field), str) or len(params[field]) != 8
+                   or not params[field].isdigit() for field in ("start", "end")) \
+            or params["start"] > params["end"]:
+        raise QmtFulldataShadowCaptureError("QMT bound request schema differs")
     if not isinstance(response, dict) or set(response) != _RESPONSE_FIELDS \
             or response.get("id") != request["request_id"] \
             or response.get("status") != "ok" \
@@ -151,10 +174,10 @@ def _bound_response(response: object, request: dict[str, object]) -> dict[str, o
             or index != sorted(set(index)):
         raise QmtFulldataShadowCaptureError("QMT terminal response dates are invalid")
     try:
-        dates = [date(int(day[:4]), int(day[4:6]), int(day[6:])).isoformat() for day in index]
+        [date(int(day[:4]), int(day[4:6]), int(day[6:])) for day in index]
     except ValueError as exc:
         raise QmtFulldataShadowCaptureError("QMT terminal response dates are invalid") from exc
-    if dates[0] < params["start"] or dates[-1] > params["end"]:
+    if index[0] < params["start"] or index[-1] != params["end"]:
         raise QmtFulldataShadowCaptureError("QMT terminal response dates exceed request range")
     if any(not isinstance(columns[field], list) or len(columns[field]) != len(index)
            for field in _BAR_FIELDS):
@@ -221,34 +244,44 @@ class QmtFulldataShadowCaptureClient:
             raise QmtFulldataShadowCaptureError("poll limits are invalid")
         request = build_qmt_fulldata_request(symbol=symbol, start=start, end=end,
                                              count=count, adjustment=adjustment)
+        started_at = _now()
+        started_iso = _iso(started_at, "started_at")
         submit_raw = _canonical(request)
         submitted_at = _now()
         submitted_iso = _iso(submitted_at, "submitted_at")
+        if submitted_at < started_at:
+            raise QmtFulldataShadowCaptureError("QMT capture timestamps are unordered")
         _, ack_raw = self._request("/fulldata", method="POST", body=submit_raw)
+        if self._token.encode("utf-8") in ack_raw:
+            raise QmtFulldataShadowCaptureError("QMT acknowledgement exposes token")
         ack = _json(ack_raw, "QMT acknowledgement")
         identifier = ack.get("id")
         if not isinstance(identifier, str) or not _SAFE_ID.fullmatch(identifier):
             raise QmtFulldataShadowCaptureError("QMT acknowledgement id is unsafe")
+        bound_request = {**request, "request_id": identifier}
         deadline = time.monotonic() + float(wait_timeout)
         path = "/fulldata/" + urllib.parse.quote(identifier, safe="")
         while True:
             status, terminal_raw = self._request(path, method="GET")
             if status == 200:
-                received_at = _now()
-                received_iso = _iso(received_at, "received_at")
-                if received_at < submitted_at:
+                completed_at = _now()
+                completed_iso = _iso(completed_at, "completed_at")
+                if completed_at < submitted_at:
                     raise QmtFulldataShadowCaptureError("QMT capture timestamps are unordered")
-                response = _bound_response(_json(terminal_raw, "QMT terminal response"), request)
+                if self._token.encode("utf-8") in terminal_raw:
+                    raise QmtFulldataShadowCaptureError("QMT terminal response exposes token")
+                response = _bound_response(_json(terminal_raw, "QMT terminal response"), bound_request)
                 unsigned = {
                     "schema_version": SCHEMA_VERSION, "authority_grade": "shadow",
                     "decision_eligible": False, "decision_authority": False, "actions": [],
                     "source": SOURCE, "finality": "unverified", "volume_unit": "unknown",
-                    "submitted_at": submitted_iso, "received_at": received_iso,
+                    "started_at": started_iso, "submitted_at": submitted_iso,
+                    "completed_at": completed_iso,
                     "submit": {"request_raw_base64": base64.b64encode(submit_raw).decode("ascii"),
                                "request_sha256": _sha256(submit_raw),
                                "ack_raw_base64": base64.b64encode(ack_raw).decode("ascii"),
                                "ack_sha256": _sha256(ack_raw), "ack": ack},
-                    "derived_bound_request": request,
+                    "derived_bound_request": bound_request,
                     "terminal": {"response_raw_base64": base64.b64encode(terminal_raw).decode("ascii"),
                                  "response_sha256": _sha256(terminal_raw), "response": response},
                 }
@@ -258,19 +291,75 @@ class QmtFulldataShadowCaptureClient:
             time.sleep(float(poll_interval))
 
 
-def write_qmt_fulldata_shadow_capture(output_root: str | Path,
-                                      capture: dict[str, object]) -> Path:
-    """Write a content-addressed shadow-only artifact under a safe output root."""
-    if not isinstance(capture, dict) or not isinstance(capture.get("capture_sha256"), str):
-        raise QmtFulldataShadowCaptureError("QMT shadow capture is malformed")
+def verify_qmt_fulldata_shadow_capture(capture: object) -> dict[str, object]:
+    """Fail closed before any shadow artifact is accepted for content-addressed storage."""
+    expected = {"schema_version", "authority_grade", "decision_eligible",
+                "decision_authority", "actions", "source", "finality", "volume_unit",
+                "started_at", "submitted_at", "completed_at", "submit",
+                "derived_bound_request", "terminal", "capture_sha256"}
+    if not isinstance(capture, dict) or set(capture) != expected \
+            or capture.get("schema_version") != SCHEMA_VERSION \
+            or capture.get("authority_grade") != "shadow" \
+            or capture.get("decision_eligible") is not False \
+            or capture.get("decision_authority") is not False \
+            or capture.get("actions") != [] or capture.get("source") != SOURCE \
+            or capture.get("finality") != "unverified" \
+            or capture.get("volume_unit") != "unknown":
+        raise QmtFulldataShadowCaptureError("QMT shadow capture identity differs")
+    started = _timestamp(capture.get("started_at"), "started_at")
+    submitted = _timestamp(capture.get("submitted_at"), "submitted_at")
+    completed = _timestamp(capture.get("completed_at"), "completed_at")
+    if not started <= submitted <= completed:
+        raise QmtFulldataShadowCaptureError("QMT capture timestamps are unordered")
+    submit, terminal = capture.get("submit"), capture.get("terminal")
+    if not isinstance(submit, dict) or set(submit) != {"request_raw_base64", "request_sha256",
+                                                        "ack_raw_base64", "ack_sha256", "ack"} \
+            or not isinstance(terminal, dict) or set(terminal) != {"response_raw_base64",
+                                                                    "response_sha256", "response"}:
+        raise QmtFulldataShadowCaptureError("QMT shadow capture wire evidence differs")
+    try:
+        request_raw = base64.b64decode(submit["request_raw_base64"], validate=True)
+        ack_raw = base64.b64decode(submit["ack_raw_base64"], validate=True)
+        response_raw = base64.b64decode(terminal["response_raw_base64"], validate=True)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise QmtFulldataShadowCaptureError("QMT shadow capture wire bytes differ") from exc
+    if any(not isinstance(value, str) for value in (submit["request_sha256"], submit["ack_sha256"],
+                                                     terminal["response_sha256"])) \
+            or submit["request_sha256"] != _sha256(request_raw) \
+            or submit["ack_sha256"] != _sha256(ack_raw) \
+            or terminal["response_sha256"] != _sha256(response_raw):
+        raise QmtFulldataShadowCaptureError("QMT shadow capture wire hash differs")
+    request, ack, response = (_json(request_raw, "QMT submit request"),
+                              _json(ack_raw, "QMT acknowledgement"),
+                              _json(response_raw, "QMT terminal response"))
+    if submit["ack"] != ack or terminal["response"] != response \
+            or set(request) != {"type", "params"}:
+        raise QmtFulldataShadowCaptureError("QMT shadow capture parsed wire differs")
+    identifier = ack.get("id")
+    if not isinstance(identifier, str) or not _SAFE_ID.fullmatch(identifier):
+        raise QmtFulldataShadowCaptureError("QMT acknowledgement id is unsafe")
+    bound = {**request, "request_id": identifier}
+    if capture["derived_bound_request"] != bound:
+        raise QmtFulldataShadowCaptureError("QMT shadow capture request binding differs")
+    _bound_response(response, bound)
     unsigned = {key: value for key, value in capture.items() if key != "capture_sha256"}
     digest = hashlib.sha256(_canonical(unsigned)).hexdigest()
     if capture["capture_sha256"] != digest:
         raise QmtFulldataShadowCaptureError("QMT shadow capture digest differs")
+    return capture
+
+
+def write_qmt_fulldata_shadow_capture(output_root: str | Path,
+                                      capture: dict[str, object]) -> Path:
+    """Write a verified shadow-only artifact under a safe output root."""
+    verified = verify_qmt_fulldata_shadow_capture(capture)
+    digest = verified["capture_sha256"]
+    assert isinstance(digest, str)
     return _write_content_addressed(output_root, digest, _canonical(capture),
                                     QmtFulldataShadowCaptureError)
 
 
 __all__ = ["MAX_COUNT", "MAX_RESPONSE_BYTES", "QmtFulldataShadowCaptureClient",
            "QmtFulldataShadowCaptureError", "QmtFulldataShadowCaptureTimeout",
-           "build_qmt_fulldata_request", "write_qmt_fulldata_shadow_capture"]
+           "build_qmt_fulldata_request", "verify_qmt_fulldata_shadow_capture",
+           "write_qmt_fulldata_shadow_capture"]
