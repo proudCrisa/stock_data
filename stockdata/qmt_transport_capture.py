@@ -436,11 +436,6 @@ class QmtTransportCaptureClient:
                 or not 0 < float(wait_timeout) <= MAX_WAIT_TIMEOUT_SECONDS \
                 or not 0 < float(poll_interval) <= MAX_POLL_INTERVAL_SECONDS:
             raise QmtTransportCaptureError("poll limits are invalid")
-        baseline = self._json("/latest")
-        if baseline.get("schema_version") != SCHEMA_VERSION:
-            raise QmtTransportCaptureError("QMT v1 snapshot is rejected")
-        baseline_generated_at = baseline.get("generated_at")
-        _timestamp(baseline_generated_at, "baseline_generated_at")
         request = build_qmt_transport_request(
             symbols, count=count, adjustment=adjustment,
         )
@@ -453,7 +448,6 @@ class QmtTransportCaptureClient:
             try:
                 return validate_qmt_transport_snapshot(
                     snapshot, request,
-                    baseline_generated_at=baseline_generated_at,
                 )
             except QmtTransportTimeout as exc:
                 last_reason = str(exc)

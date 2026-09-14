@@ -274,14 +274,10 @@ def test_client_only_uses_loopback_env_token_and_exact_ack(monkeypatch):
 def test_client_posts_bound_request_then_captures_new_v2_snapshot(monkeypatch):
     client = qmt.QmtTransportCaptureClient(token="test")
     posted = []
-    baseline = {
-        "schema_version": qmt.SCHEMA_VERSION,
-        "generated_at": "2026-08-31T08:00:00+00:00",
-    }
+    calls = []
 
     def fake_json(path, *, method="GET", body=None):
-        if path == "/latest" and not posted:
-            return baseline
+        calls.append((path, method))
         if path == "/request":
             posted.append(body)
             return {
@@ -297,6 +293,7 @@ def test_client_posts_bound_request_then_captures_new_v2_snapshot(monkeypatch):
 
     assert posted == [capture["request"]]
     assert capture["request_id"] == capture["request"]["request_id"]
+    assert calls == [("/request", "POST"), ("/latest", "GET")]
 
 
 def test_client_waits_through_foreign_v2_snapshot(monkeypatch):
@@ -310,10 +307,7 @@ def test_client_waits_through_foreign_v2_snapshot(monkeypatch):
     foreign["request_id"] = foreign_request["request_id"]
     foreign["request_sha256"] = qmt.request_sha256(foreign_request)
     foreign["request"] = foreign_request
-    latest = iter([
-        {"schema_version": qmt.SCHEMA_VERSION, "generated_at": "2026-08-31T08:00:00+00:00"},
-        foreign,
-    ])
+    latest = iter([foreign])
 
     def fake_json(path, *, method="GET", body=None):
         if path == "/request":
