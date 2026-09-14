@@ -118,6 +118,7 @@ def _validate_loopback(base_url: str) -> None:
 
 def _urllib_transport(base_url: str, token: str, timeout: float = 60.0) -> Transport:
     _validate_loopback(base_url)
+    base_url = base_url.rstrip("/")  # 防拼接出 //path 触发重定向(本客户端拒绝重定向)
     # ProxyHandler({}) 切断环境变量代理继承:loopback 请求绝不绕行代理,
     # X-Token 不会经代理外泄(与 qmt_pool_replay 同源加固)
     opener = urllib.request.build_opener(
@@ -240,12 +241,13 @@ def parse_history_records(
         if (flags and flags[pos]) or volume in (None, ""):
             suspended.add(day)
             continue
-        try:
-            o, h, l, c, v = (float(fields[k][pos])
-                             for k in ("open", "high", "low", "close", "volume"))
-        except (TypeError, ValueError):
-            invalid.append(f"{symbol} {day}: 字段非数值")
+        raw_values = [fields[k][pos]
+                      for k in ("open", "high", "low", "close", "volume")]
+        if any(isinstance(x, bool) or not isinstance(x, (int, float))
+               for x in raw_values):
+            invalid.append(f"{symbol} {day}: 字段类型非法(非数值/bool)")
             continue
+        o, h, l, c, v = (float(x) for x in raw_values)
         if not all(math.isfinite(x) for x in (o, h, l, c, v)):
             invalid.append(f"{symbol} {day}: 非有限值")
             continue
@@ -306,8 +308,10 @@ class QmtChannelClient:
         if not status.get("latest_exists"):
             raise QmtChannelError("尚无 latest.json 快照(策略从未导出)")
         age = status.get("latest_age_sec")
-        if not isinstance(age, (int, float)) or isinstance(age, bool):
-            raise QmtChannelError("状态返回缺 latest_age_sec,无法判定新鲜度")
+        if not isinstance(age, (int, float)) or isinstance(age, bool) \
+                or not math.isfinite(age) or age < 0:
+            raise QmtChannelError(
+                "状态返回 latest_age_sec 缺失或非有限非负值,无法判定新鲜度")
         if age > _MAX_SNAPSHOT_AGE_SEC:
             raise QmtChannelError(
                 f"快照已 {age}s 未更新(>{_MAX_SNAPSHOT_AGE_SEC}s),"
@@ -387,8 +391,8 @@ class QmtChannelClient:
 
 
 def _prepare_sync(cache, client: QmtChannelClient):
-    """共享前置:健康门、定稿截断、他源日历。"""
-    client.assert_ready()  # 通道不可达/快照不新鲜:快速失败,不进标的循环
+    """共享前置:健康门、定稿截断、他源日历。返回 (cutoff, calendar, result, status)。"""
+    status = client.assert_ready()  # 通道不可达/快照不新鲜:快速失败,不进标的循环
 
     # 未收盘的当日 bar 是演化中的值,绝不可以 is_final=True 入库;
     # 区间上界钉在最新已定稿交易日,盘中运行只落到前一交易日。
@@ -402,7 +406,7 @@ def _prepare_sync(cache, client: QmtChannelClient):
     result: dict = {"rows": 0, "codes_ok": [], "errors": {}, "invalid": [],
                     "nonpositive": {}, "coverage_holes": {},
                     "synced_at": _utc_now()}
-    return cutoff, calendar, result
+    return cutoff, calendar, result, status
 
 
 def _absorb(cache, code: str, bars: list[dict], suspended: set[str],
@@ -431,10 +435,12 @@ def _absorb(cache, code: str, bars: list[dict], suspended: set[str],
     if invalid:
         result["errors"][code] = f"返回含 {len(invalid)} 条非法行,整标的拒收"
         return
-    if not bars:
-        result["errors"][code] = "无合法日线"
-        return
     observed = {b["date"] for b in bars} | suspended | nonpositive
+    if not observed:
+        result["errors"][code] = "无任何观测行"
+        return
+    # 纯证据刷新(整段停牌/零成交):bars 为空也继续——证据日要清残留旧行、
+    # 推进覆盖声明
     lo, hi = min(observed), max(observed)
     if not calendar:
         result["coverage_holes"][code] = ["trading calendar empty"]
@@ -455,7 +461,7 @@ def _absorb(cache, code: str, bars: list[dict], suspended: set[str],
     try:
         result["rows"] += cache.replace_identity_range(
             code, bars, SOURCE, ADJ_MODE, ADJ_VERSION,
-            delete_before=bars[0]["date"],
+            delete_before=lo,
             delete_dates=sorted(suspended | nonpositive),
             coverage_start=lo, coverage_end=hi)
     except (sqlite3.Error, OSError) as exc:
@@ -480,7 +486,7 @@ def sync_qmt_daily(
          "invalid": [...], "nonpositive": {code: n},
          "coverage_holes": {code: [...]}, "synced_at": iso}
     """
-    cutoff, calendar, result = _prepare_sync(cache, client)
+    cutoff, calendar, result, status = _prepare_sync(cache, client)
     for raw_code in codes:
         code = normalize(raw_code)
         try:
@@ -506,13 +512,24 @@ def sync_qmt_daily_from_snapshot(
     池外标的仍由 baostock 主链路覆盖);需纳入时先在 Windows 端扩充标的池,
     或用 :func:`sync_qmt_daily` 对该标的走 fulldata 回填。
     """
-    cutoff, calendar, result = _prepare_sync(cache, client)
+    cutoff, calendar, result, status = _prepare_sync(cache, client)
     result["not_in_pool"] = []
     pool = client.snapshot_front()
+    # 状态接口的 symbols 是权威常驻池名单:在名单内但快照缺 front 记录
+    # = 导出失败(错误),不在名单内才是 not_in_pool(合法缺省)
+    authoritative: set[str] = set()
+    for sym in status.get("symbols") or []:
+        try:
+            authoritative.add(normalize(sym))
+        except (ValueError, TypeError):
+            continue
     for raw_code in codes:
         code = normalize(raw_code)
         if code not in pool:
-            result["not_in_pool"].append(code)
+            if code in authoritative:
+                result["errors"][code] = "常驻池内但快照缺 front 记录(导出失败)"
+            else:
+                result["not_in_pool"].append(code)
             continue
         rec = pool[code]
         if not isinstance(rec, dict) or not rec.get("index"):

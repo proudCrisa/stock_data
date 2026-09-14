@@ -46,10 +46,13 @@ def _bar(o=10.0, h=11.0, l=9.5, c=10.5, v=1000.0, **extra):
     return {"open": o, "high": h, "low": l, "close": c, "volume": v, **extra}
 
 
-def _status(alive: bool = True, age: float = 30.0) -> dict:
+def _status(alive: bool = True, age: float = 30.0, symbols: list | None = None) -> dict:
     """满足 assert_ready 健康门的通道状态。"""
-    return {"server": "QmtExport/2.0", "latest_exists": alive,
-            "latest_age_sec": age}
+    s = {"server": "QmtExport/2.0", "latest_exists": alive,
+         "latest_age_sec": age}
+    if symbols is not None:
+        s["symbols"] = symbols
+    return s
 
 
 def _client(routes: dict, calls: list | None = None):
@@ -223,6 +226,28 @@ class TestTransportHardening:
             redirector.shutdown()
             target.shutdown()
 
+    def test_trailing_slash_base_url_normalized(self):
+        seen = []
+
+        class Recorder(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.path)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *args):
+                pass
+
+        server = self._serve(Recorder)
+        port = server.server_address[1]
+        try:
+            transport = _urllib_transport(f"http://127.0.0.1:{port}/", "tok")
+            transport("/", "GET", None)
+            assert seen == ["/"]  # 不是 "//"
+        finally:
+            server.shutdown()
+
     def test_oversized_response_rejected(self, monkeypatch):
         class BigBody(BaseHTTPRequestHandler):
             def do_GET(self):
@@ -309,6 +334,19 @@ class TestParse:
         assert bars == []
         assert suspended == {"2026-09-15"}
         assert len(invalid) == 3 and all("suspendFlag" in m for m in invalid)
+
+    def test_boolean_ohlcv_rejected(self):
+        """bool 经 float(True)=1.0 会蒙混过关,必须在转换前拒收。"""
+        payload = _payload("X", [("2026-09-10", _bar(o=True, h=True, l=True,
+                                                     c=True, v=True))])
+        bars, suspended, invalid, _np = parse_history_records(payload, "X")
+        assert bars == [] and not suspended and len(invalid) == 1
+        assert "类型非法" in invalid[0]
+
+    def test_string_numbers_rejected(self):
+        payload = _payload("X", [("2026-09-10", _bar(c="10.5"))])
+        bars, _, invalid, _np = parse_history_records(payload, "X")
+        assert bars == [] and len(invalid) == 1
 
     def test_out_of_range_epoch_is_invalid_row_not_batch_abort(self):
         payload = _payload("X", [(10**30, _bar()), ("2026-09-10", _bar())])
@@ -413,6 +451,12 @@ class TestSync:
         with pytest.raises(QmtChannelError, match="latest_age_sec"):
             sync_qmt_daily(cache, client, ["600519.SH"])
         cache.close()
+
+    @pytest.mark.parametrize("bad_age", [float("nan"), float("inf"), -1.0])
+    def test_non_finite_or_negative_age_rejected(self, bad_age):
+        client = _client({("/", "GET"): _status(age=bad_age)})
+        with pytest.raises(QmtChannelError, match="latest_age_sec"):
+            client.assert_ready()
 
     def test_happy_path_identity_isolated(self, tmp_path):
         cache = Cache(tmp_path / "t.sqlite")
@@ -705,7 +749,7 @@ class TestSync:
 
 
 def _snapshot_client(front: dict | None, dividend_type: str = "none",
-                     calls: list | None = None):
+                     calls: list | None = None, pool_symbols: list | None = None):
     """/latest 快照传输:front={symbol: rec};dividend_type='front' 时改读 market。"""
     snap = {"generated": "2026-09-14T15:00:00", "dividend_type": dividend_type}
     if front is not None:
@@ -718,7 +762,7 @@ def _snapshot_client(front: dict | None, dividend_type: str = "none",
         if calls is not None:
             calls.append(path)
         if path == "/":
-            return _status()
+            return _status(symbols=pool_symbols)
         if path == "/latest":
             return snap
         raise AssertionError(f"unexpected path {path}")
@@ -789,4 +833,49 @@ class TestSnapshotSync:
         with pytest.raises(QmtChannelError, match="front"):
             fetch_qmt.sync_qmt_daily_from_snapshot(
                 cache, client, ["600519.SH"])
+        cache.close()
+
+    def test_failed_pool_export_is_error_not_pool_miss(self, tmp_path):
+        """权威池名单内但快照缺 front 记录:导出失败,记错误。"""
+        cache = Cache(tmp_path / "t.sqlite")
+        _seed_calendar(cache, ["2026-09-10"])
+        rec_ok = {"index": ["2026-09-10"], "columns": {
+            "open": [1.0], "high": [2.0], "low": [0.5], "close": [1.5],
+            "volume": [10.0]}}
+        client = _snapshot_client({"600519.SH": rec_ok},
+                                  pool_symbols=["600519.SH", "000300.SH"])
+        result = fetch_qmt.sync_qmt_daily_from_snapshot(
+            cache, client, ["600519.SH", "000300.SH", "000001.SZ"])
+        assert result["codes_ok"] == ["600519.SH"]
+        assert "导出失败" in result["errors"]["000300.SH"]  # 池内但缺记录
+        assert result["not_in_pool"] == ["000001.SZ"]        # 名单外才是缺省
+        cache.close()
+
+    def test_evidence_only_refresh_deletes_and_advances(self, tmp_path):
+        """整段停牌(无正价 bar):证据日清残留旧行、推进覆盖声明。"""
+        cache = Cache(tmp_path / "t.sqlite")
+        days = ["2026-09-10", "2026-09-11"]
+        _seed_calendar(cache, days)
+        old = _payload("600519.SH", [(d, _bar()) for d in days])
+        fetch_qmt.sync_qmt_daily_from_snapshot(
+            cache, _snapshot_client({"600519.SH": {
+                "index": days, "columns": {
+                    "open": [10.0, 10.0], "high": [11.0, 11.0],
+                    "low": [9.5, 9.5], "close": [10.5, 10.5],
+                    "volume": [100.0, 100.0]}}}),
+            ["600519.SH"])
+        # 新快照:两天全部零成交
+        zero = {"index": days, "columns": {
+            "open": [10.0, 10.0], "high": [11.0, 11.0], "low": [9.5, 9.5],
+            "close": [10.5, 10.5], "volume": [0.0, 0.0]}}
+        result = fetch_qmt.sync_qmt_daily_from_snapshot(
+            cache, _snapshot_client({"600519.SH": zero}), ["600519.SH"])
+        assert result["codes_ok"] == ["600519.SH"]
+        assert result["rows"] == 0
+        assert cache._conn.execute(
+            "SELECT COUNT(*) FROM daily WHERE source='qmt'").fetchone()[0] == 0
+        row = cache._conn.execute(
+            "SELECT start_date, end_date FROM sync_coverage WHERE source='qmt'"
+        ).fetchone()
+        assert tuple(row) == ("2026-09-10", "2026-09-11")
         cache.close()

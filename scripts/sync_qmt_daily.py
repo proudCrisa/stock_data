@@ -106,8 +106,8 @@ def main(argv: list[str] | None = None) -> int:
           f"coverage-holes={len(result['coverage_holes'])}")
     if problems:
         return 2
-    if result["rows"] == 0 and not not_in_pool:
-        return 1  # 一行未入库且并非全部合理地不在池内
+    if result["rows"] == 0 and not not_in_pool and not result["codes_ok"]:
+        return 1  # 无成功标的且并非全部合理地不在池内
     return 0
 
 

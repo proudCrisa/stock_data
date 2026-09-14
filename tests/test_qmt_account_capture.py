@@ -51,12 +51,44 @@ class TestCapture:
         {"account": {"sections": []}},
         {"account": {"sections": {"ACCOUNT": "not-a-list"}}},
         {"account": {"sections": {"ACCOUNT": [{}], "POSITION": "x"}}},
+        # falsy 但畸形的 POSITION:不得被 or [] 吞掉
+        {"account": {"sections": {"ACCOUNT": [{}], "POSITION": {}}}},
+        {"account": {"sections": {"ACCOUNT": [{}], "POSITION": ""}}},
+        {"account": {"sections": {"ACCOUNT": [{}], "POSITION": 0}}},
     ])
     def test_malformed_containers_raise_domain_error(self, snapshot, tmp_path):
         """任何一层容器畸形都抛领域错误(而非 AttributeError 逃逸)。"""
         with pytest.raises(QmtAccountCaptureError):
             capture_qmt_account(snapshot, output_root=tmp_path)
         assert list(tmp_path.iterdir()) == []
+
+    def test_missing_or_malformed_generated_rejected(self, tmp_path):
+        """缺/畸形 generated 生产时间戳不得密封(陈旧观测须可识别)。"""
+        import copy
+        for bad in (None, "", "not-a-date"):
+            snap = copy.deepcopy(_SNAPSHOT)
+            if bad is None:
+                snap.pop("generated")
+            else:
+                snap["generated"] = bad
+            with pytest.raises(QmtAccountCaptureError, match="generated"):
+                capture_qmt_account(snap, output_root=tmp_path)
+        assert list(tmp_path.iterdir()) == []
+
+    def test_null_position_section_means_no_holdings(self, tmp_path):
+        """POSITION 为 null/缺失 = 无持仓,合法。"""
+        import copy
+        from datetime import timedelta
+        base_now = datetime(2026, 9, 14, 8, 0, 0, tzinfo=timezone.utc)
+        for i, val in enumerate((None, "absent")):
+            snap = copy.deepcopy(_SNAPSHOT)
+            if val == "absent":
+                snap["account"]["sections"].pop("POSITION")
+            else:
+                snap["account"]["sections"]["POSITION"] = None
+            path = capture_qmt_account(snap, output_root=tmp_path,
+                                       now=base_now + timedelta(seconds=i))
+            assert verify_qmt_account_capture(path)["positions"] == []
 
     def test_not_dict_rejected(self, tmp_path):
         with pytest.raises(QmtAccountCaptureError):

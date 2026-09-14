@@ -51,9 +51,11 @@ def _extract_account_sections(snapshot: dict) -> tuple[dict, list]:
     if not isinstance(account_rows, list) or not account_rows \
             or not isinstance(account_rows[0], dict):
         raise QmtAccountCaptureError("快照无 ACCOUNT 段(QMT 未登录资金账号?)")
-    position_rows = sections.get("POSITION") or []
-    if not isinstance(position_rows, list):
-        raise QmtAccountCaptureError("POSITION 段不是数组")
+    position_rows = sections.get("POSITION")
+    if position_rows is None:
+        position_rows = []  # 仅 absent/null 视为无持仓
+    elif not isinstance(position_rows, list):
+        raise QmtAccountCaptureError("POSITION 段存在但不是数组")
     return account_rows[0], list(position_rows)
 
 
@@ -67,8 +69,16 @@ def capture_qmt_account(
     只写文件;调用方负责日志纪律(路径与哈希可记,内容不可记)。
     """
     account, positions = _extract_account_sections(snapshot)
+    generated = snapshot.get("generated")
+    if not isinstance(generated, str) or not generated:
+        raise QmtAccountCaptureError("快照缺 generated 生产时间戳")
+    try:
+        datetime.fromisoformat(generated)
+    except ValueError:
+        raise QmtAccountCaptureError(
+            f"generated 不是合法 ISO 时间戳: {generated!r}") from None
     now = now or _utc_now()
-    content = {"source_generated": snapshot.get("generated"),
+    content = {"source_generated": generated,
                "account": account, "positions": positions}
     payload = {
         "schema": SCHEMA_VERSION,
