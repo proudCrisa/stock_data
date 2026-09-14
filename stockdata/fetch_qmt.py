@@ -329,6 +329,15 @@ class QmtChannelClient:
             raise QmtChannelError(
                 f"导出器自报错误({len(errors)} 条),拒绝在部分导出上同步: "
                 f"{str(errors)[:200]}")
+        symbols = status.get("symbols")
+        if not isinstance(symbols, list) or not symbols:
+            raise QmtChannelError("状态返回缺 symbols 常驻池名单,无法判定池成员资格")
+        for sym in symbols:
+            try:
+                normalize(sym)
+            except (ValueError, TypeError) as exc:
+                raise QmtChannelError(
+                    f"symbols 含非法代码 {sym!r},名单不可信") from exc
         return status
 
     def latest_snapshot(self) -> dict:
@@ -496,6 +505,10 @@ def _absorb(cache, code: str, bars: list[dict], suspended: set[str],
     except (sqlite3.Error, OSError) as exc:
         # 单事务回滚,库内保持旧的一致状态;按标的隔离失败
         result["errors"][code] = f"写入失败(已回滚): {exc}"
+        return
+    except ValueError as exc:
+        # 事务内复查发现的并发回退(BEGIN IMMEDIATE 后被拒绝)
+        result["errors"][code] = str(exc)
         return
     result["codes_ok"].append(code)
 

@@ -8,5 +8,5 @@
 - [x] 6. 真实通道冒烟:诊断 + 3 标的比对 baostock qfq(600519.SH 14 重叠日零偏差)
 - [x] 7. 真实同步:快照路径入库 21 池内标的 + fulldata 回填 13,共 34 代码至 2026-09-14,coverage 全声明
 - [x] 8. `docs/technical-manual.md` 数据源章节补 QMT 身份说明(实库口径)
-- [ ] 9. codex 交叉审查(sol / high effort):第 1、2 轮 9 个发现已修复;第 3、4 轮进行中
+- [ ] 9. codex 交叉审查(sol / high effort):第 1-9 轮共 27 个发现已全部修复;第 10 轮进行中
 - [ ] 10. 合并 main 并 push

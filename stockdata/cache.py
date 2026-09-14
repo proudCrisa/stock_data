@@ -434,12 +434,12 @@ class Cache:
     ) -> int:
         """单事务原子刷新:整段替换 + 覆盖区间替换。
 
-        供「破坏性全量刷新」语义使用(qmt 单因子版本):先删除该身份下
-        ``date <= replace_through`` 的全部行(调用方须保证不存在更晚的
-        已存行——否则属于数据回退,应在调用前拒收),再写入 bars,
-        最后把覆盖声明替换为 [coverage_start, coverage_end]。
-        任一步失败,全部回滚,不留部分提交。杂散残留行(不在本次返回、
-        也不在日历中的历史行)随整段删除一并清除。
+        供「破坏性全量刷新」语义使用(qmt 单因子版本):BEGIN IMMEDIATE
+        取得写锁后先复查已存右界(并发调用方可能在本进程预检后提交了更晚的
+        行——回退即整标的中止并回滚),然后删除该身份下
+        ``date <= replace_through`` 的全部行、写入 bars、把覆盖声明替换为
+        [coverage_start, coverage_end]。任一步失败,全部回滚,不留部分提交。
+        杂散残留行(不在本次返回、也不在日历中的历史行)随整段删除一并清除。
         """
         self._require_collector_writer()
         identity = (source, adjustment_mode, adjustment_version)
@@ -448,6 +448,17 @@ class Cache:
         rows = [self._daily_row(code, b, identity, batch_retrieved_at, True, None)
                 for b in bars]
         with self._conn:
+            # 写锁 + 事务内复查:并发刷新不得把更晚的行留在替换范围之外
+            self._conn.execute("BEGIN IMMEDIATE")
+            stored_hi = self._conn.execute(
+                "SELECT MAX(date) FROM daily WHERE code=? AND source=?"
+                " AND adjustment_mode=? AND adjustment_version=?",
+                (code, source, adjustment_mode, adjustment_version)
+            ).fetchone()[0]
+            if stored_hi and stored_hi > replace_through:
+                raise ValueError(
+                    f"{code} 通道返回右界 {replace_through} "
+                    f"回退于库内已存 {stored_hi},整标的拒收")
             self._conn.execute(
                 "DELETE FROM daily WHERE code=? AND source=?"
                 " AND adjustment_mode=? AND adjustment_version=? AND date <= ?",

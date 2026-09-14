@@ -46,12 +46,16 @@ def _bar(o=10.0, h=11.0, l=9.5, c=10.5, v=1000.0, **extra):
     return {"open": o, "high": h, "low": l, "close": c, "volume": v, **extra}
 
 
-def _status(alive: bool = True, age: float = 30.0, symbols: list | None = None) -> dict:
-    """满足 assert_ready 健康门的通道状态。"""
+_DEFAULT_POOL = ["600519.SH", "000001.SH", "000001.SZ", "000300.SH",
+                 "510300.SH"]
+
+
+def _status(alive: bool = True, age: float = 30.0, symbols=_DEFAULT_POOL) -> dict:
+    """满足 assert_ready 健康门的通道状态。symbols=None 表示省略该键。"""
     s = {"server": "QmtExport/2.0", "latest_exists": alive,
          "latest_age_sec": age}
     if symbols is not None:
-        s["symbols"] = symbols
+        s["symbols"] = list(symbols)
     return s
 
 
@@ -500,6 +504,17 @@ class TestSync:
         assert seen_timeouts and all(t is not None and t <= 10
                                      for t in seen_timeouts)
 
+    @pytest.mark.parametrize("bad_symbols", [
+        None,              # 缺键
+        [],                # 空名单
+        "600519.SH",       # 非列表
+        ["600519.SH", "not a code"],  # 含非法代码
+    ])
+    def test_invalid_symbols_list_fails_closed(self, bad_symbols):
+        client = _client({("/", "GET"): _status(symbols=bad_symbols)})
+        with pytest.raises(QmtChannelError, match="symbols"):
+            client.assert_ready()
+
     def test_happy_path_identity_isolated(self, tmp_path):
         cache = Cache(tmp_path / "t.sqlite")
         days = ["2026-09-10", "2026-09-11"]
@@ -721,6 +736,33 @@ class TestSync:
         assert stored == ["2026-09-11", "2026-09-14"]  # 杂散行已删
         cache.close()
 
+    def test_retreat_rechecked_inside_write_transaction(self, tmp_path):
+        """并发场景:预检后另一进程写入了更晚的行 → 事务内复查拒绝并回滚。"""
+        cache = Cache(tmp_path / "t.sqlite")
+        days = ["2026-09-09", "2026-09-10"]
+        _seed_calendar(cache, days)
+        old = _payload("600519.SH", [(d, _bar()) for d in days])
+        sync_qmt_daily(cache, self._sync_client({"600519.SH": old}),
+                       ["600519.SH"])
+        # 直接用更老的右界调用原子替换,模拟并发交错后的到达
+        with pytest.raises(ValueError, match="回退"):
+            cache.replace_identity_range(
+                "600519.SH",
+                [{"date": "2026-09-09", "open": 9.0, "high": 9.5, "low": 8.5,
+                  "close": 9.2, "volume": 5.0}],
+                SOURCE, ADJ_MODE, ADJ_VERSION,
+                replace_through="2026-09-09",
+                coverage_start="2026-09-09", coverage_end="2026-09-09")
+        # 库内未被改动
+        stored = sorted(r[0] for r in cache._conn.execute(
+            "SELECT date FROM daily WHERE source='qmt'"))
+        assert stored == days
+        cov = cache._conn.execute(
+            "SELECT start_date, end_date FROM sync_coverage WHERE source='qmt'"
+        ).fetchone()
+        assert tuple(cov) == ("2026-09-09", "2026-09-10")
+        cache.close()
+
     def test_retreat_behind_stored_upper_bound_rejected(self, tmp_path):
         """通道返回右界回退于库内已存右界:整标的拒收,库内不动。"""
         cache = Cache(tmp_path / "t.sqlite")
@@ -812,7 +854,7 @@ class TestSync:
 
 
 def _snapshot_client(front: dict | None, dividend_type: str = "none",
-                     calls: list | None = None, pool_symbols: list | None = None):
+                     calls: list | None = None, pool_symbols=_DEFAULT_POOL):
     """/latest 快照传输:front={symbol: rec};dividend_type='front' 时改读 market。"""
     snap = {"generated": "2026-09-14T15:00:00", "dividend_type": dividend_type}
     if front is not None:
@@ -857,9 +899,9 @@ class TestSnapshotSync:
             "volume": [10.0]}}
         client = _snapshot_client({"600519.SH": rec})
         result = fetch_qmt.sync_qmt_daily_from_snapshot(
-            cache, client, ["600519.SH", "000300.SH"])
+            cache, client, ["600519.SH", "002001.SZ"])
         assert result["codes_ok"] == ["600519.SH"]
-        assert result["not_in_pool"] == ["000300.SH"]
+        assert result["not_in_pool"] == ["002001.SZ"]  # 不在权威名单 → 合法缺省
         assert result["errors"] == {}
         cache.close()
 
