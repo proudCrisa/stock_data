@@ -29,12 +29,18 @@ def _utc_now() -> datetime:
 
 
 def _canonical(value: object) -> bytes:
+    # allow_nan=False:NaN/Infinity 不是合法 JSON,密封产物必须被
+    # 任何严格 JSON 消费方接受;含哨兵值时此处抛 ValueError
     return json.dumps(value, ensure_ascii=False, sort_keys=True,
-                      separators=(",", ":")).encode("utf-8")
+                      separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
 def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+def _reject_json_constant(value: str):
+    raise QmtAccountCaptureError(f"捕获文件含非标准 JSON 常量: {value}")
 
 
 def _extract_account_sections(snapshot: dict) -> tuple[dict, list]:
@@ -80,13 +86,17 @@ def capture_qmt_account(
     now = now or _utc_now()
     content = {"source_generated": generated,
                "account": account, "positions": positions}
-    payload = {
-        "schema": SCHEMA_VERSION,
-        "captured_at": now.isoformat(timespec="seconds"),
-        **content,
-        "content_sha256": _sha256(_canonical(content)),
-    }
-    blob = json.dumps(payload, ensure_ascii=False, indent=1).encode("utf-8")
+    try:
+        digest = _sha256(_canonical(content))
+        blob = json.dumps(payload := {
+            "schema": SCHEMA_VERSION,
+            "captured_at": now.isoformat(timespec="seconds"),
+            **content,
+            "content_sha256": digest,
+        }, ensure_ascii=False, indent=1, allow_nan=False).encode("utf-8")
+    except ValueError:
+        raise QmtAccountCaptureError(
+            "账户数据含非有限数值(NaN/Infinity),拒绝密封") from None
     if len(blob) > _MAX_CAPTURE_BYTES:
         raise QmtAccountCaptureError(f"捕获产物超限: {len(blob)} bytes")
 
@@ -126,7 +136,8 @@ def verify_qmt_account_capture(path: str | Path) -> dict:
     if mode != 0o600:
         raise QmtAccountCaptureError(
             f"捕获文件权限必须为 0600,当前 {oct(mode)}: {path}")
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(path.read_text(encoding="utf-8"),
+                         parse_constant=_reject_json_constant)
     if not isinstance(payload, dict):
         raise QmtAccountCaptureError("捕获文件不是 JSON 对象")
     required = {"schema", "captured_at", "source_generated", "account",

@@ -779,6 +779,39 @@ class TestSync:
         assert stored == ["2026-09-10"]
         cache.close()
 
+    def test_fulldata_with_stale_generation_rejected_by_watermark(self, tmp_path):
+        """fulldata 响应自带陈旧 generated:被水位线拒绝,不覆盖快照版本。"""
+        cache = Cache(tmp_path / "t.sqlite")
+        _seed_calendar(cache, ["2026-09-10"])
+        rec = {"index": ["2026-09-10"], "columns": {
+            "open": [10.0], "high": [11.0], "low": [9.5], "close": [10.5],
+            "volume": [100.0]}}
+        # 快照路径先写入(水位线 = 快照 generated)
+        from datetime import datetime as dt
+        snap = {"generated": dt.now().replace(microsecond=0).isoformat(),
+                "market_adj": {"front": {"600519.SH": rec}}}
+
+        def snap_transport(path, method, body, max_bytes=None,
+                           sock_timeout=None):
+            if path == "/":
+                return _status()
+            return snap
+
+        fetch_qmt.sync_qmt_daily_from_snapshot(
+            cache, QmtChannelClient(transport=snap_transport,
+                                    sleep=lambda _: None), ["600519.SH"])
+        # fulldata 响应带 2020 年的 generated:陈旧
+        old_payload = _payload("600519.SH", [("2026-09-10", _bar(
+            o=98.5, h=99.5, l=98.0, c=99.0))])
+        old_payload["generated"] = "2020-01-01T00:00:00"
+        client = self._sync_client({"600519.SH": old_payload})
+        result = sync_qmt_daily(cache, client, ["600519.SH"])
+        assert "陈旧快照" in result["errors"]["600519.SH"]
+        row = cache._conn.execute(
+            "SELECT close FROM daily WHERE source='qmt'").fetchone()
+        assert row[0] == 10.5  # 快照版本未被覆盖
+        cache.close()
+
     def test_same_day_snapshots_ordered_by_generation_watermark(self, tmp_path):
         """同一末日的两个快照按生成时间定序:陈旧快照不得覆盖更新鲜版本。"""
         cache = Cache(tmp_path / "t.sqlite")

@@ -90,6 +90,23 @@ class TestCapture:
                                        now=base_now + timedelta(seconds=i))
             assert verify_qmt_account_capture(path)["positions"] == []
 
+    def test_non_finite_values_rejected_at_capture(self, tmp_path):
+        """账户字段含 NaN/Infinity:拒绝密封(产物必须是严格 JSON)。"""
+        import copy
+        snap = copy.deepcopy(_SNAPSHOT)
+        snap["account"]["sections"]["ACCOUNT"][0]["m_dBalance"] = float("nan")
+        with pytest.raises(QmtAccountCaptureError, match="非有限"):
+            capture_qmt_account(snap, output_root=tmp_path)
+        assert list(tmp_path.iterdir()) == []
+
+    def test_non_standard_json_constant_rejected_at_verify(self, tmp_path):
+        """含 NaN 字面量的产物文件:校验拒绝(不容忍宽松解析)。"""
+        path = capture_qmt_account(_SNAPSHOT, output_root=tmp_path)
+        text = path.read_text()
+        path.write_text(text.replace("1000000.0", "NaN"))
+        with pytest.raises(QmtAccountCaptureError, match="常量"):
+            verify_qmt_account_capture(path)
+
     def test_not_dict_rejected(self, tmp_path):
         with pytest.raises(QmtAccountCaptureError):
             capture_qmt_account([], output_root=tmp_path)

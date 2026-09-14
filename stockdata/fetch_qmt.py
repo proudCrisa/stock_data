@@ -593,14 +593,29 @@ def sync_qmt_daily(
             result["errors"][str(raw_code)] = f"代码规范化失败: {exc}"
             continue
         try:
+            submitted_at = _utc_now()
             payload = client.history_front(code, timeout=timeout)
             bars, suspended, invalid, nonpositive = parse_history_records(
                 payload, code, cutoff=cutoff)
         except QmtChannelError as exc:
             result["errors"][code] = str(exc)
             continue
+        # 生成水位线:fulldata 数据反映查询时点状态。响应自带合法
+        # generated 时用之,否则以提交时刻为准——保证慢请求/并发
+        # --fulldata 不会用旧数据覆盖已存的更新鲜快照版本
+        watermark = None
+        gen = payload.get("generated")
+        if isinstance(gen, str) and gen:
+            try:
+                watermark = (datetime.fromisoformat(gen)
+                             .replace(tzinfo=_SHANGHAI)
+                             .astimezone(timezone.utc)
+                             .isoformat(timespec="seconds"))
+            except ValueError:
+                watermark = None
         _absorb(cache, code, bars, suspended, invalid, nonpositive,
-                cutoff, calendar, result)
+                cutoff, calendar, result,
+                watermark=watermark or submitted_at)
     return result
 
 
