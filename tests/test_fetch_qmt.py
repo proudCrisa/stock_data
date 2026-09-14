@@ -4,9 +4,12 @@ from __future__ import annotations
 import json
 import os
 import stat
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
+import stockdata.fetch_qmt as fetch_qmt
 from stockdata.cache import Cache
 from stockdata.fetch_qmt import (
     ADJ_MODE,
@@ -14,6 +17,7 @@ from stockdata.fetch_qmt import (
     SOURCE,
     QmtChannelClient,
     QmtChannelError,
+    _urllib_transport,
     load_qmt_token,
     parse_history_records,
     sync_qmt_daily,
@@ -109,7 +113,7 @@ class TestClient:
         def poll():
             polls["n"] += 1
             if polls["n"] == 1:
-                raise QmtChannelError("HTTP 404: /fulldata/req-1")
+                raise QmtChannelError("HTTP 404: /fulldata/req-1", status=404)
             return payload
 
         routes = {("/fulldata", "POST"): {"id": "req-1"},
@@ -142,6 +146,92 @@ class TestClient:
         client = _client(routes)
         with pytest.raises(QmtChannelError, match="超时"):
             client.history_front("600519.SH", timeout=0.01)
+
+    def test_history_front_non404_poll_error_fails_fast(self):
+        """401/500/连接断等错误立即抛出,不当 pending 干等满超时。"""
+        polls = {"n": 0}
+
+        def poll():
+            polls["n"] += 1
+            raise QmtChannelError("HTTP 401: /fulldata/r", status=401)
+
+        routes = {("/fulldata", "POST"): {"id": "r"},
+                  ("/fulldata/r", "GET"): lambda body: poll()}
+        client = _client(routes)
+        with pytest.raises(QmtChannelError, match="401"):
+            client.history_front("600519.SH", timeout=60)
+        assert polls["n"] == 1  # 未重试
+
+
+class _RedirectTarget(BaseHTTPRequestHandler):
+    seen_token = None
+
+    def do_GET(self):
+        _RedirectTarget.seen_token = self.headers.get("X-Token")
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"{}")
+
+    def log_message(self, *args):
+        pass
+
+
+class TestTransportHardening:
+    def _serve(self, handler_cls):
+        server = HTTPServer(("127.0.0.1", 0), handler_cls)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server
+
+    def test_non_loopback_base_rejected(self):
+        with pytest.raises(QmtChannelError, match="loopback"):
+            _urllib_transport("http://evil.example.com", "tok")
+
+    def test_redirect_not_followed_token_not_leaked(self):
+        target = self._serve(_RedirectTarget)
+        target_port = target.server_address[1]
+
+        class Redirector(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location",
+                                 f"http://127.0.0.1:{target_port}/stolen")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        redirector = self._serve(Redirector)
+        port = redirector.server_address[1]
+        try:
+            transport = _urllib_transport(f"http://127.0.0.1:{port}", "sekrit")
+            with pytest.raises(QmtChannelError) as exc_info:
+                transport("/", "GET", None)
+            assert exc_info.value.status == 302
+            assert _RedirectTarget.seen_token is None  # token 未随重定向外泄
+        finally:
+            redirector.shutdown()
+            target.shutdown()
+
+    def test_oversized_response_rejected(self, monkeypatch):
+        class BigBody(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", "64")
+                self.end_headers()
+                self.wfile.write(b"x" * 64)
+
+            def log_message(self, *args):
+                pass
+
+        server = self._serve(BigBody)
+        monkeypatch.setattr(fetch_qmt, "_MAX_RESPONSE_BYTES", 16)
+        try:
+            transport = _urllib_transport(
+                f"http://127.0.0.1:{server.server_address[1]}", "tok")
+            with pytest.raises(QmtChannelError, match="上限"):
+                transport("/", "GET", None)
+        finally:
+            server.shutdown()
 
 
 class TestParse:
@@ -181,6 +271,12 @@ class TestParse:
         payload = _payload("X", [("2026-09-10", row)])
         bars, suspended, invalid = parse_history_records(payload, "X")
         assert bars == [] and not suspended and len(invalid) == 1
+
+    def test_out_of_range_epoch_is_invalid_row_not_batch_abort(self):
+        payload = _payload("X", [(10**30, _bar()), ("2026-09-10", _bar())])
+        bars, _, invalid = parse_history_records(payload, "X")
+        assert [b["date"] for b in bars] == ["2026-09-10"]
+        assert len(invalid) == 1 and "非法" in invalid[0]
 
     def test_protocol_violations(self):
         with pytest.raises(QmtChannelError, match="无数据"):
@@ -330,4 +426,22 @@ class TestSync:
         client = self._sync_client({})
         with pytest.raises(ValueError):
             sync_qmt_daily(cache, client, ["600519.SH"], start="not-a-date")
+        cache.close()
+
+    def test_unfinished_current_session_bar_excluded(self, tmp_path, monkeypatch):
+        """盘中运行时,未收盘的当日 bar 不得以 is_final=True 入库。"""
+        monkeypatch.setattr(fetch_qmt, "latest_finalized_date",
+                            lambda *a, **k: "2026-09-10")
+        cache = Cache(tmp_path / "t.sqlite")
+        days = ["2026-09-10", "2026-09-11"]
+        _seed_calendar(cache, days)
+        payload = _payload("600519.SH", [(d, _bar()) for d in days])
+        client = self._sync_client({"600519.SH": payload})
+        result = sync_qmt_daily(cache, client, ["600519.SH"], start="2026-09-01")
+        assert result["rows"] == 1  # 09-11(未收盘)被截断
+        stored = [r[0] for r in cache._conn.execute(
+            "SELECT date FROM daily WHERE source='qmt'")]
+        assert stored == ["2026-09-10"]
+        assert all(r[0] for r in cache._conn.execute(
+            "SELECT is_final FROM daily WHERE source='qmt'"))
         cache.close()

@@ -78,9 +78,19 @@ def capture_qmt_account(
     # O_EXCL 防覆盖;0600 从创建即生效,不留窗口
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        os.write(fd, blob)
-    finally:
+        # 短写防御:os.write 允许部分写入,循环到写完;失败则回滚产物
+        view = memoryview(blob)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise QmtAccountCaptureError(f"写入停滞: {path}")
+            view = view[written:]
+        os.fsync(fd)
+    except BaseException:
         os.close(fd)
+        path.unlink(missing_ok=True)
+        raise
+    os.close(fd)
     return path
 
 

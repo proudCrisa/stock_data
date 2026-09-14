@@ -19,11 +19,13 @@ import os
 import stat
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
+from .finalization import latest_finalized_date
 from .ticker import normalize
 
 SOURCE = "qmt"
@@ -37,10 +39,20 @@ _MAX_COUNT = 10000
 
 # 伪造成分防御:单标的单次返回的合理上限(30 年交易日)。
 _MAX_ROWS_PER_SYMBOL = 10000
+# 响应体硬上限:10000 行列式返回约 1 MB 量级,超限即拒绝(防隧道投毒撑爆内存)。
+_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 class QmtChannelError(ValueError):
-    """通道不可达、凭据缺失或线协议不符。"""
+    """通道不可达、凭据缺失或线协议不符。
+
+    ``status`` 携带 HTTP 状态码(若错误源于 HTTP 响应);连接级错误为 None。
+    """
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def _utc_now() -> str:
@@ -77,7 +89,24 @@ def load_qmt_token(
 Transport = Callable[[str, str, dict | None], dict]
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """拒绝一切 30x:token 头部绝不跟随重定向外泄。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _validate_loopback(base_url: str) -> None:
+    host = urllib.parse.urlparse(base_url).hostname
+    if urllib.parse.urlparse(base_url).scheme != "http" or host not in _LOOPBACK_HOSTS:
+        raise QmtChannelError(
+            f"QMT 基址必须是裸 loopback http URL,当前: {base_url!r}")
+
+
 def _urllib_transport(base_url: str, token: str, timeout: float = 60.0) -> Transport:
+    _validate_loopback(base_url)
+    opener = urllib.request.build_opener(_NoRedirect())
+
     def transport(path: str, method: str, body: dict | None) -> dict:
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(base_url + path, data=data, method=method)
@@ -86,12 +115,20 @@ def _urllib_transport(base_url: str, token: str, timeout: float = 60.0) -> Trans
             req.add_header("Content-Type", "application/json")
         req.add_header("X-Token", token)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read().decode())
+            with opener.open(req, timeout=timeout) as resp:
+                blob = resp.read(_MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as exc:
-            raise QmtChannelError(f"HTTP {exc.code}: {path}") from exc
+            raise QmtChannelError(f"HTTP {exc.code}: {path}",
+                                  status=exc.code) from exc
         except (OSError, ValueError) as exc:
             raise QmtChannelError(f"连接失败 {path}: {exc}") from exc
+        if len(blob) > _MAX_RESPONSE_BYTES:
+            raise QmtChannelError(
+                f"响应体超过 {_MAX_RESPONSE_BYTES} 字节上限: {path}")
+        try:
+            return json.loads(blob.decode())
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise QmtChannelError(f"响应不是合法 JSON: {path}: {exc}") from exc
 
     return transport
 
@@ -102,10 +139,17 @@ def _iso_day(value: object) -> str:
         text = value.strip()
         if len(text) == 8 and text.isdigit():
             text = f"{text[:4]}-{text[4:6]}-{text[6:]}"
-        return date.fromisoformat(text).isoformat()
+        try:
+            return date.fromisoformat(text).isoformat()
+        except ValueError as exc:
+            raise ValueError(f"非法日期: {value!r}") from exc
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        # epoch 毫秒(QMT 常用)
-        return datetime.fromtimestamp(value / 1000, tz=timezone.utc).date().isoformat()
+        # epoch 毫秒(QMT 常用);越界值(溢出/无穷)归为非法日期
+        try:
+            return datetime.fromtimestamp(
+                value / 1000, tz=timezone.utc).date().isoformat()
+        except (OverflowError, OSError, ValueError) as exc:
+            raise ValueError(f"非法 epoch 毫秒: {value!r}") from exc
     raise ValueError(f"无法识别的日期值: {value!r}")
 
 
@@ -240,8 +284,11 @@ class QmtChannelClient:
         while True:
             try:
                 result = self._transport(f"/fulldata/{req_id}", "GET", None)
-            except QmtChannelError:
-                # 提交后请求尚未被策略登记时会短暂 404,按 pending 处理
+            except QmtChannelError as exc:
+                # 仅登记期的瞬时 404 按 pending 处理;401/500/连接断等
+                # 立即失败,避免每个标的干等满超时、拖住整批
+                if exc.status != 404:
+                    raise
                 result = None
             if isinstance(result, dict) and "id" in result:
                 status = result.get("status")
@@ -276,6 +323,12 @@ def sync_qmt_daily(
     if not client.is_alive():
         raise QmtChannelError("QMT 通道不可达(隧道断开或策略未运行)")
 
+    # 未收盘的当日 bar 是演化中的值,绝不可以 is_final=True 入库;
+    # 窗口上界钉在最新已定稿交易日,盘中运行只落到前一交易日。
+    trade_calendar = cache.trading_calendar
+    cutoff = (latest_finalized_date(calendar=trade_calendar)
+              if trade_calendar.has_data() else latest_finalized_date())
+
     # 交易日历只取他源行:本身份的行不能自证覆盖完整。
     calendar = {r[0] for r in cache._conn.execute(
         "SELECT DISTINCT date FROM daily WHERE source != ?", (SOURCE,))}
@@ -291,8 +344,8 @@ def sync_qmt_daily(
             result["errors"][code] = str(exc)
             continue
         # 通道可能忽略 start 返回更早历史:本地按窗口过滤,只 upsert 窗口内行
-        bars = [b for b in bars if b["date"] >= start]
-        suspended = {d for d in suspended if d >= start}
+        bars = [b for b in bars if start <= b["date"] <= cutoff]
+        suspended = {d for d in suspended if start <= d <= cutoff}
         result["invalid"].extend(invalid)
         if not bars:
             result["errors"][code] = "窗口内无合法日线"

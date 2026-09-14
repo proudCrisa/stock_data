@@ -49,6 +49,29 @@ class TestCapture:
         with pytest.raises(QmtAccountCaptureError):
             capture_qmt_account([], output_root=tmp_path)
 
+    def test_short_write_looped_to_completion(self, tmp_path, monkeypatch):
+        import stockdata.qmt_account_capture as mod
+
+        real_write = os.write
+
+        def partial_write(fd, data):
+            return real_write(fd, data[:5])  # 每次最多写 5 字节
+
+        monkeypatch.setattr(mod.os, "write", partial_write)
+        path = capture_qmt_account(_SNAPSHOT, output_root=tmp_path)
+        assert verify_qmt_account_capture(path)  # 内容完整、哈希自洽
+
+    def test_write_failure_rolls_back_artifact(self, tmp_path, monkeypatch):
+        import stockdata.qmt_account_capture as mod
+
+        def broken_write(fd, data):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(mod.os, "write", broken_write)
+        with pytest.raises(OSError):
+            capture_qmt_account(_SNAPSHOT, output_root=tmp_path)
+        assert list(tmp_path.iterdir()) == []  # 残缺产物已回滚
+
     def test_no_overwrite_same_name(self, tmp_path):
         now = datetime(2026, 9, 14, 7, 0, 0, tzinfo=timezone.utc)
         path = capture_qmt_account(_SNAPSHOT, output_root=tmp_path, now=now)
