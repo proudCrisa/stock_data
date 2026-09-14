@@ -31,8 +31,7 @@ trap 'rmdir "$LOCK"' EXIT
   # QMT 补充源阶段:非阻塞。失败只告警,绝不影响主链路退出码。
   echo "----- $(date '+%F %T') qmt-sync start -----"
   "$ROOT/.venv/bin/python" "$ROOT/scripts/sync_qmt_daily.py" \
-    --codes-file "$ROOT/config/panel-baostock.txt" \
-    --start "$START"
+    --codes-file "$ROOT/config/panel-baostock.txt"
   qrc=$?
   echo "----- $(date '+%F %T') qmt-sync exit=$qrc -----"
   if [ "$qrc" -ne 0 ]; then

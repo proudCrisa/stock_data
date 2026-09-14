@@ -28,7 +28,8 @@ from stockdata.qmt_account_capture import (  # noqa: E402
 def main() -> int:
     try:
         client = QmtChannelClient(token=load_qmt_token())
-        snapshot = client._transport("/latest", "GET", None)
+        client.assert_ready()  # 策略停跳时拒绝密封陈旧快照
+        snapshot = client.latest_snapshot()
         path = capture_qmt_account(snapshot)
         payload = verify_qmt_account_capture(path)
     except (QmtChannelError, QmtAccountCaptureError) as exc:

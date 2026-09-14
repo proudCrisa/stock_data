@@ -2,9 +2,10 @@
 
 隐私数据按 authority 约束走文件密封:每次捕获生成一个时间戳文件
 ``~/.stockdata/qmt-account/<UTC>.json``,内容为
-``{schema, captured_at, account, positions, content_sha256}``,
-其中 ``content_sha256`` 是对 ``{account, positions}`` 规范化 JSON 的哈希,
-可用 :func:`verify_qmt_account_capture` 离线校验自洽性。
+``{schema, captured_at, source_generated, account, positions, content_sha256}``,
+其中 ``content_sha256`` 是对 ``{source_generated, account, positions}``
+规范化 JSON 的哈希,可用 :func:`verify_qmt_account_capture` 离线校验自洽性。
+``source_generated`` 是通道快照自身的生成时间——消费方据此可识别陈旧观测。
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = "stockdata-qmt-account-capture/1"
+SCHEMA_VERSION = "stockdata-qmt-account-capture/2"
 _MAX_CAPTURE_BYTES = 4 * 1024 * 1024
 
 
@@ -59,7 +60,8 @@ def capture_qmt_account(
     """
     account, positions = _extract_account_sections(snapshot)
     now = now or _utc_now()
-    content = {"account": account, "positions": positions}
+    content = {"source_generated": snapshot.get("generated"),
+               "account": account, "positions": positions}
     payload = {
         "schema": SCHEMA_VERSION,
         "captured_at": now.isoformat(timespec="seconds"),
@@ -104,7 +106,8 @@ def verify_qmt_account_capture(path: str | Path) -> dict:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("schema") != SCHEMA_VERSION:
         raise QmtAccountCaptureError(f"schema 不符: {payload.get('schema')!r}")
-    content = {"account": payload.get("account"),
+    content = {"source_generated": payload.get("source_generated"),
+               "account": payload.get("account"),
                "positions": payload.get("positions")}
     if _sha256(_canonical(content)) != payload.get("content_sha256"):
         raise QmtAccountCaptureError("content_sha256 不自洽,文件可能被篡改")

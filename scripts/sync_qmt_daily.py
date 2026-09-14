@@ -1,21 +1,22 @@
-"""QMT 前复权日线增量同步:独立身份 qmt/qfq/qmt-front-v1,补充而非替代主链路。
+"""QMT 前复权日线全量刷新:独立身份 qmt/qfq/qmt-front-v1,补充而非替代主链路。
 
-默认滚动 30 天窗口(与 baostock 日更一致);可重复执行(同身份 upsert)。
-前置通道不可达/凭据缺失时快速失败,不写库。
+每次把库内序列对齐到通道当前返回的完整历史(前复权在除权后会重述全部
+历史,滚动窗口会造成新旧因子混排);通道够不到的更早日行被删除,保证
+库内序列永远是单一复权因子版本。前置通道不可达/凭据缺失/快照停跳时
+快速失败,不写库。
 
 退出码:0 = 全部干净;1 = 无可用代码或一行未入库;2 = 部分失败/invalid/覆盖空洞;
 3 = 通道不可达或凭据缺失(未尝试入库)。
 
 用法:
     .venv/bin/python scripts/sync_qmt_daily.py [--codes-file config/panel-baostock.txt] \
-        [--start YYYY-MM-DD] [--db PATH] [--timeout 120]
+        [--db PATH] [--fulldata] [--timeout 60]
 """
 from __future__ import annotations
 
 import argparse
 import os
 import sys
-from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -43,8 +44,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--codes-file",
                         default=str(Path(__file__).resolve().parent.parent
                                     / "config" / "panel-baostock.txt"))
-    parser.add_argument("--start",
-                        default=(date.today() - timedelta(days=30)).isoformat())
     parser.add_argument("--db", default=str(_default_db()))
     parser.add_argument("--timeout", type=float, default=60.0,
                         help="单标的 fulldata 等待上限(秒);仅 --fulldata 模式")
@@ -73,11 +72,10 @@ def main(argv: list[str] | None = None) -> int:
     cache = Cache(Path(args.db))
     try:
         if args.fulldata:
-            result = sync_qmt_daily(cache, client, codes, start=args.start,
+            result = sync_qmt_daily(cache, client, codes,
                                     timeout=args.timeout)
         else:
-            result = sync_qmt_daily_from_snapshot(cache, client, codes,
-                                                  start=args.start)
+            result = sync_qmt_daily_from_snapshot(cache, client, codes)
     except QmtChannelError as exc:
         print(f"ERROR: {exc}")
         return 3
@@ -98,11 +96,13 @@ def main(argv: list[str] | None = None) -> int:
     for code, hole in list(result["coverage_holes"].items())[:10]:
         print(f"COVERAGE-HOLE (coverage not recorded) {code}: {hole}")
 
+    nonpositive = sum(result.get("nonpositive", {}).values())
     problems = bool(result["errors"] or result["invalid"]
                     or result["coverage_holes"])
     print(f"synced {result['rows']} rows for {len(result['codes_ok'])}/{len(codes)} "
-          f"codes as {SOURCE}/{ADJ_MODE}/{ADJ_VERSION} (start={args.start}); "
+          f"codes as {SOURCE}/{ADJ_MODE}/{ADJ_VERSION}; "
           f"errors={len(result['errors'])}, invalid={len(result['invalid'])}, "
+          f"nonpositive={nonpositive}(复权口径产物,观测但不入库), "
           f"coverage-holes={len(result['coverage_holes'])}")
     if result["rows"] == 0:
         return 1

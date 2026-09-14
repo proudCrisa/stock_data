@@ -174,18 +174,20 @@ def _iso_day(value: object) -> str:
 def parse_history_records(
     payload: dict,
     symbol: str,
-    start: str | None = None,
     cutoff: str | None = None,
-) -> tuple[list[dict], set[str], list[str]]:
-    """解析并校验 ``history_kline`` 返回(列式线形)。
+) -> tuple[list[dict], set[str], list[str], set[str]]:
+    """解析并校验 ``history_kline`` 返回(列式线形),全量不截底。
 
-    返回 ``(bars, suspended, invalid)``:bars 为合法日线(日期升序),
-    suspended 为停牌证据日集合,invalid 为逐条非法行描述。
-    线协议不符(缺 index/columns、长度不齐)抛 :class:`QmtChannelError`。
-
-    给定 ``start``/``cutoff`` 时,窗口外的行整行跳过、不校验不计 invalid——
-    深度历史的前复权价可能因累计除权转为非正(复权口径产物,非数据错误),
-    只有窗口内的行值得告警。
+    返回 ``(bars, suspended, invalid, nonpositive)``:
+    - bars:合法日线(日期升序)——**全量**,供单因子版本整体刷新;
+    - suspended:停牌/零成交证据日集合;
+    - invalid:逐条非法行描述(非有限值、负量、OHLC 关系破坏等);
+    - nonpositive:前复权深历史因累计除权转为非正的行——复权口径产物,
+      不算数据错误,但也不入库(Cache 的 bar 级不变量要求正价);
+      作为「已观测」证据参与覆盖声明,并触发同日日行删除(清掉旧因子
+      版本的残留正价行)。
+    给定 ``cutoff``(最新已定稿交易日)时,晚于它的行整行跳过——
+    盘中演化中的当日 bar 绝不入库。线协议不符抛 :class:`QmtChannelError`。
     """
     if not isinstance(payload, dict):
         raise QmtChannelError("fulldata 返回不是 JSON 对象")
@@ -215,6 +217,7 @@ def parse_history_records(
     bars: list[dict] = []
     suspended: set[str] = set()
     invalid: list[str] = []
+    nonpositive: set[str] = set()
     seen: set[str] = set()
     for pos, day_value in enumerate(index):
         try:
@@ -222,9 +225,8 @@ def parse_history_records(
         except ValueError:
             invalid.append(f"{symbol}: 非法日期 {day_value!r}")
             continue
-        if (start is not None and day < start) or \
-                (cutoff is not None and day > cutoff):
-            continue  # 窗口外整行跳过,不校验不告警
+        if cutoff is not None and day > cutoff:
+            continue  # 未定稿的当日 bar:整行跳过
         if day in seen:
             invalid.append(f"{symbol} {day}: 重复交易日")
             continue
@@ -242,8 +244,8 @@ def parse_history_records(
         if not all(math.isfinite(x) for x in (o, h, l, c, v)):
             invalid.append(f"{symbol} {day}: 非有限值")
             continue
-        if min(o, h, l, c) <= 0 or v < 0:
-            invalid.append(f"{symbol} {day}: 非正价或负量")
+        if v < 0:
+            invalid.append(f"{symbol} {day}: 负量")
             continue
         if v == 0:
             # 零成交日 = 无交易发生,按停牌证据处理,不入库
@@ -252,10 +254,14 @@ def parse_history_records(
         if not (l <= o <= h and l <= c <= h):
             invalid.append(f"{symbol} {day}: OHLC 关系被破坏")
             continue
+        if min(o, h, l, c) <= 0:
+            # 前复权深历史累计除权产物:观测但不入库(Cache 正价不变量)
+            nonpositive.add(day)
+            continue
         bars.append({"date": day, "open": o, "high": h, "low": l,
                      "close": c, "volume": v})
     bars.sort(key=lambda b: b["date"])
-    return bars, suspended, invalid
+    return bars, suspended, invalid, nonpositive
 
 
 class QmtChannelClient:
@@ -303,6 +309,13 @@ class QmtChannelClient:
                 "Windows 端策略疑似停跳")
         return status
 
+    def latest_snapshot(self) -> dict:
+        """原始 ``/latest`` 快照(大响应上限)。调用方应先过 assert_ready()。"""
+        snap = self._transport("/latest", "GET", None, _MAX_SNAPSHOT_BYTES)
+        if not isinstance(snap, dict):
+            raise QmtChannelError("快照不是 JSON 对象")
+        return snap
+
     def snapshot_front(self) -> dict[str, dict]:
         """一次 GET 取全池前复权 K 线:{symbol: {index, columns}}。
 
@@ -310,9 +323,7 @@ class QmtChannelClient:
         两者皆无抛 :class:`QmtChannelError`。这是日更主路径:
         一次请求覆盖整个常驻池,不逐标的走 /fulldata。
         """
-        snap = self._transport("/latest", "GET", None, _MAX_SNAPSHOT_BYTES)
-        if not isinstance(snap, dict):
-            raise QmtChannelError("快照不是 JSON 对象")
+        snap = self.latest_snapshot()
         if snap.get("dividend_type") == "front":
             src = snap.get("market")
         else:
@@ -369,13 +380,12 @@ class QmtChannelClient:
             self._sleep(self._poll_interval)
 
 
-def _prepare_sync(cache, client: QmtChannelClient, start: str):
-    """共享前置:窗口校验、健康门、定稿截断、他源日历。"""
-    date.fromisoformat(start)  # 提前拒绝非法窗口
+def _prepare_sync(cache, client: QmtChannelClient):
+    """共享前置:健康门、定稿截断、他源日历。"""
     client.assert_ready()  # 通道不可达/快照不新鲜:快速失败,不进标的循环
 
     # 未收盘的当日 bar 是演化中的值,绝不可以 is_final=True 入库;
-    # 窗口上界钉在最新已定稿交易日,盘中运行只落到前一交易日。
+    # 区间上界钉在最新已定稿交易日,盘中运行只落到前一交易日。
     trade_calendar = cache.trading_calendar
     cutoff = (latest_finalized_date(calendar=trade_calendar)
               if trade_calendar.has_data() else latest_finalized_date())
@@ -384,34 +394,67 @@ def _prepare_sync(cache, client: QmtChannelClient, start: str):
     calendar = {r[0] for r in cache._conn.execute(
         "SELECT DISTINCT date FROM daily WHERE source != ?", (SOURCE,))}
     result: dict = {"rows": 0, "codes_ok": [], "errors": {}, "invalid": [],
-                    "coverage_holes": {}, "synced_at": _utc_now()}
+                    "nonpositive": {}, "coverage_holes": {},
+                    "synced_at": _utc_now()}
     return cutoff, calendar, result
 
 
 def _absorb(cache, code: str, bars: list[dict], suspended: set[str],
-            invalid: list[str], start: str, cutoff: str, calendar: set[str],
-            result: dict) -> None:
-    """窗口过滤 + upsert + 覆盖声明验证(单标的)。"""
-    # 通道可能忽略 start 返回更早历史:本地按窗口过滤,只 upsert 窗口内行
-    bars = [b for b in bars if start <= b["date"] <= cutoff]
-    suspended = {d for d in suspended if start <= d <= cutoff}
+            invalid: list[str], nonpositive: set[str], cutoff: str,
+            calendar: set[str], result: dict) -> None:
+    """全量刷新单标的:upsert 全部返回行 + 删除超范围/旧因子残留行 + 覆盖声明。
+
+    前复权在分红除权后会重述全部历史,因此每次都把库内序列对齐到通道
+    当前返回的同一因子版本。删除规则:
+    - ``date < 本次首个正价行``:通道够不到的更早日行(快照 1300 行约 5 年);
+    - 本次观测为非正价的日期:旧因子版本可能残留的正价行。
+    覆盖声明的区间左端取所有已观测日(含停牌/非正价证据)的最小值。
+    """
     result["invalid"].extend(invalid)
+    if nonpositive:
+        result["nonpositive"][code] = len(nonpositive)
     if not bars:
-        result["errors"][code] = "窗口内无合法日线"
+        result["errors"][code] = "无合法日线"
         return
+    first_bar = bars[0]["date"]
+    lo = min([first_bar, *suspended, *nonpositive])
+    hi = bars[-1]["date"]
     result["rows"] += cache.upsert(
         code, bars, source=SOURCE, adjustment_mode=ADJ_MODE,
         adjustment_version=ADJ_VERSION)
-    lo, hi = bars[0]["date"], bars[-1]["date"]
+    cache._conn.execute(
+        "DELETE FROM daily WHERE code=? AND source=? AND adjustment_mode=?"
+        " AND adjustment_version=? AND date < ?",
+        (code, SOURCE, ADJ_MODE, ADJ_VERSION, first_bar))
+    if nonpositive:
+        cache._conn.executemany(
+            "DELETE FROM daily WHERE code=? AND source=? AND adjustment_mode=?"
+            " AND adjustment_version=? AND date = ?",
+            [(code, SOURCE, ADJ_MODE, ADJ_VERSION, d) for d in nonpositive])
+    cache._conn.commit()
     if not calendar:
         result["coverage_holes"][code] = ["trading calendar empty"]
         return
-    have = {b["date"] for b in bars} | suspended
+    have = {b["date"] for b in bars} | suspended | nonpositive
     unexplained = [d for d in calendar if lo <= d <= hi and d not in have]
     if unexplained:
         result["coverage_holes"][code] = unexplained[:5]
-    else:
-        cache.record_sync_coverage(code, SOURCE, ADJ_MODE, ADJ_VERSION, lo, hi)
+        return
+    # 拒绝与既有覆盖区间合并出未验证空洞:既有区间右端早于本次左端,
+    # 且夹缝中夹着库内交易日(宕机超窗)时,本次声明只覆盖 [lo,hi] 已验证段,
+    # 不允许 MIN/MAX 合并把未检查的夹缝一并声明为已覆盖。
+    existing = cache._conn.execute(
+        "SELECT MIN(start_date), MAX(end_date) FROM sync_coverage WHERE code=?"
+        " AND source=? AND adjustment_mode=? AND adjustment_version=?",
+        (code, SOURCE, ADJ_MODE, ADJ_VERSION)).fetchone()
+    if existing and existing[1] and existing[1] < lo:
+        gap = [d for d in calendar if existing[1] < d < lo]
+        if gap:
+            result["coverage_holes"][code] = [
+                f"disjoint with existing coverage ending {existing[1]}: "
+                f"{len(gap)} unexplained calendar days between"]
+            return
+    cache.record_sync_coverage(code, SOURCE, ADJ_MODE, ADJ_VERSION, lo, hi)
     result["codes_ok"].append(code)
 
 
@@ -419,7 +462,6 @@ def sync_qmt_daily(
     cache,
     client: QmtChannelClient,
     codes: Sequence[str],
-    start: str,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> dict:
     """逐标的 ``/fulldata`` 路径(回填/池外标的用;日更请走快照路径)。
@@ -428,20 +470,21 @@ def sync_qmt_daily(
     记入返回结果的 ``errors``。返回::
 
         {"rows": int, "codes_ok": [...], "errors": {code: msg},
-         "invalid": [...], "coverage_holes": {code: [...]},
-         "synced_at": iso}
+         "invalid": [...], "nonpositive": {code: n},
+         "coverage_holes": {code: [...]}, "synced_at": iso}
     """
-    cutoff, calendar, result = _prepare_sync(cache, client, start)
+    cutoff, calendar, result = _prepare_sync(cache, client)
     for raw_code in codes:
         code = normalize(raw_code)
         try:
-            payload = client.history_front(code, start=start, timeout=timeout)
-            bars, suspended, invalid = parse_history_records(
-                payload, code, start=start, cutoff=cutoff)
+            payload = client.history_front(code, timeout=timeout)
+            bars, suspended, invalid, nonpositive = parse_history_records(
+                payload, code, cutoff=cutoff)
         except QmtChannelError as exc:
             result["errors"][code] = str(exc)
             continue
-        _absorb(cache, code, bars, suspended, invalid, start, cutoff, calendar, result)
+        _absorb(cache, code, bars, suspended, invalid, nonpositive,
+                cutoff, calendar, result)
     return result
 
 
@@ -449,7 +492,6 @@ def sync_qmt_daily_from_snapshot(
     cache,
     client: QmtChannelClient,
     codes: Sequence[str],
-    start: str,
 ) -> dict:
     """快照主路径:一次 ``/latest`` 取全池前复权 K 线,同步池内标的。
 
@@ -457,7 +499,7 @@ def sync_qmt_daily_from_snapshot(
     池外标的仍由 baostock 主链路覆盖);需纳入时先在 Windows 端扩充标的池,
     或用 :func:`sync_qmt_daily` 对该标的走 fulldata 回填。
     """
-    cutoff, calendar, result = _prepare_sync(cache, client, start)
+    cutoff, calendar, result = _prepare_sync(cache, client)
     result["not_in_pool"] = []
     pool = client.snapshot_front()
     for raw_code in codes:
@@ -467,10 +509,11 @@ def sync_qmt_daily_from_snapshot(
             result["not_in_pool"].append(code)
             continue
         try:
-            bars, suspended, invalid = parse_history_records(
-                {"data": {code: rec}}, code, start=start, cutoff=cutoff)
+            bars, suspended, invalid, nonpositive = parse_history_records(
+                {"data": {code: rec}}, code, cutoff=cutoff)
         except QmtChannelError as exc:
             result["errors"][code] = str(exc)
             continue
-        _absorb(cache, code, bars, suspended, invalid, start, cutoff, calendar, result)
+        _absorb(cache, code, bars, suspended, invalid, nonpositive,
+                cutoff, calendar, result)
     return result

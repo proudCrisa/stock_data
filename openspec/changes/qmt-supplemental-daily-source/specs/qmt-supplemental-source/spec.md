@@ -16,8 +16,28 @@
 
 #### Scenario: 可重复执行
 - Given 某区间已入库
-- When 以相同窗口再次同步
+- When 再次同步
 - Then 同身份同 (code,date) 行被覆盖为最新值,总行数不膨胀
+
+#### Scenario: 除权后全量重述(单因子版本)
+- Given 某标的已入库,随后发生分红除权,QMT 前复权重述其全部历史
+- When 执行同步
+- Then 本次通道返回的全部历史行整体覆盖入库(同一复权因子版本)
+- And 通道返回范围之外的更早日行被删除
+- And 重述后转为非正价的日期,其旧因子残留正价行被删除
+- And 库内该标的的 qmt 序列不存在新旧因子混排的接缝
+
+### Requirement: 快照主路径与 fulldata 备路径
+
+日更 SHALL 使用快照主路径:一次 `GET /latest` 取全池前复权 K 线;
+`/fulldata` 逐标的按需通道仅用于回填/池外标的(实证 ~5 分钟/标的,
+不作日更路径)。池外面板标的 SHALL 记为 `not_in_pool` 而非错误。
+
+#### Scenario: 日更快照同步
+- Given 通道健康(快照 60s 级新鲜)
+- When 执行日更
+- Then 只发起 `/` 与 `/latest` 两个请求,池∩面板标的全部入库
+- And 池外面板标的列入 not_in_pool,不影响退出码
 
 ### Requirement: 通道交互只读、禁止池回退
 
@@ -31,29 +51,50 @@ QMT 客户端 SHALL 只使用 GET 类端点与 `/fulldata` 按需通道;
 
 ### Requirement: 入库行校验与停牌证据
 
-每行 bar 必须满足:日期为合法 ISO 日期;open/high/low/close 有限且为正;
+每行 bar 必须满足:日期为合法 ISO 日期;open/high/low/close 有限;
 volume 有限且非负;`low <= open/close <= high`。停牌行 SHALL 跳过入库,
-但记录为该标的的停牌证据日。
+但记录为该标的的停牌证据日。前复权深历史因累计除权转为非正价的行
+SHALL 跳过入库(Cache 正价不变量),但作为已观测证据参与覆盖声明,
+并单独计数(nonpositive);晚于最新已定稿交易日的行 MUST NOT 入库。
 
 #### Scenario: 非法行拒收
-- Given 一行 close 为 0 或 high < low
+- Given 一行 close 为 NaN 或 high < low 或 volume 为负
 - When 同步
 - Then 该行不入库,计入 invalid 并在输出中列示
 
+#### Scenario: 非正价前复权深历史
+- Given 某标的 2021 年的前复权行因累计除权转为非正
+- When 同步
+- Then 该行不入库,计入 nonpositive
+- And 该日视为已观测(不构成覆盖空洞)
+- And 库内同日旧因子残留行被删除
+
 #### Scenario: 停牌日
-- Given 某日 `suspendFlag` 为真
+- Given 某日 `suspendFlag` 为真或成交量为 0
 - When 同步
 - Then 该日无 bar 入库,但该日计入停牌证据用于覆盖验证
 
+#### Scenario: 盘中运行
+- Given 当前时刻早于当日收盘定稿(Asia/Shanghai 16:00)
+- When 同步
+- Then 当日演化中的 bar 不入库,上界为最新已定稿交易日
+
 ### Requirement: 覆盖声明可验证
 
-`sync_coverage` SHALL 只在「库内他源交易日历 + 已观测停牌日」能完整解释
-`[min,max]` 区间时记录;库内交易日历为空时 MUST NOT 记录。
+`sync_coverage` SHALL 只在「库内他源交易日历 + 已观测停牌/非正价证据日」
+能完整解释 `[min,max]` 区间时记录;库内交易日历为空时 MUST NOT 记录。
+当既有覆盖区间与本次验证区间不相交、且夹缝中含库内交易日时,
+MUST NOT 以 MIN/MAX 合并方式夸大覆盖(拒绝记录并报告)。
 
 #### Scenario: 覆盖空洞
-- Given 区间内某库内交易日既无 bar 又无停牌证据
+- Given 区间内某库内交易日既无 bar 又无停牌/非正价证据
 - When 同步完成
 - Then 该标的不记录 sync_coverage,并在输出中列示 COVERAGE-HOLE
+
+#### Scenario: 宕机超窗后的不相交覆盖
+- Given 既有覆盖止于 T1,本次验证区间为 [T2, T3],(T1, T2) 内有库内交易日
+- When 同步完成
+- Then 既有区间不被合并扩展,报告 disjoint coverage
 
 ### Requirement: 同步对主链路非阻塞
 
