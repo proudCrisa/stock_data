@@ -24,9 +24,12 @@ import urllib.request
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
+from zoneinfo import ZoneInfo
 
 from .finalization import latest_finalized_date
 from .ticker import normalize
+
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 SOURCE = "qmt"
 ADJ_MODE = "qfq"
@@ -42,6 +45,8 @@ _MAX_ROWS_PER_SYMBOL = 10000
 # 响应体硬上限:10000 行列式返回约 1 MB 量级,超限即拒绝(防隧道投毒撑爆内存)。
 _MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+# 快照新鲜度上限:v11 策略全天 60s 一跳(收盘后照常),超过即判停跳。
+_MAX_SNAPSHOT_AGE_SEC = 900
 
 
 class QmtChannelError(ValueError):
@@ -97,15 +102,22 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def _validate_loopback(base_url: str) -> None:
-    host = urllib.parse.urlparse(base_url).hostname
-    if urllib.parse.urlparse(base_url).scheme != "http" or host not in _LOOPBACK_HOSTS:
+    """只接受裸 loopback HTTP URL(含端口,无用户信息/路径/查询)。"""
+    parsed = urllib.parse.urlparse(base_url)
+    loopback = parsed.hostname in _LOOPBACK_HOSTS
+    if parsed.scheme != "http" or not loopback or parsed.port is None \
+            or parsed.username or parsed.password \
+            or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
         raise QmtChannelError(
             f"QMT 基址必须是裸 loopback http URL,当前: {base_url!r}")
 
 
 def _urllib_transport(base_url: str, token: str, timeout: float = 60.0) -> Transport:
     _validate_loopback(base_url)
-    opener = urllib.request.build_opener(_NoRedirect())
+    # ProxyHandler({}) 切断环境变量代理继承:loopback 请求绝不绕行代理,
+    # X-Token 不会经代理外泄(与 qmt_pool_replay 同源加固)
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), _NoRedirect())
 
     def transport(path: str, method: str, body: dict | None) -> dict:
         data = json.dumps(body).encode() if body is not None else None
@@ -144,10 +156,12 @@ def _iso_day(value: object) -> str:
         except ValueError as exc:
             raise ValueError(f"非法日期: {value!r}") from exc
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        # epoch 毫秒(QMT 常用);越界值(溢出/无穷)归为非法日期
+        # epoch 毫秒(QMT 常用)——值表示上海市场日,必须先落 Asia/Shanghai
+        # 再取日期(UTC 直转会偏移一天);越界值(溢出/无穷)归为非法日期
         try:
             return datetime.fromtimestamp(
-                value / 1000, tz=timezone.utc).date().isoformat()
+                value / 1000, tz=timezone.utc
+            ).astimezone(_SHANGHAI).date().isoformat()
         except (OverflowError, OSError, ValueError) as exc:
             raise ValueError(f"非法 epoch 毫秒: {value!r}") from exc
     raise ValueError(f"无法识别的日期值: {value!r}")
@@ -256,6 +270,26 @@ class QmtChannelClient:
         except QmtChannelError:
             return False
 
+    def assert_ready(self) -> dict:
+        """批量前置健康门:服务标识 + 快照存在且新鲜(v11 全天 60s 一跳)。
+
+        任一不合格立即抛 :class:`QmtChannelError`——防止「HTTP 导出进程活着
+        但 Windows 策略已停」时整批标的逐个轮询干等。
+        """
+        status = self.status()
+        if not isinstance(status, dict) or not status.get("server"):
+            raise QmtChannelError("状态返回缺 server 标识,线协议不符")
+        if not status.get("latest_exists"):
+            raise QmtChannelError("尚无 latest.json 快照(策略从未导出)")
+        age = status.get("latest_age_sec")
+        if not isinstance(age, (int, float)) or isinstance(age, bool):
+            raise QmtChannelError("状态返回缺 latest_age_sec,无法判定新鲜度")
+        if age > _MAX_SNAPSHOT_AGE_SEC:
+            raise QmtChannelError(
+                f"快照已 {age}s 未更新(>{_MAX_SNAPSHOT_AGE_SEC}s),"
+                "Windows 端策略疑似停跳")
+        return status
+
     def history_front(
         self,
         symbol: str,
@@ -320,8 +354,7 @@ def sync_qmt_daily(
          "synced_at": iso}
     """
     date.fromisoformat(start)  # 提前拒绝非法窗口
-    if not client.is_alive():
-        raise QmtChannelError("QMT 通道不可达(隧道断开或策略未运行)")
+    client.assert_ready()  # 通道不可达/快照不新鲜:快速失败,不进标的循环
 
     # 未收盘的当日 bar 是演化中的值,绝不可以 is_final=True 入库;
     # 窗口上界钉在最新已定稿交易日,盘中运行只落到前一交易日。

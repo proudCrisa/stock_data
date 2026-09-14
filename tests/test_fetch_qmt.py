@@ -41,6 +41,12 @@ def _bar(o=10.0, h=11.0, l=9.5, c=10.5, v=1000.0, **extra):
     return {"open": o, "high": h, "low": l, "close": c, "volume": v, **extra}
 
 
+def _status(alive: bool = True, age: float = 30.0) -> dict:
+    """满足 assert_ready 健康门的通道状态。"""
+    return {"server": "QmtExport/2.0", "latest_exists": alive,
+            "latest_age_sec": age}
+
+
 def _client(routes: dict, calls: list | None = None):
     """routes: {(path, method): dict 或 callable(body)->dict}"""
     def transport(path, method, body):
@@ -243,10 +249,18 @@ class TestParse:
         assert suspended == set() and invalid == []
 
     def test_compact_and_epoch_dates(self):
-        epoch_ms = 1789689600000  # 2026-09-18 UTC
+        epoch_ms = 1789689600000  # 2026-09-18T08:00+08
         payload = _payload("X", [("20260910", _bar()), (epoch_ms, _bar())])
         bars, _, invalid = parse_history_records(payload, "X")
         assert [b["date"] for b in bars] == ["2026-09-10", "2026-09-18"]
+        assert invalid == []
+
+    def test_epoch_converted_through_shanghai_not_utc(self):
+        """上海子夜 epoch(2026-09-18 00:00+08 = 09-17 16:00Z)必须落 09-18。"""
+        shanghai_midnight_ms = 1789660800000
+        payload = _payload("X", [(shanghai_midnight_ms, _bar())])
+        bars, _, invalid = parse_history_records(payload, "X")
+        assert [b["date"] for b in bars] == ["2026-09-18"]
         assert invalid == []
 
     def test_suspend_flag_and_empty_volume(self):
@@ -304,7 +318,7 @@ def _seed_calendar(cache: Cache, days: list[str]):
 
 class TestSync:
     def _sync_client(self, payload_by_symbol: dict, alive=True):
-        routes = {("/", "GET"): {"latest_exists": alive}}
+        routes = {("/", "GET"): _status(alive=alive)}
 
         def submit(body):
             return {"id": body["params"]["symbol"]}
@@ -325,7 +339,35 @@ class TestSync:
     def test_dead_channel_fails_closed(self, tmp_path):
         cache = Cache(tmp_path / "t.sqlite")
         client = self._sync_client({}, alive=False)
-        with pytest.raises(QmtChannelError, match="不可达"):
+        with pytest.raises(QmtChannelError, match="尚无 latest"):
+            sync_qmt_daily(cache, client, ["600519.SH"], start="2026-09-01")
+        cache.close()
+
+    def test_stale_snapshot_fails_fast(self, tmp_path):
+        """导出进程活着但策略停跳(快照 >900s):整批快速失败,不进标的循环。"""
+        cache = Cache(tmp_path / "t.sqlite")
+        calls = []
+
+        def transport(path, method, body):
+            calls.append(path)
+            if path == "/":
+                return _status(age=1800.0)
+            raise AssertionError("不应进入 fulldata 阶段")
+
+        client = QmtChannelClient(transport=transport, sleep=lambda _: None)
+        with pytest.raises(QmtChannelError, match="停跳"):
+            sync_qmt_daily(cache, client, ["600519.SH"], start="2026-09-01")
+        assert calls == ["/"]
+        cache.close()
+
+    def test_missing_age_field_fails_closed(self, tmp_path):
+        cache = Cache(tmp_path / "t.sqlite")
+
+        def transport(path, method, body):
+            return {"server": "QmtExport/2.0", "latest_exists": True}
+
+        client = QmtChannelClient(transport=transport, sleep=lambda _: None)
+        with pytest.raises(QmtChannelError, match="latest_age_sec"):
             sync_qmt_daily(cache, client, ["600519.SH"], start="2026-09-01")
         cache.close()
 
@@ -370,7 +412,7 @@ class TestSync:
 
         def transport(path, method, body):
             if (path, method) == ("/", "GET"):
-                return {"latest_exists": True}
+                return _status()
             if (path, method) == ("/fulldata", "POST"):
                 return {"id": body["params"]["symbol"]}
             symbol = path.rsplit("/", 1)[-1]

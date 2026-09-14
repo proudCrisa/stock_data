@@ -45,7 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start",
                         default=(date.today() - timedelta(days=30)).isoformat())
     parser.add_argument("--db", default=str(_default_db()))
-    parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument("--timeout", type=float, default=60.0,
+                        help="单标的 fulldata 等待上限(秒);缺失标的快速失败")
     args = parser.parse_args(argv)
 
     codes_path = Path(args.codes_file)

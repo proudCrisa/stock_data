@@ -48,6 +48,12 @@ Windows QMT (QmtExport/2.0, 策略 v11)
 - QMT 阶段独立记录退出码,失败时系统通知,但 **不改写** 主退出码;
 - 通道不可达(token 缺失/隧道断)时 QMT 阶段快速失败(exit 3),不拖慢主链路。
 
+### D4b: 批量前置健康门
+进入标的循环前必须过 `assert_ready()`:服务标识存在、`latest_exists` 为真、
+`latest_age_sec ≤ 900`(v11 策略全天 60s 一跳)。防止「HTTP 导出进程活着但
+Windows 策略已停」时整批标的逐个轮询干等数小时。单标的 fulldata 等待上限
+默认 60s(CLI `--timeout` 可调);轮询只对登记期瞬时 404 重试,其余错误立即失败。
+
 ### D5: 凭据注入
 顺序:`QMT_TOKEN` env → `~/.stockdata/qmt-token`(要求 0600,否则拒绝)。
 仓库、脚本、openspec 中不出现 token 值。
