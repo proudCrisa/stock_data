@@ -51,16 +51,18 @@ SQLite 缓存的日线 OHLCV 服务，drop-in 替换 ffd.findesk.cn 的 FFD MCP 
 
 <p><img src="assets/technical-manual/05-db-schema.svg" width="1000"/></p>
 
-### 价格身份登记册（2026-08-31 实库口径）
+### 价格身份登记册（2026-09-14 实库口径）
 
 | 身份 (source · mode · version) | 代码数 | 数据区间 | 角色 | 读写策略 |
 | --- | --- | --- | --- | --- |
-| `baostock · qfq · baostock-adjustflag-2` | 104 | 2015-01-05 → 2026-08-28 | 生产读取路径唯一身份 | 可读可写；`sync_symbols` 日更 |
+| `baostock · qfq · baostock-adjustflag-2` | 123 | 2015-01-05 → 2026-09-11 | 生产读取路径唯一身份 | 可读可写；`sync_symbols` 日更 |
+| `baostock · raw · baostock-adjustflag-3` | 501 | 2025-01-02 → 2026-09-11 | 前瞻采集基准 / 流动性口径 | 可读可写；日更 |
 | `tonghuashun · qfq · ths-qfq-v1` | 473 | 2023-05-29 → 2026-08-14 | 离线宇宙（研究级） | 只读冻结；不回补、不合并实时 bar |
-| `wind · qfq · wind-fwd-v1` | 501 | 2023-12-01 → 2026-08-24 | 研究 / 跨源验证 | 只读；`ingest_wind_csv` 校验入库，缺 coverage 不自证 |
+| `wind · qfq · wind-fwd-v1` | 501 | 2023-12-01 → 2026-08-31 | 研究 / 跨源验证 | 只读；`ingest_wind_csv` 校验入库，缺 coverage 不自证 |
+| `qmt · qfq · qmt-front-v1` | 25（池∩面板 24 全量 + fulldata 回填 1） | 2021-05-11 → 2026-09-14 | 高置信补充源（券商通道） | `sync_qmt_daily.py` 全量刷新（单因子版本、单事务、volume 手→股）；快照主路径日更；通道断只告警不阻塞主链路 |
 | `tencent · raw · tencent-qt-daily-v1` | 前瞻面板 | 注册日起前向 | 采集器 raw 价格 + 回执 | 仅注册采集器写；finalized 行 append-only |
 
-缺口语义：相对已覆盖区间 `[min,max]` 的左右日历延伸段；停牌造成的中间空洞不视为缺口。跨身份重叠代码（28 个 wind/baostock）收盘价偏差中位数 0.0000%（2026-08-24 比对）。
+缺口语义：相对已覆盖区间 `[min,max]` 的左右日历延伸段；停牌造成的中间空洞不视为缺口。跨身份重叠代码（28 个 wind/baostock）收盘价偏差中位数 0.0000%（2026-08-24 比对）；qmt/baostock 重叠代码 600519.SH 前复权收盘价相对偏差 0.000000（2026-08-25 起 14 个重叠交易日，2026-09-14 冒烟比对）。
 
 ## 启动指令
 
@@ -126,6 +128,20 @@ stockdata-cli update-calendar --database ~/.stockdata/cache.sqlite \
 # 1) 经 MCP datasource wind_get_price 分批拉取 CSV（每批 ≤3 ticker，调用间隔 ≥12s，限流退避 60s）
 # 2) 校验入库：停牌行(平推价+空量)跳过；跨文件冲突整日拒收；日历只取非 wind 来源
 .venv/bin/python scripts/ingest_wind_csv.py /tmp/wind_fill   # 退出码 0 成功 / 1 脏数据 / 2 无独立日历
+```
+
+### QMT 补充源同步（券商通道，高置信，非主链路）
+
+```bash
+# 前提:frp 隧道在线(127.0.0.1:8000),凭据经 QMT_TOKEN 或 ~/.stockdata/qmt-token(0600)
+.venv/bin/python scripts/sync_qmt_daily.py            # 快照主路径:一次 /latest 覆盖全池
+.venv/bin/python scripts/sync_qmt_daily.py --fulldata # 逐标的按需通道(回填/池外标的,慢)
+# 身份 qmt/qfq/qmt-front-v1;禁止池回退;池外面板标的不视为错误(仍由 baostock 覆盖)
+# 退出码 0 干净 / 1 一行未入库 / 2 部分失败 / 3 通道不可达
+# launchd daily-sync 已含非阻塞 QMT 阶段:失败只系统通知,不影响 baostock 主链路退出码
+
+# 账户/持仓密封捕获(隐私数据,0600 JSON,不进主库、不进日志)
+.venv/bin/python scripts/capture_qmt_account.py   # stdout 只有路径与哈希
 ```
 
 ### 前瞻采集（注册面板，盘前/盘后两阶段）

@@ -76,6 +76,14 @@ CREATE TABLE IF NOT EXISTS trading_calendar (
     source         TEXT NOT NULL,
     retrieved_at   TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS source_watermarks (
+    code               TEXT NOT NULL,
+    source             TEXT NOT NULL,
+    adjustment_mode    TEXT NOT NULL,
+    adjustment_version TEXT NOT NULL,
+    watermark          TEXT NOT NULL,
+    PRIMARY KEY (code, source, adjustment_mode, adjustment_version)
+);
 """
 
 _MIGRATION_COLUMNS = {
@@ -362,6 +370,155 @@ class Cache:
                 code, bar_date, "volume must be non-negative and finite"
             )
 
+    def _validate_identity_bars(self, code: str, bars: list[dict],
+                                identity: tuple, is_final: bool) -> None:
+        """身份三元组 + bar 级校验(upsert / replace_identity_range 共用)。"""
+        for field, value in zip(
+            ("source", "adjustment_mode", "adjustment_version"), identity
+        ):
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{field} must be a non-empty string")
+
+        for bar in bars:
+            for field, expected in zip(
+                ("source", "adjustment_mode", "adjustment_version"), identity
+            ):
+                if field in bar and bar[field] != expected:
+                    raise ValueError(
+                        f"bar {bar.get('date', '<unknown>')} {field} "
+                        f"{bar[field]!r} conflicts with batch {expected!r}"
+                    )
+
+        if not isinstance(is_final, bool):
+            raise ValueError("is_final must be a bool")
+        for bar in bars:
+            if "is_final" in bar and not isinstance(bar["is_final"], bool):
+                raise ValueError("bar is_final must be a bool")
+        for bar in bars:
+            self._validate_bar(code, bar)
+
+    @staticmethod
+    def _daily_row(code: str, b: dict, identity: tuple, batch_retrieved_at: str,
+                   is_final: bool, receipt_id: int | None) -> tuple:
+        source, adjustment_mode, adjustment_version = identity
+        return (
+            code,
+            b["date"],
+            b.get("open"),
+            b.get("high"),
+            b.get("low"),
+            b.get("close"),
+            b.get("volume"),
+            source,
+            adjustment_mode,
+            adjustment_version,
+            b.get("retrieved_at") or batch_retrieved_at,
+            int(bool(b.get("is_final", is_final))),
+            receipt_id,
+        )
+
+    _DAILY_UPSERT_SQL = (
+        "INSERT INTO daily "
+        "(code,date,open,high,low,close,volume,source,adjustment_mode,"
+        "adjustment_version,retrieved_at,is_final,receipt_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(code,date,source,adjustment_mode,adjustment_version) "
+        "DO UPDATE SET open=excluded.open, high=excluded.high, "
+        "low=excluded.low, close=excluded.close, volume=excluded.volume, "
+        "retrieved_at=excluded.retrieved_at, is_final=excluded.is_final, "
+        "receipt_id=excluded.receipt_id"
+    )
+
+    def replace_identity_range(
+        self,
+        code: str,
+        bars: list[dict],
+        source: str,
+        adjustment_mode: str,
+        adjustment_version: str,
+        replace_through: str,
+        coverage_start: str,
+        coverage_end: str,
+        source_watermark: str | None = None,
+    ) -> int:
+        """单事务原子刷新:整段替换 + 覆盖区间替换(+ 源生成水位线)。
+
+        供「破坏性全量刷新」语义使用(qmt 单因子版本):BEGIN IMMEDIATE
+        取得写锁后先复查已存右界(并发调用方可能在本进程预检后提交了更晚的
+        行——回退即整标的中止并回滚),然后删除该身份下
+        ``date <= replace_through`` 的全部行、写入 bars、把覆盖声明替换为
+        [coverage_start, coverage_end]。任一步失败,全部回滚,不留部分提交。
+        杂散残留行(不在本次返回、也不在日历中的历史行)随整段删除一并清除。
+
+        给定 ``source_watermark``(源数据生成时间,UTC ISO)时,同事务内
+        校验其不早于已存水位线——同一末日的两个快照按生成时间定序,
+        陈旧快照不得覆盖更新鲜的因子版本;通过后水位线随事务推进。
+        """
+        self._require_collector_writer()
+        identity = (source, adjustment_mode, adjustment_version)
+        self._validate_identity_bars(code, bars, identity, True)
+        batch_retrieved_at = _utc_now()
+        rows = [self._daily_row(code, b, identity, batch_retrieved_at, True, None)
+                for b in bars]
+        with self._conn:
+            # 写锁 + 事务内复查:并发刷新不得把更晚的行留在替换范围之外
+            self._conn.execute("BEGIN IMMEDIATE")
+            stored_hi = self._conn.execute(
+                "SELECT MAX(date) FROM daily WHERE code=? AND source=?"
+                " AND adjustment_mode=? AND adjustment_version=?",
+                (code, source, adjustment_mode, adjustment_version)
+            ).fetchone()[0]
+            coverage_hi = self._conn.execute(
+                "SELECT MAX(end_date) FROM sync_coverage WHERE code=?"
+                " AND source=? AND adjustment_mode=? AND adjustment_version=?",
+                (code, source, adjustment_mode, adjustment_version)
+            ).fetchone()[0]
+            # 覆盖右界可能超出最后一条 bar(尾部停牌/纯证据刷新),
+            # 回退判定必须同时对照两者
+            known_hi = max([d for d in (stored_hi, coverage_hi) if d],
+                           default=None)
+            if known_hi and known_hi > replace_through:
+                raise ValueError(
+                    f"{code} 通道返回右界 {replace_through} "
+                    f"回退于库内已存 {known_hi},整标的拒收")
+            if source_watermark is not None:
+                prev_wm = self._conn.execute(
+                    "SELECT watermark FROM source_watermarks WHERE code=?"
+                    " AND source=? AND adjustment_mode=?"
+                    " AND adjustment_version=?",
+                    (code, source, adjustment_mode, adjustment_version)
+                ).fetchone()
+                if prev_wm and source_watermark < prev_wm[0]:
+                    raise ValueError(
+                        f"{code} 源生成时间 {source_watermark} 早于已存水位线 "
+                        f"{prev_wm[0]},陈旧快照拒收")
+            self._conn.execute(
+                "DELETE FROM daily WHERE code=? AND source=?"
+                " AND adjustment_mode=? AND adjustment_version=? AND date <= ?",
+                (code, source, adjustment_mode, adjustment_version,
+                 replace_through))
+            self._conn.executemany(self._DAILY_UPSERT_SQL, rows)
+            if source_watermark is not None:
+                self._conn.execute(
+                    "INSERT INTO source_watermarks "
+                    "(code,source,adjustment_mode,adjustment_version,watermark) "
+                    "VALUES (?,?,?,?,?) "
+                    "ON CONFLICT(code,source,adjustment_mode,adjustment_version) "
+                    "DO UPDATE SET watermark=excluded.watermark",
+                    (code, source, adjustment_mode, adjustment_version,
+                     source_watermark))
+            self._conn.execute(
+                "DELETE FROM sync_coverage WHERE code=? AND source=?"
+                " AND adjustment_mode=? AND adjustment_version=?",
+                (code, source, adjustment_mode, adjustment_version))
+            self._conn.execute(
+                "INSERT INTO sync_coverage "
+                "(code,source,adjustment_mode,adjustment_version,start_date,"
+                "end_date,retrieved_at) VALUES (?,?,?,?,?,?,?)",
+                (code, source, adjustment_mode, adjustment_version,
+                 coverage_start, coverage_end, batch_retrieved_at))
+        return len(rows)
+
     def upsert(
         self,
         code: str,
@@ -380,30 +537,9 @@ class Cache:
                 raise ValueError("adjustment_version is required for this provenance")
             adjustment_version = _BAOSTOCK_VERSIONS[adjustment_mode]
         identity = (source, adjustment_mode, adjustment_version)
-        for field, value in zip(
-            ("source", "adjustment_mode", "adjustment_version"), identity
-        ):
-            if not isinstance(value, str) or not value:
-                raise ValueError(f"{field} must be a non-empty string")
-
-        for bar in bars:
-            for field, expected in zip(
-                ("source", "adjustment_mode", "adjustment_version"), identity
-            ):
-                if field in bar and bar[field] != expected:
-                    raise ValueError(
-                        f"bar {bar.get('date', '<unknown>')} {field} "
-                        f"{bar[field]!r} conflicts with batch {expected!r}"
-                    )
+        self._validate_identity_bars(code, bars, identity, is_final)
 
         batch_retrieved_at = retrieved_at or _utc_now()
-        if not isinstance(is_final, bool):
-            raise ValueError("is_final must be a bool")
-        for bar in bars:
-            if "is_final" in bar and not isinstance(bar["is_final"], bool):
-                raise ValueError("bar is_final must be a bool")
-        for bar in bars:
-            self._validate_bar(code, bar)
         try:
             with self._conn:
                 receipt_ids = {}
@@ -412,35 +548,12 @@ class Cache:
                         raise ValueError("receipt source conflicts with batch source")
                     receipt_ids[id(receipt)] = self._record_capture_receipt(receipt)
                 rows = [
-                    (
-                        code,
-                        b["date"],
-                        b.get("open"),
-                        b.get("high"),
-                        b.get("low"),
-                        b.get("close"),
-                        b.get("volume"),
-                        source,
-                        adjustment_mode,
-                        adjustment_version,
-                        b.get("retrieved_at") or batch_retrieved_at,
-                        int(bool(b.get("is_final", is_final))),
-                        receipt_ids.get(id(b.get("_capture_receipt"))),
-                    )
+                    self._daily_row(code, b, identity, batch_retrieved_at,
+                                    is_final,
+                                    receipt_ids.get(id(b.get("_capture_receipt"))))
                     for b in bars
                 ]
-                self._conn.executemany(
-                    "INSERT INTO daily "
-                    "(code,date,open,high,low,close,volume,source,adjustment_mode,"
-                    "adjustment_version,retrieved_at,is_final,receipt_id) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(code,date,source,adjustment_mode,adjustment_version) "
-                    "DO UPDATE SET open=excluded.open, high=excluded.high, "
-                    "low=excluded.low, close=excluded.close, volume=excluded.volume, "
-                    "retrieved_at=excluded.retrieved_at, is_final=excluded.is_final, "
-                    "receipt_id=excluded.receipt_id",
-                    rows,
-                )
+                self._conn.executemany(self._DAILY_UPSERT_SQL, rows)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"invalid capture receipt: {exc}") from exc
         return len(rows)
