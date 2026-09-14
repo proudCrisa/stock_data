@@ -516,6 +516,28 @@ class TestSync:
             with pytest.raises(QmtChannelError, match="超时"):
                 client.history_front("600519.SH", timeout=bad)
 
+    def test_non_front_fulldata_response_rejected(self):
+        """响应自报复权方式非 front:拒绝,不得按 qfq 身份入库。"""
+        payload = _payload("600519.SH", [("2026-09-10", _bar())])
+        payload["dividend_type"] = "none"
+        routes = {("/fulldata", "POST"): {"id": "r"},
+                  ("/fulldata/r", "GET"): payload}
+        client = _client(routes)
+        with pytest.raises(QmtChannelError, match="非 front"):
+            client.history_front("600519.SH")
+
+    def test_bj_symbol_accepted_in_health_gate(self):
+        """北交所代码是合法线协议成员,不得拒绝整个通道。"""
+        client = _client({("/", "GET"): _status(
+            symbols=["600519.SH", "430001.BJ"])})
+        assert client.assert_ready()["symbols"] == ["600519.SH", "430001.BJ"]
+
+    @pytest.mark.parametrize("bad_errors", [True, 1, {"x": 1}])
+    def test_malformed_errors_field_raises_domain_error(self, bad_errors):
+        client = _client({("/", "GET"): _status() | {"errors": bad_errors}})
+        with pytest.raises(QmtChannelError, match="errors"):
+            client.assert_ready()
+
     def test_history_front_budget_covers_submit_and_polls(self):
         """--timeout 预算是单标的全部 HTTP 等待的上限。"""
         seen_timeouts = []
@@ -741,6 +763,47 @@ class TestSync:
         stored = sorted(r[0] for r in cache._conn.execute(
             "SELECT date FROM daily WHERE source='qmt'"))
         assert stored == ["2026-09-10"]
+        cache.close()
+
+    def test_same_day_snapshots_ordered_by_generation_watermark(self, tmp_path):
+        """同一末日的两个快照按生成时间定序:陈旧快照不得覆盖更新鲜版本。"""
+        cache = Cache(tmp_path / "t.sqlite")
+        _seed_calendar(cache, ["2026-09-10"])
+        rec_new = {"index": ["2026-09-10"], "columns": {
+            "open": [10.0], "high": [11.0], "low": [9.5], "close": [10.5],
+            "volume": [100.0]}}
+
+        def client_with_gen(generated: str):
+            snap = {"generated": generated, "market_adj": {"front": {
+                "600519.SH": rec_new}}}
+
+            def transport(path, method, body, max_bytes=None,
+                          sock_timeout=None):
+                if path == "/":
+                    return _status()
+                if path == "/latest":
+                    return snap
+                raise AssertionError(path)
+
+            return QmtChannelClient(transport=transport, sleep=lambda _: None)
+
+        # 两个快照都在新鲜度窗口内(<900s),仅生成先后不同
+        from datetime import datetime as dt, timedelta
+        now_sh = dt.now()
+        newer = (now_sh - timedelta(seconds=300)).replace(microsecond=0).isoformat()
+        older = (now_sh - timedelta(seconds=600)).replace(microsecond=0).isoformat()
+        r1 = fetch_qmt.sync_qmt_daily_from_snapshot(
+            cache, client_with_gen(newer), ["600519.SH"])
+        assert r1["codes_ok"] == ["600519.SH"]
+        # 同日但生成更早的快照:拒收
+        r2 = fetch_qmt.sync_qmt_daily_from_snapshot(
+            cache, client_with_gen(older), ["600519.SH"])
+        assert "陈旧快照" in r2["errors"]["600519.SH"]
+        # 更新鲜的(现在):接受
+        newest = now_sh.replace(microsecond=0).isoformat()
+        r3 = fetch_qmt.sync_qmt_daily_from_snapshot(
+            cache, client_with_gen(newest), ["600519.SH"])
+        assert r3["codes_ok"] == ["600519.SH"]
         cache.close()
 
     def test_stray_row_not_in_calendar_removed_on_refresh(self, tmp_path):

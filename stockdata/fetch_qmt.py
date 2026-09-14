@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sqlite3
 import stat
 import time
@@ -31,6 +32,8 @@ from .finalization import latest_finalized_date
 from .ticker import normalize
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+# QMT 线协议代码形态(含北交所;比 ticker.normalize 的 SH/SZ 覆盖面宽)
+_SYMBOL_WIRE_RE = re.compile(r"^\d{6}\.(SH|SZ|BJ)$", re.IGNORECASE)
 
 SOURCE = "qmt"
 ADJ_MODE = "qfq"
@@ -330,6 +333,8 @@ class QmtChannelClient:
                 f"快照已 {age}s 未更新(>{_MAX_SNAPSHOT_AGE_SEC}s),"
                 "Windows 端策略疑似停跳")
         errors = status.get("errors")
+        if errors is not None and not isinstance(errors, list):
+            raise QmtChannelError(f"状态返回 errors 段畸形: {type(errors).__name__}")
         if errors:
             raise QmtChannelError(
                 f"导出器自报错误({len(errors)} 条),拒绝在部分导出上同步: "
@@ -338,11 +343,11 @@ class QmtChannelClient:
         if not isinstance(symbols, list) or not symbols:
             raise QmtChannelError("状态返回缺 symbols 常驻池名单,无法判定池成员资格")
         for sym in symbols:
-            try:
-                normalize(sym)
-            except (ValueError, TypeError) as exc:
+            # 线协议含北交所(.BJ),比 ticker.normalize(SH/SZ) 的覆盖面宽
+            if not (isinstance(sym, str)
+                    and _SYMBOL_WIRE_RE.match(sym.strip())):
                 raise QmtChannelError(
-                    f"symbols 含非法代码 {sym!r},名单不可信") from exc
+                    f"symbols 含非法代码 {sym!r},名单不可信")
         return status
 
     def latest_snapshot(self) -> dict:
@@ -355,10 +360,14 @@ class QmtChannelClient:
         snap = self._transport("/latest", "GET", None, _MAX_SNAPSHOT_BYTES)
         if not isinstance(snap, dict):
             raise QmtChannelError("快照不是 JSON 对象")
-        if snap.get("errors"):
+        snap_errors = snap.get("errors")
+        if snap_errors is not None and not isinstance(snap_errors, list):
             raise QmtChannelError(
-                f"快照自报导出错误({len(snap['errors'])} 条),拒绝作为全量刷新依据: "
-                f"{str(snap['errors'])[:200]}")
+                f"快照 errors 段畸形: {type(snap_errors).__name__}")
+        if snap_errors:
+            raise QmtChannelError(
+                f"快照自报导出错误({len(snap_errors)} 条),拒绝作为全量刷新依据: "
+                f"{str(snap_errors)[:200]}")
         generated = snap.get("generated")
         if not isinstance(generated, str) or not generated:
             raise QmtChannelError("快照缺 generated 生产时间戳")
@@ -374,14 +383,9 @@ class QmtChannelClient:
                 "与健康门水位不一致,疑似陈旧/重放")
         return snap
 
-    def snapshot_front(self) -> dict[str, dict]:
-        """一次 GET 取全池前复权 K 线:{symbol: {index, columns}}。
-
-        主 dividend_type 即 front 时读 ``market``,否则读 ``market_adj.front``;
-        两者皆无抛 :class:`QmtChannelError`。这是日更主路径:
-        一次请求覆盖整个常驻池,不逐标的走 /fulldata。
-        """
-        snap = self.latest_snapshot()
+    @staticmethod
+    def _front_records(snap: dict) -> dict[str, dict]:
+        """从已校验快照提取 front 复权段:{symbol: {index, columns}}。"""
         if snap.get("dividend_type") == "front":
             src = snap.get("market")
         else:
@@ -394,6 +398,15 @@ class QmtChannelClient:
         # 保留全部键:畸形记录(空 index 等)交由解析层分类为协议/数据错误,
         # 不能在这里静默丢弃而被下游误判为 not_in_pool
         return dict(src)
+
+    def snapshot_front(self) -> dict[str, dict]:
+        """一次 GET 取全池前复权 K 线:{symbol: {index, columns}}。
+
+        主 dividend_type 即 front 时读 ``market``,否则读 ``market_adj.front``;
+        两者皆无抛 :class:`QmtChannelError`。这是日更主路径:
+        一次请求覆盖整个常驻池,不逐标的走 /fulldata。
+        """
+        return self._front_records(self.latest_snapshot())
 
     def history_front(
         self,
@@ -446,6 +459,12 @@ class QmtChannelClient:
                 status = result.get("status")
                 # 服务端物化期间会瞬时返回 ok 但 data 为空:按 pending 继续等
                 if status == "ok" and result.get("data") is not None:
+                    # 响应自报的复权方式必须是 front——非前复权数据
+                    # 绝不允许按 qmt-front-v1 身份入库
+                    declared = result.get("dividend_type")
+                    if declared is not None and declared not in ("front", "qfq"):
+                        raise QmtChannelError(
+                            f"{symbol} 响应复权方式为 {declared!r},非 front,拒收")
                     return result
                 if status is not None and status != "ok":
                     raise QmtChannelError(
@@ -484,7 +503,8 @@ def _prepare_sync(cache, client: QmtChannelClient):
 
 def _absorb(cache, code: str, bars: list[dict], suspended: set[str],
             invalid: list[str], nonpositive: set[str], cutoff: str,
-            calendar: set[str], result: dict) -> None:
+            calendar: set[str], result: dict,
+            watermark: str | None = None) -> None:
     """原子化全量刷新单标的:先完整验证,通过才写库;写则替换式覆盖声明。
 
     fail-closed 顺序(任一步不过,该标的整批不写,库内保持旧因子版本的一致序列):
@@ -535,7 +555,8 @@ def _absorb(cache, code: str, bars: list[dict], suspended: set[str],
         result["rows"] += cache.replace_identity_range(
             code, bars, SOURCE, ADJ_MODE, ADJ_VERSION,
             replace_through=hi,
-            coverage_start=lo, coverage_end=hi)
+            coverage_start=lo, coverage_end=hi,
+            source_watermark=watermark)
     except (sqlite3.Error, OSError) as exc:
         # 单事务回滚,库内保持旧的一致状态;按标的隔离失败
         result["errors"][code] = f"写入失败(已回滚): {exc}"
@@ -590,7 +611,12 @@ def sync_qmt_daily_from_snapshot(
     """
     cutoff, calendar, result, status = _prepare_sync(cache, client)
     result["not_in_pool"] = []
-    pool = client.snapshot_front()
+    snap = client.latest_snapshot()
+    pool = client._front_records(snap)
+    # 源生成水位线(UTC):同事务内按生成时间定序,陈旧快照不得覆盖更新鲜版本
+    watermark = (datetime.fromisoformat(snap["generated"])
+                 .replace(tzinfo=_SHANGHAI)
+                 .astimezone(timezone.utc).isoformat(timespec="seconds"))
     # 状态接口的 symbols 是权威常驻池名单:在名单内但快照缺 front 记录
     # = 导出失败(错误),不在名单内才是 not_in_pool(合法缺省)
     authoritative: set[str] = set()
@@ -619,5 +645,5 @@ def sync_qmt_daily_from_snapshot(
             result["errors"][code] = str(exc)
             continue
         _absorb(cache, code, bars, suspended, invalid, nonpositive,
-                cutoff, calendar, result)
+                cutoff, calendar, result, watermark=watermark)
     return result

@@ -76,6 +76,14 @@ CREATE TABLE IF NOT EXISTS trading_calendar (
     source         TEXT NOT NULL,
     retrieved_at   TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS source_watermarks (
+    code               TEXT NOT NULL,
+    source             TEXT NOT NULL,
+    adjustment_mode    TEXT NOT NULL,
+    adjustment_version TEXT NOT NULL,
+    watermark          TEXT NOT NULL,
+    PRIMARY KEY (code, source, adjustment_mode, adjustment_version)
+);
 """
 
 _MIGRATION_COLUMNS = {
@@ -431,8 +439,9 @@ class Cache:
         replace_through: str,
         coverage_start: str,
         coverage_end: str,
+        source_watermark: str | None = None,
     ) -> int:
-        """单事务原子刷新:整段替换 + 覆盖区间替换。
+        """单事务原子刷新:整段替换 + 覆盖区间替换(+ 源生成水位线)。
 
         供「破坏性全量刷新」语义使用(qmt 单因子版本):BEGIN IMMEDIATE
         取得写锁后先复查已存右界(并发调用方可能在本进程预检后提交了更晚的
@@ -440,6 +449,10 @@ class Cache:
         ``date <= replace_through`` 的全部行、写入 bars、把覆盖声明替换为
         [coverage_start, coverage_end]。任一步失败,全部回滚,不留部分提交。
         杂散残留行(不在本次返回、也不在日历中的历史行)随整段删除一并清除。
+
+        给定 ``source_watermark``(源数据生成时间,UTC ISO)时,同事务内
+        校验其不早于已存水位线——同一末日的两个快照按生成时间定序,
+        陈旧快照不得覆盖更新鲜的因子版本;通过后水位线随事务推进。
         """
         self._require_collector_writer()
         identity = (source, adjustment_mode, adjustment_version)
@@ -468,12 +481,32 @@ class Cache:
                 raise ValueError(
                     f"{code} 通道返回右界 {replace_through} "
                     f"回退于库内已存 {known_hi},整标的拒收")
+            if source_watermark is not None:
+                prev_wm = self._conn.execute(
+                    "SELECT watermark FROM source_watermarks WHERE code=?"
+                    " AND source=? AND adjustment_mode=?"
+                    " AND adjustment_version=?",
+                    (code, source, adjustment_mode, adjustment_version)
+                ).fetchone()
+                if prev_wm and source_watermark < prev_wm[0]:
+                    raise ValueError(
+                        f"{code} 源生成时间 {source_watermark} 早于已存水位线 "
+                        f"{prev_wm[0]},陈旧快照拒收")
             self._conn.execute(
                 "DELETE FROM daily WHERE code=? AND source=?"
                 " AND adjustment_mode=? AND adjustment_version=? AND date <= ?",
                 (code, source, adjustment_mode, adjustment_version,
                  replace_through))
             self._conn.executemany(self._DAILY_UPSERT_SQL, rows)
+            if source_watermark is not None:
+                self._conn.execute(
+                    "INSERT INTO source_watermarks "
+                    "(code,source,adjustment_mode,adjustment_version,watermark) "
+                    "VALUES (?,?,?,?,?) "
+                    "ON CONFLICT(code,source,adjustment_mode,adjustment_version) "
+                    "DO UPDATE SET watermark=excluded.watermark",
+                    (code, source, adjustment_mode, adjustment_version,
+                     source_watermark))
             self._conn.execute(
                 "DELETE FROM sync_coverage WHERE code=? AND source=?"
                 " AND adjustment_mode=? AND adjustment_version=?",

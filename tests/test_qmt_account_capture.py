@@ -155,5 +155,22 @@ class TestVerify:
         payload = json.loads(path.read_text())
         payload["schema"] = "other/0"
         path.write_text(json.dumps(payload))
-        with pytest.raises(QmtAccountCaptureError, match="schema"):
+        with pytest.raises(QmtAccountCaptureError, match="键集合|schema"):
+            verify_qmt_account_capture(path)
+
+    @pytest.mark.parametrize("mutate", [
+        lambda p: p.pop("captured_at"),
+        lambda p: p.update(source_generated=None),
+        lambda p: p.update(account=None),
+        lambda p: p.update(positions={}),
+        lambda p: p.update(extra_key=1),
+        lambda p: p.update(captured_at="not-a-date"),
+    ])
+    def test_incomplete_schema_rejected(self, mutate, tmp_path):
+        """缺键/多键/类型不符的捕获文件一律拒绝(不以 .get 默认值蒙混)。"""
+        path = capture_qmt_account(_SNAPSHOT, output_root=tmp_path)
+        payload = json.loads(path.read_text())
+        mutate(payload)
+        path.write_text(json.dumps(payload))
+        with pytest.raises(QmtAccountCaptureError):
             verify_qmt_account_capture(path)

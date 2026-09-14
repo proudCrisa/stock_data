@@ -115,18 +115,47 @@ def capture_qmt_account(
 
 
 def verify_qmt_account_capture(path: str | Path) -> dict:
-    """离线校验捕获文件:schema、0600 权限、sha256 自洽。返回 payload。"""
+    """离线校验捕获文件:0600 权限、完整 schema、sha256 自洽。返回 payload。
+
+    schema 校验覆盖:精确的键集合、captured_at/source_generated 为合法
+    ISO 时间戳、account 为对象、positions 为数组、content_sha256 为
+    64 位十六进制——缺键/类型不符一律拒绝,不以 .get() 默认值蒙混。
+    """
     path = Path(path)
     mode = stat.S_IMODE(path.stat().st_mode)
     if mode != 0o600:
         raise QmtAccountCaptureError(
             f"捕获文件权限必须为 0600,当前 {oct(mode)}: {path}")
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if payload.get("schema") != SCHEMA_VERSION:
-        raise QmtAccountCaptureError(f"schema 不符: {payload.get('schema')!r}")
-    content = {"source_generated": payload.get("source_generated"),
-               "account": payload.get("account"),
-               "positions": payload.get("positions")}
-    if _sha256(_canonical(content)) != payload.get("content_sha256"):
+    if not isinstance(payload, dict):
+        raise QmtAccountCaptureError("捕获文件不是 JSON 对象")
+    required = {"schema", "captured_at", "source_generated", "account",
+                "positions", "content_sha256"}
+    if set(payload) != required:
+        raise QmtAccountCaptureError(
+            f"键集合不符: 缺 {sorted(required - set(payload))}, "
+            f"多 {sorted(set(payload) - required)}")
+    if payload["schema"] != SCHEMA_VERSION:
+        raise QmtAccountCaptureError(f"schema 不符: {payload['schema']!r}")
+    for field in ("captured_at", "source_generated"):
+        value = payload[field]
+        if not isinstance(value, str) or not value:
+            raise QmtAccountCaptureError(f"{field} 缺失或非字符串")
+        try:
+            datetime.fromisoformat(value)
+        except ValueError:
+            raise QmtAccountCaptureError(
+                f"{field} 不是合法 ISO 时间戳: {value!r}") from None
+    if not isinstance(payload["account"], dict):
+        raise QmtAccountCaptureError("account 不是对象")
+    if not isinstance(payload["positions"], list):
+        raise QmtAccountCaptureError("positions 不是数组")
+    digest = payload["content_sha256"]
+    if not isinstance(digest, str) or len(digest) != 64:
+        raise QmtAccountCaptureError("content_sha256 不是 64 位十六进制")
+    content = {"source_generated": payload["source_generated"],
+               "account": payload["account"],
+               "positions": payload["positions"]}
+    if _sha256(_canonical(content)) != digest:
         raise QmtAccountCaptureError("content_sha256 不自洽,文件可能被篡改")
     return payload
