@@ -28,12 +28,14 @@ from .qmt_transport_capture import (
 SCHEMA_VERSION = "qmt-fulldata-shadow-capture/1"
 SOURCE = "qmt.fulldata"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_ERROR_BYTES = 64 * 1024
 MAX_COUNT = 1300
 _SYMBOL = re.compile(r"^[0-9]{6}\.(?:SH|SZ|BJ)$")
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _MODES = {"raw": "none", "qfq": "front"}
 _RESPONSE_FIELDS = {"data", "dividend_type", "id", "status", "type"}
 _BAR_FIELDS = ("open", "high", "low", "close", "volume", "amount")
+_ERROR_FIELDS = {"status", "error", "id"}
 
 
 class QmtFulldataShadowCaptureError(RuntimeError):
@@ -135,6 +137,23 @@ def _json(raw: bytes, field: str) -> dict[str, object]:
     return value
 
 
+def _contains_token(value: object, token: str) -> bool:
+    if isinstance(value, str):
+        return token in value
+    if isinstance(value, dict):
+        return any(_contains_token(item, token) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_token(item, token) for item in value)
+    return False
+
+
+def _safe_error_value(value: object, *, limit: int) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > limit \
+            or any(ord(character) < 32 or ord(character) == 127 for character in value):
+        return None
+    return value
+
+
 def _bound_response(response: object, request: dict[str, object]) -> dict[str, object]:
     if not isinstance(request, dict) or set(request) != {"type", "params", "request_id"} \
             or request.get("type") != "history_kline" \
@@ -215,7 +234,11 @@ class QmtFulldataShadowCaptureClient:
             urllib.request.ProxyHandler({}), _NoRedirect(),
         )
 
-    def _request(self, path: str, *, method: str, body: bytes | None = None) -> tuple[int, bytes]:
+    def _request(self, path: str, *, phase: str, method: str, body: bytes | None = None,
+                 expected_id: str | None = None) -> tuple[int, bytes]:
+        if phase not in {"submit", "poll"} or (phase == "submit") != (method == "POST") \
+                or (phase == "poll") != (method == "GET"):
+            raise QmtFulldataShadowCaptureError("QMT request phase differs")
         request = urllib.request.Request(self._base_url + path, data=body, method=method,
                                          headers={"Accept": "application/json", "X-Token": self._token})
         if body is not None:
@@ -227,7 +250,32 @@ class QmtFulldataShadowCaptureClient:
         except urllib.error.HTTPError as exc:
             if exc.code == 404 and method == "GET":
                 return 404, b""
-            raise QmtFulldataShadowCaptureError(f"QMT HTTP {exc.code}") from exc
+            try:
+                error_raw = exc.read(MAX_ERROR_BYTES + 1)
+            except OSError:
+                error_raw = b""
+            diagnostic = "generic_protocol_or_server_error"
+            if len(error_raw) <= MAX_ERROR_BYTES and self._token.encode("utf-8") not in error_raw:
+                try:
+                    payload = _json(error_raw, "QMT HTTP error")
+                except QmtFulldataShadowCaptureError:
+                    payload = None
+                if isinstance(payload, dict) and not _contains_token(payload, self._token) \
+                        and set(payload) == _ERROR_FIELDS:
+                    status = _safe_error_value(payload.get("status"), limit=64)
+                    error = _safe_error_value(payload.get("error"), limit=256)
+                    identifier = _safe_error_value(payload.get("id"), limit=128)
+                    if phase == "poll" and exc.code == 500 and status is not None and status != "ok" \
+                            and error is not None and identifier is not None \
+                            and expected_id is not None and identifier == expected_id \
+                            and _SAFE_ID.fullmatch(identifier):
+                        diagnostic = (
+                            "terminal_business_error "
+                            f"status={status} error={error} id={identifier}"
+                        )
+            raise QmtFulldataShadowCaptureError(
+                f"QMT {phase} {method} {path} HTTP {exc.code} {diagnostic}"
+            ) from exc
         except (OSError, urllib.error.URLError) as exc:
             raise QmtFulldataShadowCaptureError("QMT loopback channel is unavailable") from exc
         if len(raw) > MAX_RESPONSE_BYTES:
@@ -251,7 +299,7 @@ class QmtFulldataShadowCaptureClient:
         submitted_iso = _iso(submitted_at, "submitted_at")
         if submitted_at < started_at:
             raise QmtFulldataShadowCaptureError("QMT capture timestamps are unordered")
-        _, ack_raw = self._request("/fulldata", method="POST", body=submit_raw)
+        _, ack_raw = self._request("/fulldata", phase="submit", method="POST", body=submit_raw)
         if self._token.encode("utf-8") in ack_raw:
             raise QmtFulldataShadowCaptureError("QMT acknowledgement exposes token")
         ack = _json(ack_raw, "QMT acknowledgement")
@@ -262,7 +310,8 @@ class QmtFulldataShadowCaptureClient:
         deadline = time.monotonic() + float(wait_timeout)
         path = "/fulldata/" + urllib.parse.quote(identifier, safe="")
         while True:
-            status, terminal_raw = self._request(path, method="GET")
+            status, terminal_raw = self._request(path, phase="poll", method="GET",
+                                                 expected_id=identifier)
             if status == 200:
                 completed_at = _now()
                 completed_iso = _iso(completed_at, "completed_at")
@@ -359,7 +408,7 @@ def write_qmt_fulldata_shadow_capture(output_root: str | Path,
                                     QmtFulldataShadowCaptureError)
 
 
-__all__ = ["MAX_COUNT", "MAX_RESPONSE_BYTES", "QmtFulldataShadowCaptureClient",
+__all__ = ["MAX_COUNT", "MAX_ERROR_BYTES", "MAX_RESPONSE_BYTES", "QmtFulldataShadowCaptureClient",
            "QmtFulldataShadowCaptureError", "QmtFulldataShadowCaptureTimeout",
            "build_qmt_fulldata_request", "verify_qmt_fulldata_shadow_capture",
            "write_qmt_fulldata_shadow_capture"]

@@ -139,7 +139,8 @@ def test_only_404_is_pending_and_other_http_or_oversize_fails(monkeypatch):
     client, _ = _client(monkeypatch, iter([
         urllib.error.HTTPError("http://127.0.0.1/fulldata", 500, "bad", {}, io.BytesIO()),
     ]))
-    with pytest.raises(qmt.QmtFulldataShadowCaptureError, match="HTTP 500"):
+    with pytest.raises(qmt.QmtFulldataShadowCaptureError,
+                       match=r"submit POST /fulldata HTTP 500 generic"):
         client.capture(symbol=SYMBOL, start="2026-08-01", end="2026-09-11", count=21,
                        adjustment="raw", wait_timeout=1)
 
@@ -193,6 +194,56 @@ def test_request_date_count_and_adjustment_contract():
         qmt.build_qmt_fulldata_request(symbol=SYMBOL, start="2026-08-01", end="2026-09-11",
                                        count=1301, adjustment="raw")
     assert _request()["params"]["dividend_type"] == "none"
+
+
+def test_http500_diagnostics_are_phase_bound_redacted_and_never_retried(monkeypatch):
+    request = _request()
+    business = b'{"status":"failed","error":"history_window_unavailable","id":"job-1"}'
+    client, calls = _client(monkeypatch, iter([
+        b'{"id":"job-1"}',
+        urllib.error.HTTPError("http://127.0.0.1/fulldata/job-1", 500, "ignored",
+                               {}, io.BytesIO(business)),
+    ]))
+    monkeypatch.setattr(qmt, "build_qmt_fulldata_request", lambda **_kwargs: request)
+    with pytest.raises(qmt.QmtFulldataShadowCaptureError,
+                       match=r"poll GET /fulldata/job-1 HTTP 500 terminal_business_error "
+                             r"status=failed error=history_window_unavailable id=job-1"):
+        client.capture(symbol=SYMBOL, start="2026-08-01", end="2026-09-11", count=21,
+                       adjustment="raw", wait_timeout=1)
+    assert [call.get_method() for call in calls] == ["POST", "GET"]
+
+    client, _ = _client(monkeypatch, iter([
+        urllib.error.HTTPError("http://127.0.0.1/fulldata", 500, "test-token",
+                               {}, io.BytesIO(b'{"status":"failed","error":"test\\u002dtoken","id":"job-1"}')),
+    ]))
+    with pytest.raises(qmt.QmtFulldataShadowCaptureError,
+                       match=r"submit POST /fulldata HTTP 500 generic") as raised:
+        client.capture(symbol=SYMBOL, start="2026-08-01", end="2026-09-11", count=21,
+                       adjustment="raw", wait_timeout=1)
+    assert "test-token" not in str(raised.value)
+
+    client, _ = _client(monkeypatch, iter([
+        b'{"id":"job-1"}',
+        urllib.error.HTTPError("http://127.0.0.1/fulldata/job-1", 500, "ignored", {},
+                               io.BytesIO(b"x" * (qmt.MAX_ERROR_BYTES + 1))),
+    ]))
+    monkeypatch.setattr(qmt, "build_qmt_fulldata_request", lambda **_kwargs: request)
+    with pytest.raises(qmt.QmtFulldataShadowCaptureError,
+                       match=r"poll GET /fulldata/job-1 HTTP 500 generic") as raised:
+        client.capture(symbol=SYMBOL, start="2026-08-01", end="2026-09-11", count=21,
+                       adjustment="raw", wait_timeout=1)
+    assert "ignored" not in str(raised.value)
+
+    client, _ = _client(monkeypatch, iter([
+        b'{"id":"job-1"}',
+        urllib.error.HTTPError("http://127.0.0.1/fulldata/job-1", 500, "ignored", {},
+                               io.BytesIO(b'{"status":"failed","error":"x","id":"other"}')),
+    ]))
+    monkeypatch.setattr(qmt, "build_qmt_fulldata_request", lambda **_kwargs: request)
+    with pytest.raises(qmt.QmtFulldataShadowCaptureError,
+                       match=r"poll GET /fulldata/job-1 HTTP 500 generic"):
+        client.capture(symbol=SYMBOL, start="2026-08-01", end="2026-09-11", count=21,
+                       adjustment="raw", wait_timeout=1)
 
 
 @pytest.mark.parametrize("mutate", [
