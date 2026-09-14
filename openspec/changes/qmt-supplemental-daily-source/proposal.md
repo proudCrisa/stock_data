@@ -52,5 +52,9 @@ QMT 通道(mac 端经 frp stcp 隧道连 Windows QMT 导出策略,QmtExport/2.0)
 
 ## Rollback
 
-- 删除 qmt 身份行:`DELETE FROM daily WHERE source='qmt'`(身份隔离,不影响他源)。
+- 删除 qmt 身份的全部状态(单事务):
+  `DELETE FROM daily WHERE source='qmt'`,
+  `DELETE FROM sync_coverage WHERE source='qmt'`,
+  `DELETE FROM source_watermarks WHERE source='qmt'`
+  (三者同属该身份;漏删会让覆盖声明超出实际数据、水位线误拒后续恢复)。
 - daily_sync.sh 的 QMT 阶段为追加段,移除即恢复原行为。

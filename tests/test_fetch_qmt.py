@@ -532,6 +532,20 @@ class TestSync:
             symbols=["600519.SH", "430001.BJ"])})
         assert client.assert_ready()["symbols"] == ["600519.SH", "430001.BJ"]
 
+    def test_bj_requested_code_isolated_not_batch_abort(self, tmp_path):
+        """请求的代码含北交所:该标的记错误,其余标的不受影响。"""
+        cache = Cache(tmp_path / "t.sqlite")
+        _seed_calendar(cache, ["2026-09-10"])
+        rec = {"index": ["2026-09-10"], "columns": {
+            "open": [1.0], "high": [2.0], "low": [0.5], "close": [1.5],
+            "volume": [10.0]}}
+        client = _snapshot_client({"600519.SH": rec})
+        result = fetch_qmt.sync_qmt_daily_from_snapshot(
+            cache, client, ["600519.SH", "430001.BJ"])
+        assert result["codes_ok"] == ["600519.SH"]
+        assert "规范化失败" in result["errors"]["430001.BJ"]
+        cache.close()
+
     @pytest.mark.parametrize("bad_errors", [True, 1, {"x": 1}])
     def test_malformed_errors_field_raises_domain_error(self, bad_errors):
         client = _client({("/", "GET"): _status() | {"errors": bad_errors}})

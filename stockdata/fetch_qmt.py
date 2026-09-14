@@ -585,7 +585,13 @@ def sync_qmt_daily(
     """
     cutoff, calendar, result, status = _prepare_sync(cache, client)
     for raw_code in codes:
-        code = normalize(raw_code)
+        try:
+            code = normalize(raw_code)
+        except ValueError as exc:
+            # 合法但项目 normalize 不支持的线协议代码(如北交所 .BJ):
+            # 按标的隔离,不得中断整批
+            result["errors"][str(raw_code)] = f"代码规范化失败: {exc}"
+            continue
         try:
             payload = client.history_front(code, timeout=timeout)
             bars, suspended, invalid, nonpositive = parse_history_records(
@@ -626,7 +632,13 @@ def sync_qmt_daily_from_snapshot(
         except (ValueError, TypeError):
             continue
     for raw_code in codes:
-        code = normalize(raw_code)
+        try:
+            code = normalize(raw_code)
+        except ValueError as exc:
+            # 合法但项目 normalize 不支持的线协议代码(如北交所 .BJ):
+            # 按标的隔离,不得中断整批
+            result["errors"][str(raw_code)] = f"代码规范化失败: {exc}"
+            continue
         if code not in authoritative:
             # 权威名单之外:即便快照残留该标的记录(陈旧/外来)也不同步
             result["not_in_pool"].append(code)
