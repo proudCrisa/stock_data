@@ -455,10 +455,19 @@ class Cache:
                 " AND adjustment_mode=? AND adjustment_version=?",
                 (code, source, adjustment_mode, adjustment_version)
             ).fetchone()[0]
-            if stored_hi and stored_hi > replace_through:
+            coverage_hi = self._conn.execute(
+                "SELECT MAX(end_date) FROM sync_coverage WHERE code=?"
+                " AND source=? AND adjustment_mode=? AND adjustment_version=?",
+                (code, source, adjustment_mode, adjustment_version)
+            ).fetchone()[0]
+            # 覆盖右界可能超出最后一条 bar(尾部停牌/纯证据刷新),
+            # 回退判定必须同时对照两者
+            known_hi = max([d for d in (stored_hi, coverage_hi) if d],
+                           default=None)
+            if known_hi and known_hi > replace_through:
                 raise ValueError(
                     f"{code} 通道返回右界 {replace_through} "
-                    f"回退于库内已存 {stored_hi},整标的拒收")
+                    f"回退于库内已存 {known_hi},整标的拒收")
             self._conn.execute(
                 "DELETE FROM daily WHERE code=? AND source=?"
                 " AND adjustment_mode=? AND adjustment_version=? AND date <= ?",

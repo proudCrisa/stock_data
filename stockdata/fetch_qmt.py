@@ -242,8 +242,13 @@ def parse_history_records(
             invalid.append(f"{symbol} {day}: suspendFlag 非法值 {flags[pos]!r}")
             continue
         volume = fields["volume"][pos]
-        if (flags and flags[pos]) or volume in (None, ""):
+        if flags and flags[pos] == 1:
             suspended.add(day)
+            continue
+        if volume in (None, ""):
+            # 缺 volume 且无显式停牌标记 = 空壳填充行(定长快照在标的
+            # 可用历史之外补 null),不得当作停牌证据
+            invalid.append(f"{symbol} {day}: 缺 volume 且无停牌标记")
             continue
         raw_values = [fields[k][pos]
                       for k in ("open", "high", "low", "close", "volume")]
@@ -274,7 +279,7 @@ def parse_history_records(
             nonpositive.add(day)
             continue
         bars.append({"date": day, "open": o, "high": h, "low": l,
-                     "close": c, "volume": v})
+                     "close": c, "volume": v * 100})  # QMT volume 单位为手,×100 转股
     bars.sort(key=lambda b: b["date"])
     return bars, suspended, invalid, nonpositive
 
@@ -567,11 +572,12 @@ def sync_qmt_daily_from_snapshot(
             continue
     for raw_code in codes:
         code = normalize(raw_code)
+        if code not in authoritative:
+            # 权威名单之外:即便快照残留该标的记录(陈旧/外来)也不同步
+            result["not_in_pool"].append(code)
+            continue
         if code not in pool:
-            if code in authoritative:
-                result["errors"][code] = "常驻池内但快照缺 front 记录(导出失败)"
-            else:
-                result["not_in_pool"].append(code)
+            result["errors"][code] = "常驻池内但快照缺 front 记录(导出失败)"
             continue
         rec = pool[code]
         if not isinstance(rec, dict) or not rec.get("index"):

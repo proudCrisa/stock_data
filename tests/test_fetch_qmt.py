@@ -300,13 +300,20 @@ class TestParse:
     def test_suspend_flag_and_empty_volume(self):
         payload = _payload("X", [
             ("2026-09-10", _bar()),
-            ("2026-09-11", _bar(v=None)),
+            ("2026-09-11", _bar(v=None)),      # 缺 volume 且无停牌标记 → invalid
             ("2026-09-14", _bar(suspendFlag=True)),
             ("2026-09-15", _bar(v=0.0)),
         ])
         bars, suspended, invalid, _np = parse_history_records(payload, "X")
         assert [b["date"] for b in bars] == ["2026-09-10"]
-        assert suspended == {"2026-09-11", "2026-09-14", "2026-09-15"}
+        assert suspended == {"2026-09-14", "2026-09-15"}
+        assert len(invalid) == 1 and "缺 volume" in invalid[0]
+
+    def test_volume_converted_lots_to_shares(self):
+        """QMT volume 单位为手:入库前 ×100 转股(对齐 daily volume_unit=share)。"""
+        payload = _payload("X", [("2026-09-10", _bar(v=16455))])
+        bars, _, _, _ = parse_history_records(payload, "X")
+        assert bars[0]["volume"] == 1645500.0
 
     @pytest.mark.parametrize("row", [
         _bar(c=0.0),                    # 非正价
@@ -736,6 +743,29 @@ class TestSync:
         assert stored == ["2026-09-11", "2026-09-14"]  # 杂散行已删
         cache.close()
 
+    def test_retreat_also_checked_against_coverage_end(self, tmp_path):
+        """覆盖右界超出最后 bar(尾部停牌)时,回退判定以覆盖右界为准。"""
+        cache = Cache(tmp_path / "t.sqlite")
+        days = ["2026-09-10", "2026-09-11"]
+        _seed_calendar(cache, days)
+        # 首次:bar 到 09-10,09-11 停牌 → 覆盖右界 09-11
+        first = _payload("600519.SH", [
+            ("2026-09-10", _bar()),
+            ("2026-09-11", _bar(suspendFlag=True))])
+        sync_qmt_daily(cache, self._sync_client({"600519.SH": first}),
+                       ["600519.SH"])
+        # 第二次:陈旧响应只到 09-10(右界回退于覆盖右界)
+        stale = _payload("600519.SH", [("2026-09-10", _bar(
+            o=98.5, h=99.5, l=98.0, c=99.0))])
+        result = sync_qmt_daily(cache, self._sync_client({"600519.SH": stale}),
+                                ["600519.SH"])
+        assert "回退" in result["errors"]["600519.SH"]
+        row = cache._conn.execute(
+            "SELECT close FROM daily WHERE source='qmt' AND date='2026-09-10'"
+        ).fetchone()
+        assert row[0] == 10.5  # 未被陈旧值改写
+        cache.close()
+
     def test_retreat_rechecked_inside_write_transaction(self, tmp_path):
         """并发场景:预检后另一进程写入了更晚的行 → 事务内复查拒绝并回滚。"""
         cache = Cache(tmp_path / "t.sqlite")
@@ -954,6 +984,26 @@ class TestSnapshotSync:
         assert result["codes_ok"] == ["600519.SH"]
         assert "导出失败" in result["errors"]["000300.SH"]  # 池内但缺记录
         assert result["not_in_pool"] == ["000001.SZ"]        # 名单外才是缺省
+        cache.close()
+
+    def test_stale_snapshot_record_outside_authoritative_list_ignored(self, tmp_path):
+        """快照残留名单外标的的记录:不同步,归 not_in_pool。"""
+        cache = Cache(tmp_path / "t.sqlite")
+        _seed_calendar(cache, ["2026-09-10"])
+        rec = {"index": ["2026-09-10"], "columns": {
+            "open": [1.0], "high": [2.0], "low": [0.5], "close": [1.5],
+            "volume": [10.0]}}
+        # 快照含 000300.SH 记录,但权威名单里没有它
+        client = _snapshot_client({"600519.SH": rec, "000300.SH": rec},
+                                  pool_symbols=["600519.SH"])
+        result = fetch_qmt.sync_qmt_daily_from_snapshot(
+            cache, client, ["600519.SH", "000300.SH"])
+        assert result["codes_ok"] == ["600519.SH"]
+        assert result["not_in_pool"] == ["000300.SH"]
+        assert "000300.SH" not in result["errors"]
+        assert cache._conn.execute(
+            "SELECT COUNT(*) FROM daily WHERE source='qmt'"
+            " AND code='000300.SH'").fetchone()[0] == 0
         cache.close()
 
     def test_evidence_only_refresh_deletes_and_advances(self, tmp_path):
