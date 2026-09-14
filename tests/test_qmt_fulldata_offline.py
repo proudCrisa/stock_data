@@ -5,6 +5,7 @@ import json
 import pytest
 
 from stockdata import local_daily_snapshot as local
+from stockdata import local_publisher
 from stockdata import qmt_fulldata_offline as qmt
 from stockdata.daily_bar_product import _hash
 from stockdata.local_publisher import initialize_local_publisher
@@ -167,6 +168,7 @@ def test_sealed_qmt_panel_signs_and_replays_through_local_snapshot(tmp_path, mon
             return datetime(2026, 9, 11, 20, tzinfo=timezone.utc) + timedelta(
                 seconds=Clock.calls)
 
+    monkeypatch.setattr(local_publisher, "datetime", Clock)
     anchor = initialize_local_publisher(tmp_path / "publisher")
     monkeypatch.setattr(local, "datetime", Clock)
     result = local.capture_local_daily_snapshot(
@@ -204,6 +206,7 @@ def test_sealed_qmt_captures_mix_with_existing_profile_sources(tmp_path, monkeyp
             return datetime(2026, 9, 11, 20, tzinfo=timezone.utc) + timedelta(
                 seconds=Clock.calls)
 
+    monkeypatch.setattr(local_publisher, "datetime", Clock)
     anchor = initialize_local_publisher(tmp_path / "publisher")
     monkeypatch.setattr(local, "_capture", capture_old)
     monkeypatch.setattr(local, "datetime", Clock)
