@@ -57,7 +57,7 @@ def _status(alive: bool = True, age: float = 30.0, symbols: list | None = None) 
 
 def _client(routes: dict, calls: list | None = None):
     """routes: {(path, method): dict 或 callable(body)->dict}"""
-    def transport(path, method, body):
+    def transport(path, method, body, max_bytes=None, sock_timeout=None):
         if calls is not None:
             calls.append((path, method))
         route = routes[(path, method)]
@@ -348,6 +348,14 @@ class TestParse:
         bars, _, invalid, _np = parse_history_records(payload, "X")
         assert bars == [] and len(invalid) == 1
 
+    def test_oversized_int_is_invalid_row_not_batch_abort(self):
+        """超大 JSON 整数 float() 溢出:记 invalid,不炸掉整批。"""
+        payload = _payload("X", [("2026-09-10", _bar(c=10**400)),
+                                 ("2026-09-11", _bar())])
+        bars, _, invalid, _np = parse_history_records(payload, "X")
+        assert [b["date"] for b in bars] == ["2026-09-11"]
+        assert len(invalid) == 1 and "溢出" in invalid[0]
+
     def test_out_of_range_epoch_is_invalid_row_not_batch_abort(self):
         payload = _payload("X", [(10**30, _bar()), ("2026-09-10", _bar())])
         bars, _, invalid, _np = parse_history_records(payload, "X")
@@ -407,7 +415,7 @@ class TestSync:
         def poll(path_payload=None):
             return None
 
-        def transport(path, method, body):
+        def transport(path, method, body, max_bytes=None, sock_timeout=None):
             if (path, method) == ("/", "GET"):
                 return routes[("/", "GET")]
             if (path, method) == ("/fulldata", "POST"):
@@ -429,7 +437,7 @@ class TestSync:
         cache = Cache(tmp_path / "t.sqlite")
         calls = []
 
-        def transport(path, method, body):
+        def transport(path, method, body, max_bytes=None, sock_timeout=None):
             calls.append(path)
             if path == "/":
                 return _status(age=1800.0)
@@ -444,7 +452,7 @@ class TestSync:
     def test_missing_age_field_fails_closed(self, tmp_path):
         cache = Cache(tmp_path / "t.sqlite")
 
-        def transport(path, method, body):
+        def transport(path, method, body, max_bytes=None, sock_timeout=None):
             return {"server": "QmtExport/2.0", "latest_exists": True}
 
         client = QmtChannelClient(transport=transport, sleep=lambda _: None)
@@ -457,6 +465,40 @@ class TestSync:
         client = _client({("/", "GET"): _status(age=bad_age)})
         with pytest.raises(QmtChannelError, match="latest_age_sec"):
             client.assert_ready()
+
+    def test_exporter_self_reported_errors_rejected(self):
+        """导出器自报 errors:健康门拒绝,不得在部分导出上同步。"""
+        client = _client({("/", "GET"): _status() | {"errors": ["x导出失败"]}})
+        with pytest.raises(QmtChannelError, match="自报错误"):
+            client.assert_ready()
+
+    def test_snapshot_with_errors_rejected(self):
+        snap = {"errors": ["000001.SH 导出失败"],
+                "market_adj": {"front": {"600519.SH": {"index": [1]}}}}
+        client = _client({("/latest", "GET"): snap})
+        with pytest.raises(QmtChannelError, match="导出错误"):
+            client.latest_snapshot()
+
+    def test_market_adj_malformed_container(self):
+        client = _client({("/latest", "GET"): {"market_adj": "oops"}})
+        with pytest.raises(QmtChannelError, match="market_adj"):
+            client.snapshot_front()
+
+    def test_history_front_budget_covers_submit_and_polls(self):
+        """--timeout 预算是单标的全部 HTTP 等待的上限。"""
+        seen_timeouts = []
+
+        def transport(path, method, body, max_bytes=None, sock_timeout=None):
+            seen_timeouts.append(sock_timeout)
+            if (path, method) == ("/fulldata", "POST"):
+                return {"id": "r"}
+            return {"pending": True}
+
+        client = QmtChannelClient(transport=transport, sleep=lambda _: None)
+        with pytest.raises(QmtChannelError, match="超时"):
+            client.history_front("600519.SH", timeout=10)
+        assert seen_timeouts and all(t is not None and t <= 10
+                                     for t in seen_timeouts)
 
     def test_happy_path_identity_isolated(self, tmp_path):
         cache = Cache(tmp_path / "t.sqlite")
@@ -497,7 +539,7 @@ class TestSync:
         _seed_calendar(cache, days)
         ok = _payload("600519.SH", [(days[0], _bar())])
 
-        def transport(path, method, body):
+        def transport(path, method, body, max_bytes=None, sock_timeout=None):
             if (path, method) == ("/", "GET"):
                 return _status()
             if (path, method) == ("/fulldata", "POST"):
@@ -779,7 +821,7 @@ def _snapshot_client(front: dict | None, dividend_type: str = "none",
         else:
             snap["market_adj"] = {"front": front}
 
-    def transport(path, method, body, max_bytes=None):
+    def transport(path, method, body, max_bytes=None, sock_timeout=None):
         if calls is not None:
             calls.append(path)
         if path == "/":

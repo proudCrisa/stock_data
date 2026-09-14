@@ -93,9 +93,10 @@ def load_qmt_token(
     return token
 
 
-# 传输函数签名:(path, method, body, max_bytes) -> 解析后的 JSON dict。
-# max_bytes 缺省 _MAX_RESPONSE_BYTES;/latest 全池快照用更大上限。
-Transport = Callable[[str, str, "dict | None", int | None], dict]
+# 传输函数签名:(path, method, body, max_bytes=None, sock_timeout=None)
+# -> 解析后的 JSON dict。max_bytes 缺省 _MAX_RESPONSE_BYTES;/latest 全池快照
+# 用更大上限;sock_timeout 覆盖单次 HTTP 调用超时(预算制)。
+Transport = Callable[..., dict]
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -125,8 +126,11 @@ def _urllib_transport(base_url: str, token: str, timeout: float = 60.0) -> Trans
         urllib.request.ProxyHandler({}), _NoRedirect())
 
     def transport(path: str, method: str, body: dict | None,
-                  max_bytes: int | None = None) -> dict:
+                  max_bytes: int | None = None,
+                  sock_timeout: float | None = None) -> dict:
         limit = _MAX_RESPONSE_BYTES if max_bytes is None else max_bytes
+        call_timeout = timeout if sock_timeout is None else max(
+            0.001, min(timeout, sock_timeout))
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(base_url + path, data=data, method=method)
         req.add_header("Accept", "application/json")
@@ -134,7 +138,7 @@ def _urllib_transport(base_url: str, token: str, timeout: float = 60.0) -> Trans
             req.add_header("Content-Type", "application/json")
         req.add_header("X-Token", token)
         try:
-            with opener.open(req, timeout=timeout) as resp:
+            with opener.open(req, timeout=call_timeout) as resp:
                 blob = resp.read(limit + 1)
         except urllib.error.HTTPError as exc:
             raise QmtChannelError(f"HTTP {exc.code}: {path}",
@@ -247,7 +251,11 @@ def parse_history_records(
                for x in raw_values):
             invalid.append(f"{symbol} {day}: 字段类型非法(非数值/bool)")
             continue
-        o, h, l, c, v = (float(x) for x in raw_values)
+        try:
+            o, h, l, c, v = (float(x) for x in raw_values)
+        except OverflowError:
+            invalid.append(f"{symbol} {day}: 数值溢出")
+            continue
         if not all(math.isfinite(x) for x in (o, h, l, c, v)):
             invalid.append(f"{symbol} {day}: 非有限值")
             continue
@@ -316,6 +324,11 @@ class QmtChannelClient:
             raise QmtChannelError(
                 f"快照已 {age}s 未更新(>{_MAX_SNAPSHOT_AGE_SEC}s),"
                 "Windows 端策略疑似停跳")
+        errors = status.get("errors")
+        if errors:
+            raise QmtChannelError(
+                f"导出器自报错误({len(errors)} 条),拒绝在部分导出上同步: "
+                f"{str(errors)[:200]}")
         return status
 
     def latest_snapshot(self) -> dict:
@@ -323,6 +336,10 @@ class QmtChannelClient:
         snap = self._transport("/latest", "GET", None, _MAX_SNAPSHOT_BYTES)
         if not isinstance(snap, dict):
             raise QmtChannelError("快照不是 JSON 对象")
+        if snap.get("errors"):
+            raise QmtChannelError(
+                f"快照自报导出错误({len(snap['errors'])} 条),拒绝作为全量刷新依据: "
+                f"{str(snap['errors'])[:200]}")
         return snap
 
     def snapshot_front(self) -> dict[str, dict]:
@@ -336,7 +353,10 @@ class QmtChannelClient:
         if snap.get("dividend_type") == "front":
             src = snap.get("market")
         else:
-            src = (snap.get("market_adj") or {}).get("front")
+            market_adj = snap.get("market_adj")
+            if market_adj is not None and not isinstance(market_adj, dict):
+                raise QmtChannelError("快照 market_adj 段畸形(非对象)")
+            src = (market_adj or {}).get("front")
         if not isinstance(src, dict) or not src:
             raise QmtChannelError("快照不含 front 复权数据(需在 Windows 端配置导出)")
         # 保留全部键:畸形记录(空 index 等)交由解析层分类为协议/数据错误,
@@ -362,15 +382,24 @@ class QmtChannelClient:
             "count": _MAX_COUNT,
             "dividend_type": "front",
         }
+        deadline = time.monotonic() + timeout  # 预算覆盖提交 + 全部轮询
+
+        def _budget() -> float:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise QmtChannelError(f"{symbol} fulldata 超时({timeout}s)")
+            return remaining
+
         submitted = self._transport(
-            "/fulldata", "POST", {"type": "history_kline", "params": params})
+            "/fulldata", "POST", {"type": "history_kline", "params": params},
+            sock_timeout=_budget())
         req_id = submitted.get("id") if isinstance(submitted, dict) else None
         if not req_id:
             raise QmtChannelError(f"{symbol} fulldata 提交未返回请求ID")
-        deadline = time.monotonic() + timeout
         while True:
             try:
-                result = self._transport(f"/fulldata/{req_id}", "GET", None)
+                result = self._transport(f"/fulldata/{req_id}", "GET", None,
+                                         sock_timeout=_budget())
             except QmtChannelError as exc:
                 # 仅登记期的瞬时 404 按 pending 处理;401/500/连接断等
                 # 立即失败,避免每个标的干等满超时、拖住整批
@@ -387,7 +416,8 @@ class QmtChannelClient:
                         f"{symbol} 查询失败: {result.get('error', status)}")
             if time.monotonic() >= deadline:
                 raise QmtChannelError(f"{symbol} fulldata 超时({timeout}s)")
-            self._sleep(self._poll_interval)
+            self._sleep(min(self._poll_interval,
+                            max(0.0, deadline - time.monotonic())))
 
 
 def _prepare_sync(cache, client: QmtChannelClient):
