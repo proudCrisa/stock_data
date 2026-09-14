@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import sqlite3
 import stat
 import time
 import urllib.error
@@ -231,6 +232,10 @@ def parse_history_records(
             invalid.append(f"{symbol} {day}: 重复交易日")
             continue
         seen.add(day)
+        if flags is not None and flags[pos] not in (0, 1):
+            # 协议约定 suspendFlag 恰为 0/1;畸形值不得作为停牌证据
+            invalid.append(f"{symbol} {day}: suspendFlag 非法值 {flags[pos]!r}")
+            continue
         volume = fields["volume"][pos]
         if (flags and flags[pos]) or volume in (None, ""):
             suspended.add(day)
@@ -410,13 +415,15 @@ def _absorb(cache, code: str, bars: list[dict], suspended: set[str],
     2. 库内他源日历为空 → 无法验证完整性,拒收;
     3. [lo,hi] 内存在无证据解释的日历交易日 → 版本不完整,拒收。
 
-    通过后才写库:
+    通过后才写库(单事务原子):
     - upsert 全部正价行(同一复权因子版本);
     - 删除 ``date < 首个正价行``(通道够不到的更早日行);
     - 删除停牌/非正价证据日的残留行(旧因子版本的正价行);
     - 覆盖声明**替换**为本次实际验证的 [lo, hi](lo/hi 取所有已观测日,
       含尾部的停牌/零成交证据),不做 MIN/MAX 合并——刷新是破坏性的,
       合并会让覆盖声明超出库内实际数据。
+    另:通道返回右界回退于库内已存右界(数据倒退)时整标的拒收——
+    否则库内会残留覆盖声明之外的旧因子行。
     """
     result["invalid"].extend(invalid)
     if nonpositive:
@@ -436,28 +443,25 @@ def _absorb(cache, code: str, bars: list[dict], suspended: set[str],
     if unexplained:
         result["coverage_holes"][code] = unexplained[:5]
         return
-
-    first_bar = bars[0]["date"]
-    result["rows"] += cache.upsert(
-        code, bars, source=SOURCE, adjustment_mode=ADJ_MODE,
-        adjustment_version=ADJ_VERSION)
-    stale_dates = sorted((suspended | nonpositive))
-    cache._conn.execute(
-        "DELETE FROM daily WHERE code=? AND source=? AND adjustment_mode=?"
-        " AND adjustment_version=? AND date < ?",
-        (code, SOURCE, ADJ_MODE, ADJ_VERSION, first_bar))
-    if stale_dates:
-        cache._conn.executemany(
-            "DELETE FROM daily WHERE code=? AND source=? AND adjustment_mode=?"
-            " AND adjustment_version=? AND date = ?",
-            [(code, SOURCE, ADJ_MODE, ADJ_VERSION, d) for d in stale_dates])
-    # 替换式覆盖声明:删除旧区间,写入本次验证区间
-    cache._conn.execute(
-        "DELETE FROM sync_coverage WHERE code=? AND source=?"
+    stored_hi = cache._conn.execute(
+        "SELECT MAX(date) FROM daily WHERE code=? AND source=?"
         " AND adjustment_mode=? AND adjustment_version=?",
-        (code, SOURCE, ADJ_MODE, ADJ_VERSION))
-    cache._conn.commit()
-    cache.record_sync_coverage(code, SOURCE, ADJ_MODE, ADJ_VERSION, lo, hi)
+        (code, SOURCE, ADJ_MODE, ADJ_VERSION)).fetchone()[0]
+    if stored_hi and stored_hi > hi:
+        result["errors"][code] = (
+            f"通道返回右界 {hi} 回退于库内已存 {stored_hi},整标的拒收")
+        return
+
+    try:
+        result["rows"] += cache.replace_identity_range(
+            code, bars, SOURCE, ADJ_MODE, ADJ_VERSION,
+            delete_before=bars[0]["date"],
+            delete_dates=sorted(suspended | nonpositive),
+            coverage_start=lo, coverage_end=hi)
+    except (sqlite3.Error, OSError) as exc:
+        # 单事务回滚,库内保持旧的一致状态;按标的隔离失败
+        result["errors"][code] = f"写入失败(已回滚): {exc}"
+        return
     result["codes_ok"].append(code)
 
 

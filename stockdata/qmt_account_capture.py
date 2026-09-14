@@ -38,14 +38,22 @@ def _sha256(payload: bytes) -> str:
 
 
 def _extract_account_sections(snapshot: dict) -> tuple[dict, list]:
-    """从 ``/latest`` 快照提取 ACCOUNT / POSITION 段;缺段即拒绝。"""
+    """从 ``/latest`` 快照提取 ACCOUNT / POSITION 段;任何一层畸形即拒绝。"""
     if not isinstance(snapshot, dict):
         raise QmtAccountCaptureError("快照不是 JSON 对象")
-    sections = snapshot.get("account", {}).get("sections", {})
-    account_rows = sections.get("ACCOUNT") or []
-    position_rows = sections.get("POSITION") or []
-    if not account_rows:
+    account = snapshot.get("account")
+    if not isinstance(account, dict):
+        raise QmtAccountCaptureError("快照 account 段缺失或不是对象")
+    sections = account.get("sections")
+    if not isinstance(sections, dict):
+        raise QmtAccountCaptureError("快照 account.sections 缺失或不是对象")
+    account_rows = sections.get("ACCOUNT")
+    if not isinstance(account_rows, list) or not account_rows \
+            or not isinstance(account_rows[0], dict):
         raise QmtAccountCaptureError("快照无 ACCOUNT 段(QMT 未登录资金账号?)")
+    position_rows = sections.get("POSITION") or []
+    if not isinstance(position_rows, list):
+        raise QmtAccountCaptureError("POSITION 段不是数组")
     return account_rows[0], list(position_rows)
 
 

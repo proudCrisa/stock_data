@@ -362,6 +362,116 @@ class Cache:
                 code, bar_date, "volume must be non-negative and finite"
             )
 
+    def _validate_identity_bars(self, code: str, bars: list[dict],
+                                identity: tuple, is_final: bool) -> None:
+        """身份三元组 + bar 级校验(upsert / replace_identity_range 共用)。"""
+        for field, value in zip(
+            ("source", "adjustment_mode", "adjustment_version"), identity
+        ):
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{field} must be a non-empty string")
+
+        for bar in bars:
+            for field, expected in zip(
+                ("source", "adjustment_mode", "adjustment_version"), identity
+            ):
+                if field in bar and bar[field] != expected:
+                    raise ValueError(
+                        f"bar {bar.get('date', '<unknown>')} {field} "
+                        f"{bar[field]!r} conflicts with batch {expected!r}"
+                    )
+
+        if not isinstance(is_final, bool):
+            raise ValueError("is_final must be a bool")
+        for bar in bars:
+            if "is_final" in bar and not isinstance(bar["is_final"], bool):
+                raise ValueError("bar is_final must be a bool")
+        for bar in bars:
+            self._validate_bar(code, bar)
+
+    @staticmethod
+    def _daily_row(code: str, b: dict, identity: tuple, batch_retrieved_at: str,
+                   is_final: bool, receipt_id: int | None) -> tuple:
+        source, adjustment_mode, adjustment_version = identity
+        return (
+            code,
+            b["date"],
+            b.get("open"),
+            b.get("high"),
+            b.get("low"),
+            b.get("close"),
+            b.get("volume"),
+            source,
+            adjustment_mode,
+            adjustment_version,
+            b.get("retrieved_at") or batch_retrieved_at,
+            int(bool(b.get("is_final", is_final))),
+            receipt_id,
+        )
+
+    _DAILY_UPSERT_SQL = (
+        "INSERT INTO daily "
+        "(code,date,open,high,low,close,volume,source,adjustment_mode,"
+        "adjustment_version,retrieved_at,is_final,receipt_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(code,date,source,adjustment_mode,adjustment_version) "
+        "DO UPDATE SET open=excluded.open, high=excluded.high, "
+        "low=excluded.low, close=excluded.close, volume=excluded.volume, "
+        "retrieved_at=excluded.retrieved_at, is_final=excluded.is_final, "
+        "receipt_id=excluded.receipt_id"
+    )
+
+    def replace_identity_range(
+        self,
+        code: str,
+        bars: list[dict],
+        source: str,
+        adjustment_mode: str,
+        adjustment_version: str,
+        delete_before: str,
+        delete_dates: list[str],
+        coverage_start: str,
+        coverage_end: str,
+    ) -> int:
+        """单事务原子刷新:写入 bars + 删除陈旧行 + 覆盖区间替换。
+
+        供「破坏性全量刷新」语义使用(qmt 单因子版本):任一步失败,
+        价格行、删除、覆盖声明一起回滚,不留部分提交。
+        ``delete_before``:删除该身份下 date < 它的行(通道够不到的更早日);
+        ``delete_dates``:删除这些日期的残留行(停牌/非正价证据日)。
+        覆盖声明为替换语义(DELETE + INSERT),不做 MIN/MAX 合并。
+        """
+        self._require_collector_writer()
+        identity = (source, adjustment_mode, adjustment_version)
+        self._validate_identity_bars(code, bars, identity, True)
+        batch_retrieved_at = _utc_now()
+        rows = [self._daily_row(code, b, identity, batch_retrieved_at, True, None)
+                for b in bars]
+        with self._conn:
+            self._conn.executemany(self._DAILY_UPSERT_SQL, rows)
+            self._conn.execute(
+                "DELETE FROM daily WHERE code=? AND source=?"
+                " AND adjustment_mode=? AND adjustment_version=? AND date < ?",
+                (code, source, adjustment_mode, adjustment_version,
+                 delete_before))
+            for stale in delete_dates:
+                self._conn.execute(
+                    "DELETE FROM daily WHERE code=? AND source=?"
+                    " AND adjustment_mode=? AND adjustment_version=?"
+                    " AND date = ?",
+                    (code, source, adjustment_mode, adjustment_version, stale))
+            self._conn.execute(
+                "DELETE FROM sync_coverage WHERE code=? AND source=?"
+                " AND adjustment_mode=? AND adjustment_version=?",
+                (code, source, adjustment_mode, adjustment_version))
+            self._conn.execute(
+                "INSERT INTO sync_coverage "
+                "(code,source,adjustment_mode,adjustment_version,start_date,"
+                "end_date,retrieved_at) VALUES (?,?,?,?,?,?,?)",
+                (code, source, adjustment_mode, adjustment_version,
+                 coverage_start, coverage_end, batch_retrieved_at))
+        return len(rows)
+
     def upsert(
         self,
         code: str,
@@ -380,30 +490,9 @@ class Cache:
                 raise ValueError("adjustment_version is required for this provenance")
             adjustment_version = _BAOSTOCK_VERSIONS[adjustment_mode]
         identity = (source, adjustment_mode, adjustment_version)
-        for field, value in zip(
-            ("source", "adjustment_mode", "adjustment_version"), identity
-        ):
-            if not isinstance(value, str) or not value:
-                raise ValueError(f"{field} must be a non-empty string")
-
-        for bar in bars:
-            for field, expected in zip(
-                ("source", "adjustment_mode", "adjustment_version"), identity
-            ):
-                if field in bar and bar[field] != expected:
-                    raise ValueError(
-                        f"bar {bar.get('date', '<unknown>')} {field} "
-                        f"{bar[field]!r} conflicts with batch {expected!r}"
-                    )
+        self._validate_identity_bars(code, bars, identity, is_final)
 
         batch_retrieved_at = retrieved_at or _utc_now()
-        if not isinstance(is_final, bool):
-            raise ValueError("is_final must be a bool")
-        for bar in bars:
-            if "is_final" in bar and not isinstance(bar["is_final"], bool):
-                raise ValueError("bar is_final must be a bool")
-        for bar in bars:
-            self._validate_bar(code, bar)
         try:
             with self._conn:
                 receipt_ids = {}
@@ -412,35 +501,12 @@ class Cache:
                         raise ValueError("receipt source conflicts with batch source")
                     receipt_ids[id(receipt)] = self._record_capture_receipt(receipt)
                 rows = [
-                    (
-                        code,
-                        b["date"],
-                        b.get("open"),
-                        b.get("high"),
-                        b.get("low"),
-                        b.get("close"),
-                        b.get("volume"),
-                        source,
-                        adjustment_mode,
-                        adjustment_version,
-                        b.get("retrieved_at") or batch_retrieved_at,
-                        int(bool(b.get("is_final", is_final))),
-                        receipt_ids.get(id(b.get("_capture_receipt"))),
-                    )
+                    self._daily_row(code, b, identity, batch_retrieved_at,
+                                    is_final,
+                                    receipt_ids.get(id(b.get("_capture_receipt"))))
                     for b in bars
                 ]
-                self._conn.executemany(
-                    "INSERT INTO daily "
-                    "(code,date,open,high,low,close,volume,source,adjustment_mode,"
-                    "adjustment_version,retrieved_at,is_final,receipt_id) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(code,date,source,adjustment_mode,adjustment_version) "
-                    "DO UPDATE SET open=excluded.open, high=excluded.high, "
-                    "low=excluded.low, close=excluded.close, volume=excluded.volume, "
-                    "retrieved_at=excluded.retrieved_at, is_final=excluded.is_final, "
-                    "receipt_id=excluded.receipt_id",
-                    rows,
-                )
+                self._conn.executemany(self._DAILY_UPSERT_SQL, rows)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"invalid capture receipt: {exc}") from exc
         return len(rows)

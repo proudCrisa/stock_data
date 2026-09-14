@@ -45,6 +45,19 @@ class TestCapture:
                                 output_root=tmp_path)
         assert list(tmp_path.iterdir()) == []
 
+    @pytest.mark.parametrize("snapshot", [
+        {"account": None},
+        {"account": []},
+        {"account": {"sections": []}},
+        {"account": {"sections": {"ACCOUNT": "not-a-list"}}},
+        {"account": {"sections": {"ACCOUNT": [{}], "POSITION": "x"}}},
+    ])
+    def test_malformed_containers_raise_domain_error(self, snapshot, tmp_path):
+        """任何一层容器畸形都抛领域错误(而非 AttributeError 逃逸)。"""
+        with pytest.raises(QmtAccountCaptureError):
+            capture_qmt_account(snapshot, output_root=tmp_path)
+        assert list(tmp_path.iterdir()) == []
+
     def test_not_dict_rejected(self, tmp_path):
         with pytest.raises(QmtAccountCaptureError):
             capture_qmt_account([], output_root=tmp_path)

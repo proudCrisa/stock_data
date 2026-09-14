@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import stat
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -30,6 +31,10 @@ def _payload(symbol: str, rows: list[tuple[str, dict]]) -> dict:
     columns = {k: [r.get(k) for _, r in rows] for k in keys}
     if all(v is None for v in columns["suspendFlag"]):
         columns.pop("suspendFlag")  # 通道无此字段时的形态
+    else:
+        # 协议为 0/1;缺省行补 0(未停牌)
+        columns["suspendFlag"] = [0 if v is None else v
+                                  for v in columns["suspendFlag"]]
     return {
         "id": "req-1",
         "status": "ok",
@@ -285,6 +290,25 @@ class TestParse:
         payload = _payload("X", [("2026-09-10", row)])
         bars, suspended, invalid, _np = parse_history_records(payload, "X")
         assert bars == [] and not suspended and len(invalid) == 1
+
+    def test_malformed_suspend_flag_is_invalid_not_evidence(self):
+        """suspendFlag 恰为 0/1;\"0\"、2、-1 等畸形值不得作为停牌证据。"""
+        rows = [("2026-09-10", _bar(suspendFlag="0")),
+                ("2026-09-11", _bar(suspendFlag=2)),
+                ("2026-09-14", _bar(suspendFlag=-1)),
+                ("2026-09-15", _bar(suspendFlag=1))]
+        payload = {
+            "data": {"X": {
+                "index": [d for d, _ in rows],
+                "columns": {k: [r.get(k) for _, r in rows]
+                            for k in ("open", "high", "low", "close",
+                                      "volume", "suspendFlag")},
+            }}
+        }
+        bars, suspended, invalid, _np = parse_history_records(payload, "X")
+        assert bars == []
+        assert suspended == {"2026-09-15"}
+        assert len(invalid) == 3 and all("suspendFlag" in m for m in invalid)
 
     def test_out_of_range_epoch_is_invalid_row_not_batch_abort(self):
         payload = _payload("X", [(10**30, _bar()), ("2026-09-10", _bar())])
@@ -588,6 +612,77 @@ class TestSync:
         stored = sorted(r[0] for r in cache._conn.execute(
             "SELECT date FROM daily WHERE source='qmt'"))
         assert stored == ["2026-09-10"]
+        cache.close()
+
+    def test_retreat_behind_stored_upper_bound_rejected(self, tmp_path):
+        """通道返回右界回退于库内已存右界:整标的拒收,库内不动。"""
+        cache = Cache(tmp_path / "t.sqlite")
+        days = ["2026-09-09", "2026-09-10"]
+        _seed_calendar(cache, days)
+        old = _payload("600519.SH", [(d, _bar()) for d in days])
+        sync_qmt_daily(cache, self._sync_client({"600519.SH": old}),
+                       ["600519.SH"])
+        retreated = _payload("600519.SH", [
+            ("2026-09-09", _bar(o=98.5, h=99.5, l=98.0, c=99.0))])
+        # 返回区间 [09-09,09-09] 不触及 09-10,无覆盖空洞;
+        # 但库内已存 09-10 → 右界回退,拒收
+        result = sync_qmt_daily(cache, self._sync_client(
+            {"600519.SH": retreated}), ["600519.SH"])
+        assert "回退" in result["errors"]["600519.SH"]
+        stored = {r[0]: r[1] for r in cache._conn.execute(
+            "SELECT date, close FROM daily WHERE source='qmt'")}
+        assert stored["2026-09-09"] == 10.5  # 未被改写为 99.0
+        assert "2026-09-10" in stored
+        cache.close()
+
+    def test_refresh_atomic_on_coverage_write_failure(self, tmp_path):
+        """覆盖写入失败 → 整个事务回滚:价格行与旧覆盖声明都不变。"""
+        cache = Cache(tmp_path / "t.sqlite")
+        days = ["2026-09-09", "2026-09-10"]
+        _seed_calendar(cache, days)
+        old = _payload("600519.SH", [(d, _bar()) for d in days])
+        sync_qmt_daily(cache, self._sync_client({"600519.SH": old}),
+                       ["600519.SH"])
+        before = list(cache._conn.execute(
+            "SELECT date, close FROM daily WHERE source='qmt' ORDER BY date"))
+        before_cov = list(cache._conn.execute(
+            "SELECT start_date, end_date FROM sync_coverage WHERE source='qmt'"))
+
+        class FaultyConn:
+            """执行到覆盖 INSERT 时注入故障的包装器。"""
+
+            def __init__(self, real):
+                self._real = real
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+            def execute(self, sql, *args):
+                if "INSERT INTO sync_coverage" in sql:
+                    raise sqlite3.OperationalError("injected fault")
+                return self._real.execute(sql, *args)
+
+            def __enter__(self):
+                self._real.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return self._real.__exit__(*exc)
+
+        cache._conn = FaultyConn(cache._conn)
+        new = _payload("600519.SH", [
+            ("2026-09-09", _bar(o=19.5, h=21.5, l=19.0, c=20.0)),
+            ("2026-09-10", _bar(o=20.5, h=22.0, l=20.0, c=21.0))])
+        result = sync_qmt_daily(cache, self._sync_client({"600519.SH": new}),
+                                ["600519.SH"])
+        assert "写入失败" in result["errors"]["600519.SH"]
+        cache._conn = cache._conn._real
+        after = list(cache._conn.execute(
+            "SELECT date, close FROM daily WHERE source='qmt' ORDER BY date"))
+        after_cov = list(cache._conn.execute(
+            "SELECT start_date, end_date FROM sync_coverage WHERE source='qmt'"))
+        assert [tuple(r) for r in after] == [tuple(r) for r in before]
+        assert [tuple(r) for r in after_cov] == [tuple(r) for r in before_cov]
         cache.close()
 
     def test_unfinished_current_session_bar_excluded(self, tmp_path, monkeypatch):
