@@ -59,7 +59,7 @@ SQLite 缓存的日线 OHLCV 服务，drop-in 替换 ffd.findesk.cn 的 FFD MCP 
 | `baostock · raw · baostock-adjustflag-3` | 501 | 2025-01-02 → 2026-09-11 | 前瞻采集基准 / 流动性口径 | 可读可写；日更 |
 | `tonghuashun · qfq · ths-qfq-v1` | 473 | 2023-05-29 → 2026-08-14 | 离线宇宙（研究级） | 只读冻结；不回补、不合并实时 bar |
 | `wind · qfq · wind-fwd-v1` | 501 | 2023-12-01 → 2026-08-31 | 研究 / 跨源验证 | 只读；`ingest_wind_csv` 校验入库，缺 coverage 不自证 |
-| `qmt · qfq · qmt-front-v1` | 面板内通道可用标的 | 滚动 30 天窗口起 | 高置信补充源（券商通道） | `sync_qmt_daily.py` 校验入库；通道断只告警不阻塞主链路 |
+| `qmt · qfq · qmt-front-v1` | 34（池∩面板 21 + fulldata 回填 13） | 2026-08-17 → 2026-09-14 | 高置信补充源（券商通道） | `sync_qmt_daily.py` 校验入库；快照主路径日更；通道断只告警不阻塞主链路 |
 | `tencent · raw · tencent-qt-daily-v1` | 前瞻面板 | 注册日起前向 | 采集器 raw 价格 + 回执 | 仅注册采集器写；finalized 行 append-only |
 
 缺口语义：相对已覆盖区间 `[min,max]` 的左右日历延伸段；停牌造成的中间空洞不视为缺口。跨身份重叠代码（28 个 wind/baostock）收盘价偏差中位数 0.0000%（2026-08-24 比对）；qmt/baostock 重叠代码 600519.SH 前复权收盘价相对偏差 0.000000（2026-08-25 起 14 个重叠交易日，2026-09-14 冒烟比对）。
@@ -134,8 +134,9 @@ stockdata-cli update-calendar --database ~/.stockdata/cache.sqlite \
 
 ```bash
 # 前提:frp 隧道在线(127.0.0.1:8000),凭据经 QMT_TOKEN 或 ~/.stockdata/qmt-token(0600)
-.venv/bin/python scripts/sync_qmt_daily.py --start 2026-08-15
-# 身份 qmt/qfq/qmt-front-v1;/fulldata 按需通道,禁止池回退;
+.venv/bin/python scripts/sync_qmt_daily.py            # 快照主路径:一次 /latest 覆盖全池
+.venv/bin/python scripts/sync_qmt_daily.py --fulldata # 逐标的按需通道(回填/池外标的,慢)
+# 身份 qmt/qfq/qmt-front-v1;禁止池回退;池外面板标的不视为错误(仍由 baostock 覆盖)
 # 退出码 0 干净 / 1 一行未入库 / 2 部分失败 / 3 通道不可达
 # launchd daily-sync 已含非阻塞 QMT 阶段:失败只系统通知,不影响 baostock 主链路退出码
 

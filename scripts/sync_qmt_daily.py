@@ -29,6 +29,7 @@ from stockdata.fetch_qmt import (  # noqa: E402
     QmtChannelError,
     load_qmt_token,
     sync_qmt_daily,
+    sync_qmt_daily_from_snapshot,
 )
 
 
@@ -46,7 +47,10 @@ def main(argv: list[str] | None = None) -> int:
                         default=(date.today() - timedelta(days=30)).isoformat())
     parser.add_argument("--db", default=str(_default_db()))
     parser.add_argument("--timeout", type=float, default=60.0,
-                        help="单标的 fulldata 等待上限(秒);缺失标的快速失败")
+                        help="单标的 fulldata 等待上限(秒);仅 --fulldata 模式")
+    parser.add_argument("--fulldata", action="store_true",
+                        help="逐标的走 /fulldata 按需通道(池外标的/回填用);"
+                             "缺省为快照主路径:一次 /latest 覆盖全池")
     args = parser.parse_args(argv)
 
     codes_path = Path(args.codes_file)
@@ -68,14 +72,23 @@ def main(argv: list[str] | None = None) -> int:
 
     cache = Cache(Path(args.db))
     try:
-        result = sync_qmt_daily(cache, client, codes, start=args.start,
-                                timeout=args.timeout)
+        if args.fulldata:
+            result = sync_qmt_daily(cache, client, codes, start=args.start,
+                                    timeout=args.timeout)
+        else:
+            result = sync_qmt_daily_from_snapshot(cache, client, codes,
+                                                  start=args.start)
     except QmtChannelError as exc:
         print(f"ERROR: {exc}")
         return 3
     finally:
         cache.close()
 
+    not_in_pool = result.get("not_in_pool") or []
+    if not_in_pool:
+        print(f"NOT-IN-POOL: {len(not_in_pool)} codes 不在 QMT 常驻池"
+              f"(仍由 baostock 主链路覆盖): {not_in_pool[:10]}"
+              + (" ..." if len(not_in_pool) > 10 else ""))
     for code, msg in list(result["errors"].items())[:20]:
         print(f"ERROR {code}: {msg}")
     if len(result["errors"]) > 20:

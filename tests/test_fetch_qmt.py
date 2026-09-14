@@ -292,6 +292,16 @@ class TestParse:
         assert [b["date"] for b in bars] == ["2026-09-10"]
         assert len(invalid) == 1 and "非法" in invalid[0]
 
+    def test_out_of_window_rows_skipped_silently(self):
+        """窗口外的深度历史(如前复权累计除权导致的非正价)不校验不告警。"""
+        payload = _payload("X", [("2021-05-19", _bar(c=-3.2)),   # 窗口外非正价
+                                 ("2026-09-10", _bar(c=0.0)),     # 窗口内非正价
+                                 ("2026-09-11", _bar())])
+        bars, _, invalid = parse_history_records(
+            payload, "X", start="2026-09-01", cutoff="2026-09-11")
+        assert [b["date"] for b in bars] == ["2026-09-11"]
+        assert len(invalid) == 1 and "2026-09-10" in invalid[0]
+
     def test_protocol_violations(self):
         with pytest.raises(QmtChannelError, match="无数据"):
             parse_history_records({"status": "ok", "data": {}}, "X")
@@ -486,4 +496,77 @@ class TestSync:
         assert stored == ["2026-09-10"]
         assert all(r[0] for r in cache._conn.execute(
             "SELECT is_final FROM daily WHERE source='qmt'"))
+        cache.close()
+
+
+def _snapshot_client(front: dict | None, dividend_type: str = "none",
+                     calls: list | None = None):
+    """/latest 快照传输:front={symbol: rec};dividend_type='front' 时改读 market。"""
+    snap = {"generated": "2026-09-14T15:00:00", "dividend_type": dividend_type}
+    if front is not None:
+        if dividend_type == "front":
+            snap["market"] = front
+        else:
+            snap["market_adj"] = {"front": front}
+
+    def transport(path, method, body, max_bytes=None):
+        if calls is not None:
+            calls.append(path)
+        if path == "/":
+            return _status()
+        if path == "/latest":
+            return snap
+        raise AssertionError(f"unexpected path {path}")
+
+    return QmtChannelClient(transport=transport, sleep=lambda _: None)
+
+
+class TestSnapshotSync:
+    def test_happy_path_one_call_covers_pool(self, tmp_path):
+        cache = Cache(tmp_path / "t.sqlite")
+        days = ["2026-09-10", "2026-09-11"]
+        _seed_calendar(cache, days)
+        rec = {"index": days, "columns": {
+            "open": [10.0, 10.0], "high": [11.0, 11.0], "low": [9.5, 9.5],
+            "close": [10.5, 10.5], "volume": [1000.0, 1000.0]}}
+        calls = []
+        client = _snapshot_client({"600519.SH": rec}, calls=calls)
+        result = fetch_qmt.sync_qmt_daily_from_snapshot(
+            cache, client, ["600519.SH"], start="2026-09-01")
+        assert result["rows"] == 2 and result["codes_ok"] == ["600519.SH"]
+        assert calls == ["/", "/latest"]  # 健康门 + 单次快照,无 fulldata
+        cache.close()
+
+    def test_codes_outside_pool_recorded_not_errors(self, tmp_path):
+        cache = Cache(tmp_path / "t.sqlite")
+        _seed_calendar(cache, ["2026-09-10"])
+        rec = {"index": ["2026-09-10"], "columns": {
+            "open": [1.0], "high": [2.0], "low": [0.5], "close": [1.5],
+            "volume": [10.0]}}
+        client = _snapshot_client({"600519.SH": rec})
+        result = fetch_qmt.sync_qmt_daily_from_snapshot(
+            cache, client, ["600519.SH", "000300.SH"], start="2026-09-01")
+        assert result["codes_ok"] == ["600519.SH"]
+        assert result["not_in_pool"] == ["000300.SH"]
+        assert result["errors"] == {}
+        cache.close()
+
+    def test_dividend_type_front_reads_market(self, tmp_path):
+        cache = Cache(tmp_path / "t.sqlite")
+        _seed_calendar(cache, ["2026-09-10"])
+        rec = {"index": ["2026-09-10"], "columns": {
+            "open": [1.0], "high": [2.0], "low": [0.5], "close": [1.5],
+            "volume": [10.0]}}
+        client = _snapshot_client({"600519.SH": rec}, dividend_type="front")
+        result = fetch_qmt.sync_qmt_daily_from_snapshot(
+            cache, client, ["600519.SH"], start="2026-09-01")
+        assert result["rows"] == 1
+        cache.close()
+
+    def test_snapshot_without_front_data_rejected(self, tmp_path):
+        cache = Cache(tmp_path / "t.sqlite")
+        client = _snapshot_client(None)  # 快照无 front 复权段
+        with pytest.raises(QmtChannelError, match="front"):
+            fetch_qmt.sync_qmt_daily_from_snapshot(
+                cache, client, ["600519.SH"], start="2026-09-01")
         cache.close()

@@ -54,6 +54,17 @@ Windows QMT (QmtExport/2.0, 策略 v11)
 Windows 策略已停」时整批标的逐个轮询干等数小时。单标的 fulldata 等待上限
 默认 60s(CLI `--timeout` 可调);轮询只对登记期瞬时 404 重试,其余错误立即失败。
 
+### D4c: 快照主路径 + fulldata 备路径
+- **日更(缺省)**:`sync_qmt_daily_from_snapshot` —— 一次 `GET /latest` 取全池
+  前复权 K 线(309 标的 × 1300 行,实测约 59 MB / 20s),覆盖池∩面板标的。
+  池外面板标的记入 `not_in_pool`(非错误,仍由 baostock 主链路覆盖)。
+- **回填/池外标的(`--fulldata`)**:`sync_qmt_daily` —— 逐标的 `/fulldata`
+  按需通道。实证:池外标的 fulldata 每标的约 5 分钟(策略 tick 节拍),
+  501 标的全量需数十小时,故不作日更路径。
+- **窗口内校验**:深度历史的前复权价可因累计除权转为非正(复权口径产物),
+  校验与 invalid 告警只作用于同步窗口内的行(首跑实证:窗外 2021 年行
+  产生 2 万条误报,窗口化后归零)。
+
 ### D5: 凭据注入
 顺序:`QMT_TOKEN` env → `~/.stockdata/qmt-token`(要求 0600,否则拒绝)。
 仓库、脚本、openspec 中不出现 token 值。
