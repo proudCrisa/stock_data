@@ -54,6 +54,10 @@ class QmtTransportTimeout(QmtTransportCaptureError):
     """The producer did not publish the exact requested v2 snapshot in time."""
 
 
+class _QmtTransportOversize(QmtTransportCaptureError):
+    """A bounded poll response was discarded before JSON parsing."""
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -414,7 +418,7 @@ class QmtTransportCaptureClient:
         except (OSError, urllib.error.URLError) as exc:
             raise QmtTransportCaptureError("QMT loopback channel is unavailable") from exc
         if len(raw) > self._max_response_bytes:
-            raise QmtTransportCaptureError("QMT response exceeds the memory limit")
+            raise _QmtTransportOversize("QMT response exceeds the memory limit")
         try:
             payload = json.loads(
                 raw.decode("utf-8"), object_pairs_hook=_duplicate_keys,
@@ -444,7 +448,12 @@ class QmtTransportCaptureClient:
         deadline = time.monotonic() + wait_timeout
         last_reason = "no snapshot received"
         while time.monotonic() < deadline:
-            snapshot = self._json("/latest")
+            try:
+                snapshot = self._json("/latest")
+            except _QmtTransportOversize as exc:
+                last_reason = str(exc)
+                time.sleep(poll_interval)
+                continue
             try:
                 return validate_qmt_transport_snapshot(
                     snapshot, request,
