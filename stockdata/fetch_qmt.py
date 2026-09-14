@@ -346,7 +346,12 @@ class QmtChannelClient:
         return status
 
     def latest_snapshot(self) -> dict:
-        """原始 ``/latest`` 快照(大响应上限)。调用方应先过 assert_ready()。"""
+        """原始 ``/latest`` 快照(大响应上限)。调用方应先过 assert_ready()。
+
+        除形状校验外还校验 ``generated`` 生产时间戳的真实新鲜度:
+        健康门的新鲜度来自 ``/`` 的自报,导出器轮转/竞态/重放可能让
+        ``/latest`` 返回更旧的生成物——右界守卫挡不住同末日的陈旧快照。
+        """
         snap = self._transport("/latest", "GET", None, _MAX_SNAPSHOT_BYTES)
         if not isinstance(snap, dict):
             raise QmtChannelError("快照不是 JSON 对象")
@@ -354,6 +359,19 @@ class QmtChannelClient:
             raise QmtChannelError(
                 f"快照自报导出错误({len(snap['errors'])} 条),拒绝作为全量刷新依据: "
                 f"{str(snap['errors'])[:200]}")
+        generated = snap.get("generated")
+        if not isinstance(generated, str) or not generated:
+            raise QmtChannelError("快照缺 generated 生产时间戳")
+        try:
+            gen_dt = datetime.fromisoformat(generated).replace(tzinfo=_SHANGHAI)
+        except ValueError:
+            raise QmtChannelError(
+                f"快照 generated 不是合法 ISO 时间戳: {generated!r}") from None
+        age = (datetime.now(_SHANGHAI) - gen_dt).total_seconds()
+        if age < -300 or age > _MAX_SNAPSHOT_AGE_SEC:
+            raise QmtChannelError(
+                f"快照生成于 {age:.0f}s 前(容差 -300..{_MAX_SNAPSHOT_AGE_SEC}),"
+                "与健康门水位不一致,疑似陈旧/重放")
         return snap
 
     def snapshot_front(self) -> dict[str, dict]:
@@ -387,7 +405,11 @@ class QmtChannelClient:
 
         失败(提交被拒/服务端错误/超时)抛 :class:`QmtChannelError`;
         没有、也绝不发起任何会更改常驻标的池的回退请求。
+        ``timeout`` 是单标的全部 HTTP 等待的预算,必须为有限正数。
         """
+        if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) \
+                or not math.isfinite(timeout) or timeout <= 0:
+            raise QmtChannelError(f"非法 fulldata 超时: {timeout!r}")
         params = {
             "symbol": symbol,
             "period": "1d",
@@ -444,9 +466,16 @@ def _prepare_sync(cache, client: QmtChannelClient):
     cutoff = (latest_finalized_date(calendar=trade_calendar)
               if trade_calendar.has_data() else latest_finalized_date())
 
-    # 交易日历只取他源行:本身份的行不能自证覆盖完整。
+    # 校验日历 = 库内交易日历(is_trading_day=1) ∪ 他源 daily 日期。
+    # 只用他源 daily 会把「日历已知但所有他源序列都缺」的交易日漏出校验,
+    # 造成不完整响应被当作完整覆盖。
     calendar = {r[0] for r in cache._conn.execute(
         "SELECT DISTINCT date FROM daily WHERE source != ?", (SOURCE,))}
+    try:
+        calendar |= {r[0] for r in cache._conn.execute(
+            "SELECT date FROM trading_calendar WHERE is_trading_day=1")}
+    except sqlite3.OperationalError:
+        pass  # 旧库无日历表:退回他源 daily 日历
     result: dict = {"rows": 0, "codes_ok": [], "errors": {}, "invalid": [],
                     "nonpositive": {}, "coverage_holes": {},
                     "synced_at": _utc_now()}

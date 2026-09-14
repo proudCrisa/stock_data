@@ -491,9 +491,30 @@ class TestSync:
             client.latest_snapshot()
 
     def test_market_adj_malformed_container(self):
-        client = _client({("/latest", "GET"): {"market_adj": "oops"}})
+        from datetime import datetime as _dt
+        snap = {"generated": _dt.now().replace(microsecond=0).isoformat(),
+                "market_adj": "oops"}
+        client = _client({("/latest", "GET"): snap})
         with pytest.raises(QmtChannelError, match="market_adj"):
             client.snapshot_front()
+
+    def test_stale_snapshot_generation_rejected(self):
+        """generated 陈旧(与健康门水位不一致)的快照拒绝消费。"""
+        snap = {"generated": "2020-01-01T00:00:00", "market_adj": {"front": {}}}
+        client = _client({("/latest", "GET"): snap})
+        with pytest.raises(QmtChannelError, match="陈旧"):
+            client.latest_snapshot()
+
+    def test_missing_snapshot_generation_rejected(self):
+        client = _client({("/latest", "GET"): {"market_adj": {"front": {}}}})
+        with pytest.raises(QmtChannelError, match="generated"):
+            client.latest_snapshot()
+
+    def test_non_finite_timeout_rejected_before_polling(self):
+        client = _client({("/fulldata", "POST"): {"id": "r"}})
+        for bad in (float("nan"), float("inf"), 0, -5):
+            with pytest.raises(QmtChannelError, match="超时"):
+                client.history_front("600519.SH", timeout=bad)
 
     def test_history_front_budget_covers_submit_and_polls(self):
         """--timeout 预算是单标的全部 HTTP 等待的上限。"""
@@ -743,6 +764,25 @@ class TestSync:
         assert stored == ["2026-09-11", "2026-09-14"]  # 杂散行已删
         cache.close()
 
+    def test_trading_calendar_days_count_in_coverage_validation(self, tmp_path):
+        """日历标记为交易日但所有他源序列都缺:不完整响应照样拒收。"""
+        cache = Cache(tmp_path / "t.sqlite")
+        _seed_calendar(cache, ["2026-09-10", "2026-09-14"])
+        # 库内交易日历额外标记 09-11 为交易日(他源 daily 均无此日)
+        cache._conn.execute(
+            "INSERT INTO trading_calendar (date, is_trading_day, source,"
+            " retrieved_at) VALUES ('2026-09-11', 1, 'test', '2026-09-14T00:00:00')")
+        cache._conn.commit()
+        # QMT 响应覆盖 [09-10, 09-14] 但缺 09-11 且无证据 → 空洞,一行不写
+        payload = _payload("600519.SH", [("2026-09-10", _bar()),
+                                         ("2026-09-14", _bar())])
+        client = self._sync_client({"600519.SH": payload})
+        result = sync_qmt_daily(cache, client, ["600519.SH"])
+        assert "600519.SH" in result["coverage_holes"]
+        assert cache._conn.execute(
+            "SELECT COUNT(*) FROM daily WHERE source='qmt'").fetchone()[0] == 0
+        cache.close()
+
     def test_retreat_also_checked_against_coverage_end(self, tmp_path):
         """覆盖右界超出最后 bar(尾部停牌)时,回退判定以覆盖右界为准。"""
         cache = Cache(tmp_path / "t.sqlite")
@@ -886,7 +926,9 @@ class TestSync:
 def _snapshot_client(front: dict | None, dividend_type: str = "none",
                      calls: list | None = None, pool_symbols=_DEFAULT_POOL):
     """/latest 快照传输:front={symbol: rec};dividend_type='front' 时改读 market。"""
-    snap = {"generated": "2026-09-14T15:00:00", "dividend_type": dividend_type}
+    from datetime import datetime as _dt
+    snap = {"generated": _dt.now().replace(microsecond=0).isoformat(),
+            "dividend_type": dividend_type}
     if front is not None:
         if dividend_type == "front":
             snap["market"] = front
