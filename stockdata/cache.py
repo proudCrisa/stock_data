@@ -428,18 +428,18 @@ class Cache:
         source: str,
         adjustment_mode: str,
         adjustment_version: str,
-        delete_before: str,
-        delete_dates: list[str],
+        replace_through: str,
         coverage_start: str,
         coverage_end: str,
     ) -> int:
-        """单事务原子刷新:写入 bars + 删除陈旧行 + 覆盖区间替换。
+        """单事务原子刷新:整段替换 + 覆盖区间替换。
 
-        供「破坏性全量刷新」语义使用(qmt 单因子版本):任一步失败,
-        价格行、删除、覆盖声明一起回滚,不留部分提交。
-        ``delete_before``:删除该身份下 date < 它的行(通道够不到的更早日);
-        ``delete_dates``:删除这些日期的残留行(停牌/非正价证据日)。
-        覆盖声明为替换语义(DELETE + INSERT),不做 MIN/MAX 合并。
+        供「破坏性全量刷新」语义使用(qmt 单因子版本):先删除该身份下
+        ``date <= replace_through`` 的全部行(调用方须保证不存在更晚的
+        已存行——否则属于数据回退,应在调用前拒收),再写入 bars,
+        最后把覆盖声明替换为 [coverage_start, coverage_end]。
+        任一步失败,全部回滚,不留部分提交。杂散残留行(不在本次返回、
+        也不在日历中的历史行)随整段删除一并清除。
         """
         self._require_collector_writer()
         identity = (source, adjustment_mode, adjustment_version)
@@ -448,18 +448,12 @@ class Cache:
         rows = [self._daily_row(code, b, identity, batch_retrieved_at, True, None)
                 for b in bars]
         with self._conn:
-            self._conn.executemany(self._DAILY_UPSERT_SQL, rows)
             self._conn.execute(
                 "DELETE FROM daily WHERE code=? AND source=?"
-                " AND adjustment_mode=? AND adjustment_version=? AND date < ?",
+                " AND adjustment_mode=? AND adjustment_version=? AND date <= ?",
                 (code, source, adjustment_mode, adjustment_version,
-                 delete_before))
-            for stale in delete_dates:
-                self._conn.execute(
-                    "DELETE FROM daily WHERE code=? AND source=?"
-                    " AND adjustment_mode=? AND adjustment_version=?"
-                    " AND date = ?",
-                    (code, source, adjustment_mode, adjustment_version, stale))
+                 replace_through))
+            self._conn.executemany(self._DAILY_UPSERT_SQL, rows)
             self._conn.execute(
                 "DELETE FROM sync_coverage WHERE code=? AND source=?"
                 " AND adjustment_mode=? AND adjustment_version=?",

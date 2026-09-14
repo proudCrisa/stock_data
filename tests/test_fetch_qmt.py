@@ -658,6 +658,27 @@ class TestSync:
         assert stored == ["2026-09-10"]
         cache.close()
 
+    def test_stray_row_not_in_calendar_removed_on_refresh(self, tmp_path):
+        """codex 复现:日历外的杂散行(如被纠正的周末行)随整段替换清除。"""
+        cache = Cache(tmp_path / "t.sqlite")
+        _seed_calendar(cache, ["2026-09-11", "2026-09-14"])  # 09-13 是周日
+        first = _payload("600519.SH", [("2026-09-11", _bar()),
+                                       ("2026-09-13", _bar()),  # 杂散行曾入库
+                                       ("2026-09-14", _bar())])
+        r1 = sync_qmt_daily(cache, self._sync_client({"600519.SH": first}),
+                            ["600519.SH"])
+        assert r1["rows"] == 3
+        # 新快照纠正:09-13 不复存在;日历无此日 → 不构成空洞,但必须清除
+        second = _payload("600519.SH", [("2026-09-11", _bar()),
+                                        ("2026-09-14", _bar())])
+        result = sync_qmt_daily(cache, self._sync_client({"600519.SH": second}),
+                                ["600519.SH"])
+        assert result["codes_ok"] == ["600519.SH"]
+        stored = sorted(r[0] for r in cache._conn.execute(
+            "SELECT date FROM daily WHERE source='qmt'"))
+        assert stored == ["2026-09-11", "2026-09-14"]  # 杂散行已删
+        cache.close()
+
     def test_retreat_behind_stored_upper_bound_rejected(self, tmp_path):
         """通道返回右界回退于库内已存右界:整标的拒收,库内不动。"""
         cache = Cache(tmp_path / "t.sqlite")

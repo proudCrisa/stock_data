@@ -419,10 +419,10 @@ def _absorb(cache, code: str, bars: list[dict], suspended: set[str],
     2. 库内他源日历为空 → 无法验证完整性,拒收;
     3. [lo,hi] 内存在无证据解释的日历交易日 → 版本不完整,拒收。
 
-    通过后才写库(单事务原子):
-    - upsert 全部正价行(同一复权因子版本);
-    - 删除 ``date < 首个正价行``(通道够不到的更早日行);
-    - 删除停牌/非正价证据日的残留行(旧因子版本的正价行);
+    通过后才写库(单事务原子,整段替换):
+    - 删除该身份 ``date <= hi`` 的全部已存行(含:通道够不到的更早日行、
+      停牌/非正价证据日残留、不在本次返回也不在他源日历中的杂散行);
+    - 写入本次全部正价行(同一复权因子版本);
     - 覆盖声明**替换**为本次实际验证的 [lo, hi](lo/hi 取所有已观测日,
       含尾部的停牌/零成交证据),不做 MIN/MAX 合并——刷新是破坏性的,
       合并会让覆盖声明超出库内实际数据。
@@ -461,8 +461,7 @@ def _absorb(cache, code: str, bars: list[dict], suspended: set[str],
     try:
         result["rows"] += cache.replace_identity_range(
             code, bars, SOURCE, ADJ_MODE, ADJ_VERSION,
-            delete_before=lo,
-            delete_dates=sorted(suspended | nonpositive),
+            replace_through=hi,
             coverage_start=lo, coverage_end=hi)
     except (sqlite3.Error, OSError) as exc:
         # 单事务回滚,库内保持旧的一致状态;按标的隔离失败
