@@ -1,0 +1,333 @@
+"""hermetic 测试:QMT 通道客户端与前复权日线同步(假传输,不打真实通道)。"""
+from __future__ import annotations
+
+import json
+import os
+import stat
+
+import pytest
+
+from stockdata.cache import Cache
+from stockdata.fetch_qmt import (
+    ADJ_MODE,
+    ADJ_VERSION,
+    SOURCE,
+    QmtChannelClient,
+    QmtChannelError,
+    load_qmt_token,
+    parse_history_records,
+    sync_qmt_daily,
+)
+
+
+def _payload(symbol: str, rows: list[tuple[str, dict]]) -> dict:
+    """按通道真实线形(列式字典)构造 history_kline 返回。"""
+    keys = ["open", "high", "low", "close", "volume", "suspendFlag"]
+    columns = {k: [r.get(k) for _, r in rows] for k in keys}
+    if all(v is None for v in columns["suspendFlag"]):
+        columns.pop("suspendFlag")  # 通道无此字段时的形态
+    return {
+        "id": "req-1",
+        "status": "ok",
+        "data": {symbol: {"index": [d for d, _ in rows], "columns": columns}},
+    }
+
+
+def _bar(o=10.0, h=11.0, l=9.5, c=10.5, v=1000.0, **extra):
+    return {"open": o, "high": h, "low": l, "close": c, "volume": v, **extra}
+
+
+def _client(routes: dict, calls: list | None = None):
+    """routes: {(path, method): dict 或 callable(body)->dict}"""
+    def transport(path, method, body):
+        if calls is not None:
+            calls.append((path, method))
+        route = routes[(path, method)]
+        return route(body) if callable(route) else route
+    return QmtChannelClient(transport=transport, sleep=lambda _: None)
+
+
+class TestLoadToken:
+    def test_env_wins(self, tmp_path):
+        assert load_qmt_token(env={"QMT_TOKEN": "abc"}) == "abc"
+
+    def test_file_0600(self, tmp_path):
+        f = tmp_path / "qmt-token"
+        f.write_text("tok\n")
+        os.chmod(f, 0o600)
+        assert load_qmt_token(env={}, token_file=f) == "tok"
+
+    def test_file_bad_perms_rejected(self, tmp_path):
+        f = tmp_path / "qmt-token"
+        f.write_text("tok")
+        os.chmod(f, 0o644)
+        with pytest.raises(QmtChannelError, match="0600"):
+            load_qmt_token(env={}, token_file=f)
+
+    def test_missing_everywhere(self, tmp_path):
+        with pytest.raises(QmtChannelError, match="凭据"):
+            load_qmt_token(env={}, token_file=tmp_path / "nope")
+
+
+class TestClient:
+    def test_is_alive(self):
+        client = _client({("/", "GET"): {"latest_exists": True}})
+        assert client.is_alive() is True
+
+    def test_history_front_happy_path(self):
+        calls = []
+        payload = _payload("600519.SH", [("2026-09-10", _bar())])
+        routes = {
+            ("/fulldata", "POST"): lambda body: {"id": "req-1"},
+            ("/fulldata/req-1", "GET"): payload,
+        }
+        client = _client(routes, calls)
+        result = client.history_front("600519.SH", start="2026-09-01")
+        assert result["status"] == "ok"
+        # 只触碰 /fulldata,绝无 /request(池替换)路径
+        assert all("/request" not in p for p, _ in calls)
+
+    def test_history_front_submit_without_id(self):
+        client = _client({("/fulldata", "POST"): {"error": "busy"}})
+        with pytest.raises(QmtChannelError, match="请求ID"):
+            client.history_front("600519.SH")
+
+    def test_history_front_error_status(self):
+        routes = {
+            ("/fulldata", "POST"): {"id": "r"},
+            ("/fulldata/r", "GET"): {"id": "r", "status": "error",
+                                     "error": "no local data"},
+        }
+        client = _client(routes)
+        with pytest.raises(QmtChannelError, match="no local data"):
+            client.history_front("600519.SH")
+
+    def test_history_front_poll_404_then_ok(self):
+        payload = _payload("600519.SH", [("2026-09-10", _bar())])
+        polls = {"n": 0}
+
+        def poll():
+            polls["n"] += 1
+            if polls["n"] == 1:
+                raise QmtChannelError("HTTP 404: /fulldata/req-1")
+            return payload
+
+        routes = {("/fulldata", "POST"): {"id": "req-1"},
+                  ("/fulldata/req-1", "GET"): lambda body: poll()}
+        client = _client(routes)
+        assert client.history_front("600519.SH")["status"] == "ok"
+        assert polls["n"] == 2
+
+    def test_history_front_ok_with_none_data_keeps_polling(self):
+        payload = _payload("600519.SH", [("2026-09-10", _bar())])
+        polls = {"n": 0}
+
+        def poll():
+            polls["n"] += 1
+            if polls["n"] == 1:
+                return {"id": "req-1", "status": "ok", "data": None}
+            return payload
+
+        routes = {("/fulldata", "POST"): {"id": "req-1"},
+                  ("/fulldata/req-1", "GET"): lambda body: poll()}
+        client = _client(routes)
+        assert client.history_front("600519.SH")["status"] == "ok"
+        assert polls["n"] == 2
+
+    def test_history_front_timeout(self):
+        routes = {
+            ("/fulldata", "POST"): {"id": "r"},
+            ("/fulldata/r", "GET"): {"pending": True},
+        }
+        client = _client(routes)
+        with pytest.raises(QmtChannelError, match="超时"):
+            client.history_front("600519.SH", timeout=0.01)
+
+
+class TestParse:
+    def test_valid_rows_sorted(self):
+        payload = _payload("X", [("2026-09-11", _bar(c=11.0)),
+                                 ("2026-09-10", _bar())])
+        bars, suspended, invalid = parse_history_records(payload, "X")
+        assert [b["date"] for b in bars] == ["2026-09-10", "2026-09-11"]
+        assert suspended == set() and invalid == []
+
+    def test_compact_and_epoch_dates(self):
+        epoch_ms = 1789689600000  # 2026-09-18 UTC
+        payload = _payload("X", [("20260910", _bar()), (epoch_ms, _bar())])
+        bars, _, invalid = parse_history_records(payload, "X")
+        assert [b["date"] for b in bars] == ["2026-09-10", "2026-09-18"]
+        assert invalid == []
+
+    def test_suspend_flag_and_empty_volume(self):
+        payload = _payload("X", [
+            ("2026-09-10", _bar()),
+            ("2026-09-11", _bar(v=None)),
+            ("2026-09-14", _bar(suspendFlag=True)),
+            ("2026-09-15", _bar(v=0.0)),
+        ])
+        bars, suspended, invalid = parse_history_records(payload, "X")
+        assert [b["date"] for b in bars] == ["2026-09-10"]
+        assert suspended == {"2026-09-11", "2026-09-14", "2026-09-15"}
+
+    @pytest.mark.parametrize("row", [
+        _bar(c=0.0),                    # 非正价
+        _bar(h=9.0, l=10.0),            # high < low
+        _bar(o=12.0, h=11.0),           # open > high
+        _bar(v=-1.0),                   # 负量
+        _bar(c=float("nan")),           # 非有限
+    ])
+    def test_invalid_rows_rejected(self, row):
+        payload = _payload("X", [("2026-09-10", row)])
+        bars, suspended, invalid = parse_history_records(payload, "X")
+        assert bars == [] and not suspended and len(invalid) == 1
+
+    def test_protocol_violations(self):
+        with pytest.raises(QmtChannelError, match="无数据"):
+            parse_history_records({"status": "ok", "data": {}}, "X")
+        with pytest.raises(QmtChannelError, match="index/columns"):
+            parse_history_records({"data": {"X": {"index": []}}}, "X")
+        with pytest.raises(QmtChannelError, match="长度不齐"):
+            parse_history_records(
+                {"data": {"X": {"index": ["2026-09-10"], "columns": {
+                    "open": [], "high": [], "low": [], "close": [],
+                    "volume": []}}}}, "X")
+        with pytest.raises(QmtChannelError, match="缺字段"):
+            parse_history_records(
+                {"data": {"X": {"index": ["2026-09-10"], "columns": {
+                    "open": [1.0]}}}}, "X")
+
+
+def _seed_calendar(cache: Cache, days: list[str]):
+    """用他源(baostock)行充当日历证据。"""
+    bars = [{"date": d, "open": 1.0, "high": 2.0, "low": 0.5,
+             "close": 1.5, "volume": 10.0} for d in days]
+    cache.upsert("000001.SH", bars, source="baostock", adjustment_mode="raw",
+                 adjustment_version="baostock-adjustflag-3")
+
+
+class TestSync:
+    def _sync_client(self, payload_by_symbol: dict, alive=True):
+        routes = {("/", "GET"): {"latest_exists": alive}}
+
+        def submit(body):
+            return {"id": body["params"]["symbol"]}
+
+        def poll(path_payload=None):
+            return None
+
+        def transport(path, method, body):
+            if (path, method) == ("/", "GET"):
+                return routes[("/", "GET")]
+            if (path, method) == ("/fulldata", "POST"):
+                return submit(body)
+            symbol = path.rsplit("/", 1)[-1]
+            return payload_by_symbol[symbol]
+
+        return QmtChannelClient(transport=transport, sleep=lambda _: None)
+
+    def test_dead_channel_fails_closed(self, tmp_path):
+        cache = Cache(tmp_path / "t.sqlite")
+        client = self._sync_client({}, alive=False)
+        with pytest.raises(QmtChannelError, match="不可达"):
+            sync_qmt_daily(cache, client, ["600519.SH"], start="2026-09-01")
+        cache.close()
+
+    def test_happy_path_identity_isolated(self, tmp_path):
+        cache = Cache(tmp_path / "t.sqlite")
+        days = ["2026-09-10", "2026-09-11"]
+        _seed_calendar(cache, days)
+        payload = _payload("600519.SH", [(d, _bar()) for d in days])
+        client = self._sync_client({"600519.SH": payload})
+        result = sync_qmt_daily(cache, client, ["sh600519"], start="2026-09-01")
+        assert result["rows"] == 2 and result["codes_ok"] == ["600519.SH"]
+        rows = {tuple(r) for r in cache._conn.execute(
+            "SELECT source, adjustment_mode, adjustment_version FROM daily"
+            " WHERE code='600519.SH'")}
+        assert rows == {(SOURCE, ADJ_MODE, ADJ_VERSION)}
+        # 他源行未被触碰
+        assert cache._conn.execute(
+            "SELECT COUNT(*) FROM daily WHERE source='baostock'").fetchone()[0] == 2
+        # coverage 已记录
+        assert cache._conn.execute(
+            "SELECT COUNT(*) FROM sync_coverage WHERE source=?",
+            (SOURCE,)).fetchone()[0] == 1
+        cache.close()
+
+    def test_idempotent_upsert(self, tmp_path):
+        cache = Cache(tmp_path / "t.sqlite")
+        days = ["2026-09-10"]
+        _seed_calendar(cache, days)
+        payload = _payload("600519.SH", [(d, _bar()) for d in days])
+        client = self._sync_client({"600519.SH": payload})
+        sync_qmt_daily(cache, client, ["600519.SH"], start="2026-09-01")
+        sync_qmt_daily(cache, client, ["600519.SH"], start="2026-09-01")
+        assert cache._conn.execute(
+            "SELECT COUNT(*) FROM daily WHERE source='qmt'").fetchone()[0] == 1
+        cache.close()
+
+    def test_per_symbol_failure_does_not_block_batch(self, tmp_path):
+        cache = Cache(tmp_path / "t.sqlite")
+        days = ["2026-09-10"]
+        _seed_calendar(cache, days)
+        ok = _payload("600519.SH", [(days[0], _bar())])
+
+        def transport(path, method, body):
+            if (path, method) == ("/", "GET"):
+                return {"latest_exists": True}
+            if (path, method) == ("/fulldata", "POST"):
+                return {"id": body["params"]["symbol"]}
+            symbol = path.rsplit("/", 1)[-1]
+            if symbol == "000001.SH":
+                return {"id": symbol, "status": "error", "error": "no local data"}
+            return ok
+
+        client = QmtChannelClient(transport=transport, sleep=lambda _: None)
+        result = sync_qmt_daily(cache, client, ["000001.SH", "600519.SH"],
+                                start="2026-09-01")
+        assert result["codes_ok"] == ["600519.SH"]
+        assert "000001.SH" in result["errors"]
+        cache.close()
+
+    def test_coverage_hole_blocks_declaration(self, tmp_path):
+        cache = Cache(tmp_path / "t.sqlite")
+        _seed_calendar(cache, ["2026-09-10", "2026-09-11", "2026-09-14"])
+        # QMT 返回区间首尾,中间交易日 09-11 无 bar 也无停牌证据
+        payload = _payload("600519.SH", [("2026-09-10", _bar()),
+                                         ("2026-09-14", _bar())])
+        client = self._sync_client({"600519.SH": payload})
+        result = sync_qmt_daily(cache, client, ["600519.SH"], start="2026-09-01")
+        assert "600519.SH" in result["coverage_holes"]
+        assert cache._conn.execute(
+            "SELECT COUNT(*) FROM sync_coverage WHERE source=?",
+            (SOURCE,)).fetchone()[0] == 0
+        cache.close()
+
+    def test_empty_calendar_never_declares_coverage(self, tmp_path):
+        cache = Cache(tmp_path / "t.sqlite")
+        payload = _payload("600519.SH", [("2026-09-10", _bar())])
+        client = self._sync_client({"600519.SH": payload})
+        result = sync_qmt_daily(cache, client, ["600519.SH"], start="2026-09-01")
+        assert result["coverage_holes"]["600519.SH"] == ["trading calendar empty"]
+        cache.close()
+
+    def test_suspension_explains_gap(self, tmp_path):
+        cache = Cache(tmp_path / "t.sqlite")
+        days = ["2026-09-10", "2026-09-11"]
+        _seed_calendar(cache, days)
+        payload = _payload("600519.SH", [
+            ("2026-09-10", _bar()),
+            ("2026-09-11", _bar(suspendFlag=True)),
+        ])
+        client = self._sync_client({"600519.SH": payload})
+        result = sync_qmt_daily(cache, client, ["600519.SH"], start="2026-09-01")
+        assert result["coverage_holes"] == {}
+        assert result["rows"] == 1
+        cache.close()
+
+    def test_bad_start_rejected(self, tmp_path):
+        cache = Cache(tmp_path / "t.sqlite")
+        client = self._sync_client({})
+        with pytest.raises(ValueError):
+            sync_qmt_daily(cache, client, ["600519.SH"], start="not-a-date")
+        cache.close()

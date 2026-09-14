@@ -23,9 +23,21 @@ trap 'rmdir "$LOCK"' EXIT
     --codes-file "$ROOT/config/panel-baostock.txt" \
     --start "$START"
   rc=$?
-  echo "===== $(date '+%F %T') daily-sync exit=$rc ====="
+  echo "===== $(date '+%F %T') daily-sync baostock exit=$rc ====="
   if [ "$rc" -ne 0 ]; then
     osascript -e 'display notification "daily-sync 失败,详见 ~/.stockdata/logs/daily-sync.log" with title "stockdata" subtitle "每日同步异常"' 2>/dev/null || true
   fi
+
+  # QMT 补充源阶段:非阻塞。失败只告警,绝不影响主链路退出码。
+  echo "----- $(date '+%F %T') qmt-sync start -----"
+  "$ROOT/.venv/bin/python" "$ROOT/scripts/sync_qmt_daily.py" \
+    --codes-file "$ROOT/config/panel-baostock.txt" \
+    --start "$START"
+  qrc=$?
+  echo "----- $(date '+%F %T') qmt-sync exit=$qrc -----"
+  if [ "$qrc" -ne 0 ]; then
+    osascript -e 'display notification "QMT 补充源同步异常(exit='"$qrc"'),主链路不受影响" with title "stockdata" subtitle "QMT 阶段告警"' 2>/dev/null || true
+  fi
+
   exit "$rc"
 } >> "$LOG" 2>&1
