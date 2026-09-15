@@ -21,6 +21,7 @@ RESPONSE_STATUS = "ok"
 VOLUME_EVIDENCE_SCHEMA = "stockdata-qmt-fulldata-volume-unit-evidence/1"
 PRODUCTION_VOLUME_EVIDENCE_ID = "approved-m1-qmt-fulldata-volume-hand/1"
 A08_VOLUME_EVIDENCE_ID = "approved-a08-qmt-fulldata-volume-hand/2"
+A08_0915_VOLUME_EVIDENCE_ID = "approved-a08-qmt-fulldata-volume-hand/3"
 TEST_ONLY_VOLUME_EVIDENCE_ID = "test-only-qmt-fulldata-volume-hand/1"
 _MODES = {"raw": "none", "qfq": "front"}
 _REQUEST_PARAMS = {"symbol", "period", "start", "end", "count", "dividend_type"}
@@ -50,9 +51,22 @@ A08_APPROVED_VOLUME_PAIRS = {
     ("561980.SH", "raw"): ("830f96f010bf04304ea5fe38be9eca9d7f66a795961d2c37e20a703c8f9de73b", "0fc48344b634286ac898844ec980fe03fa7d30fe9526838179348c5a45a976d3", "2026-09-14T17:03:38.669521+08:00"),
     ("561980.SH", "qfq"): ("fb230c275baf003f7c2b5ac044f6f658ffc693ad3312712f6202ad88ec4a7764", "4ccbec979ebc0fafcf0009f8110dce96b71d35856b48570021896447a619621c", "2026-09-14T17:07:38.097633+08:00"),
 }
+A08_0915_CROSSPROOF = {
+    "summary_sha256": "76db2708806f5facd687f2262db9cbd7668ca394174dfd9e2dc41806bb3ffaad",
+    "comparison_sha256": "810c0db58d785f50f08e43c68cf88731335a89a299a80d8f66efde35a5c05eec",
+}
+A08_0915_APPROVED_VOLUME_PAIRS = {
+    ("511010.SH", "raw"): ("d35d232dd1ecaa8f413133e0363be94abe1b16daf482c2900bb2aea67f670ff5", "74dea4f4877d2de6f6298bc1fddfd5f3cc5cc360afb0c547f11e4e6876f62d5e", "2026-09-15T15:54:50.246259+08:00"),
+    ("511010.SH", "qfq"): ("adacf676cea081daf7e416a4ad976777a49537f4345200b73eb788201770dc61", "4bd68721f61c973ce82ba498659c5b0fda17176293a92c18874205c5a2106cc2", "2026-09-15T15:56:46.816914+08:00"),
+    ("518880.SH", "raw"): ("4113a8357b086179f35473a36a4c9043d88d2ea582087716c729b7b9233e14a3", "3620783241ff0a1cf9e1631d094bb06e99a40ae7599e811dc5a929c30ae600d3", "2026-09-15T15:58:48.478807+08:00"),
+    ("518880.SH", "qfq"): ("ad3de0dd2bdcfff63117cdb12dfa30b576f885771a9f194506ed360d91df2a7d", "be58432d05df198a7915817f8def962a6397bf20f75bb5238ee9c5c43f195f09", "2026-09-15T16:00:45.075004+08:00"),
+    ("561980.SH", "raw"): ("77532f466d155fc2590e976d88aeabc3779a288d46d9c86fab57950403072c92", "211e36c21bcaed9b1084ca78ae644d5f5cf99d07ae6b67a20031170800ba6273", "2026-09-15T16:02:46.725145+08:00"),
+    ("561980.SH", "qfq"): ("9f6f8916d46b6cf0fc3080172c8e8848a3bdd952d91ede593dd9852c58240e70", "82755b8950d6a0ac6edb10ccfc7a11b9544506dbd53cf343b1da4261b8f0c986", "2026-09-15T16:04:43.330383+08:00"),
+}
 _PRODUCTION_VOLUME_PROFILES = {
     PRODUCTION_VOLUME_EVIDENCE_ID: (_CROSSPROOF, APPROVED_VOLUME_PAIRS),
     A08_VOLUME_EVIDENCE_ID: (A08_CROSSPROOF, A08_APPROVED_VOLUME_PAIRS),
+    A08_0915_VOLUME_EVIDENCE_ID: (A08_0915_CROSSPROOF, A08_0915_APPROVED_VOLUME_PAIRS),
 }
 
 SEALED_BUNDLE_SCHEMA = "trading-sealed-qmt-capture-bundle/1"
@@ -72,8 +86,8 @@ def _tree_sha256(root):
     return digest.hexdigest()
 
 
-def load_sealed_capture_directory(path, *, expected_tree_sha256, asof,
-                                  expected_symbols):
+def _load_a08_0914_capture_directory(path, *, expected_tree_sha256, asof,
+                                      expected_symbols):
     """Load the exact reviewed A08 capture set without opening a network path."""
     supplied = Path(path).expanduser()
     if supplied.is_symlink():
@@ -177,6 +191,130 @@ def load_sealed_capture_directory(path, *, expected_tree_sha256, asof,
                        for role in ("execution", "signal")}:
         raise ValueError("sealed QMT capture panel differs")
     return sealed
+
+
+def _load_a08_0915_capture_directory(path, *, expected_tree_sha256, asof,
+                                      expected_symbols):
+    supplied = Path(path).expanduser()
+    approved_symbols = sorted({symbol for symbol, _ in A08_0915_APPROVED_VOLUME_PAIRS})
+    if supplied.is_symlink() or not supplied.is_dir() \
+            or sorted(expected_symbols) != approved_symbols \
+            or any(item.is_symlink() for item in supplied.rglob("*")) \
+            or _tree_sha256(supplied) != expected_tree_sha256:
+        raise ValueError("sealed QMT capture directory identity differs")
+    core = {"results.json", "volume-crossproof.json", "six-role-identity.json",
+            "sealed-capture-bundle.json"}
+    try:
+        results = json.loads((supplied / "results.json").read_text(encoding="utf-8"))
+        identity = json.loads((supplied / "six-role-identity.json").read_text(encoding="utf-8"))
+        proof = json.loads((supplied / "volume-crossproof.json").read_text(encoding="utf-8"))
+        bundle = json.loads((supplied / "sealed-capture-bundle.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("sealed QMT capture directory is unreadable") from exc
+    if not isinstance(results, list) or len(results) != 6 \
+            or _file_sha256(supplied / "results.json") != "e07c066762b36b8b76868bc0ab9eb42dfdb180f9f2e35cc2a6352d9b9d22cb01":
+        raise ValueError("sealed QMT single-post provenance differs")
+    if not isinstance(identity, dict) or identity.get("schema_version") != SEALED_IDENTITY_SCHEMA \
+            or identity.get("source") != SOURCE or identity.get("allow_pool_fallback") is not False \
+            or identity.get("asof") != asof \
+            or identity.get("volume_crossproof_sha256") != _file_sha256(supplied / "volume-crossproof.json") \
+            or _file_sha256(supplied / "six-role-identity.json") != A08_0915_CROSSPROOF["summary_sha256"] \
+            or _file_sha256(supplied / "volume-crossproof.json") != A08_0915_CROSSPROOF["comparison_sha256"]:
+        raise ValueError("sealed QMT identity or crossproof differs")
+    expected_keys = {(symbol, role) for symbol in approved_symbols for role in ("raw", "qfq")}
+    if not isinstance(proof, list) or {item.get("symbol") for item in proof if isinstance(item, dict)} != set(approved_symbols):
+        raise ValueError("sealed QMT volume crossproof differs")
+    required = set(core)
+    successful = {}
+    for item in results:
+        key = (item.get("symbol"), item.get("role")) if isinstance(item, dict) else None
+        if key not in expected_keys or key in successful or item.get("post_count") != 1 \
+                or item.get("allow_pool_fallback") is not False \
+                or item.get("derived_from_ack_id") is not True:
+            raise ValueError("sealed QMT single-post provenance differs")
+        symbol, role = key
+        label = f"{symbol}-{role}"
+        paths = {
+            "request_path": f"attempts/{label}-request.json",
+            "ack_path": f"attempts/{label}-ack.json",
+            "bound_request_path": f"attempts/{label}-bound-request.json",
+            "product_request_path": f"requests/{label}.json",
+            "response_path": f"responses/{label}.json",
+            "last_poll_path": item.get("last_poll_path"),
+        }
+        if any(item.get(field) != value for field, value in paths.items()
+               if field not in {"last_poll_path", "product_request_path"}) \
+                or not isinstance(paths["last_poll_path"], str) \
+                or not paths["last_poll_path"].startswith(f"attempts/{label}-poll-"):
+            raise ValueError("sealed QMT single-post path differs")
+        state_path = f"attempts/{label}-state.json"
+        required.update(paths.values())
+        required.add(state_path)
+        try:
+            wire = json.loads((supplied / paths["request_path"]).read_text(encoding="utf-8"))
+            ack = json.loads((supplied / paths["ack_path"]).read_text(encoding="utf-8"))
+            bound = json.loads((supplied / paths["bound_request_path"]).read_text(encoding="utf-8"))
+            product_request = json.loads((supplied / paths["product_request_path"]).read_text(encoding="utf-8"))
+            response = json.loads((supplied / paths["response_path"]).read_text(encoding="utf-8"))
+            poll = json.loads((supplied / paths["last_poll_path"]).read_text(encoding="utf-8"))
+            state = json.loads((supplied / state_path).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError("sealed QMT single-post evidence is unreadable") from exc
+        request_id = item.get("request_id")
+        if not isinstance(request_id, str) or set(wire) != {"type", "params"} \
+                or wire.get("type") != REQUEST_TYPE or bound != {**wire, "request_id": request_id} \
+                or product_request != bound \
+                or ack.get("id") != request_id or response != poll \
+                or response.get("id") != request_id or state.get("request_id") != request_id \
+                or state.get("post_count") != 1 or state.get("response_sha256") != item.get("response_sha256") \
+                or state.get("finished_at") != item.get("finished_at"):
+            raise ValueError("sealed QMT single-post binding differs")
+        validation = item.get("validation")
+        if not isinstance(validation, dict) or any(validation.get(field) is not True for field in (
+                "id_match", "dividend_type_match", "column_lengths_ok", "index_monotonic_unique")) \
+                or validation.get("status") != RESPONSE_STATUS or validation.get("last_date") != asof.replace("-", ""):
+            raise ValueError("sealed QMT successful roles differ")
+        adjustment = role
+        pair = A08_0915_APPROVED_VOLUME_PAIRS[key]
+        if item.get("request_sha256") != _file_sha256(supplied / paths["request_path"]) \
+                or _file_sha256(supplied / paths["product_request_path"]) != pair[0] \
+                or item.get("response_sha256") != pair[1] or item.get("finished_at") != pair[2] \
+                or _file_sha256(supplied / paths["response_path"]) != pair[1]:
+            raise ValueError("sealed QMT approved pair differs")
+        successful[key] = (bound, response)
+    actual = {item.relative_to(supplied).as_posix() for item in supplied.rglob("*") if item.is_file()}
+    if actual != required:
+        raise ValueError("sealed QMT capture inventory differs")
+    if not isinstance(bundle, dict) or bundle.get("schema_version") != SEALED_BUNDLE_SCHEMA \
+            or bundle.get("asof") != asof or not isinstance(bundle.get("captures"), list):
+        raise ValueError("sealed QMT capture bundle differs")
+    sealed = {}
+    for entry in bundle["captures"]:
+        role = entry.get("role") if isinstance(entry, dict) else None
+        adjustment = {"execution": "raw", "signal": "qfq"}.get(role)
+        symbol = entry.get("symbol") if isinstance(entry, dict) else None
+        capture = entry.get("capture") if isinstance(entry, dict) else None
+        if (symbol, adjustment) not in successful or (symbol, role) in sealed \
+                or not isinstance(capture, dict) or capture.get("request") != successful[(symbol, adjustment)][0] \
+                or capture.get("response") != successful[(symbol, adjustment)][1] \
+                or capture.get("observed_at") != A08_0915_APPROVED_VOLUME_PAIRS[(symbol, adjustment)][2]:
+            raise ValueError("sealed QMT capture role or completion differs")
+        sealed[(symbol, role)] = capture
+    if set(sealed) != {(symbol, role) for symbol in approved_symbols for role in ("execution", "signal")}:
+        raise ValueError("sealed QMT capture panel differs")
+    return sealed
+
+
+def load_sealed_capture_directory(path, *, expected_tree_sha256, asof, expected_symbols):
+    if asof == "2026-09-14":
+        return _load_a08_0914_capture_directory(
+            path, expected_tree_sha256=expected_tree_sha256, asof=asof,
+            expected_symbols=expected_symbols)
+    if asof == "2026-09-15":
+        return _load_a08_0915_capture_directory(
+            path, expected_tree_sha256=expected_tree_sha256, asof=asof,
+            expected_symbols=expected_symbols)
+    raise ValueError("sealed QMT capture profile differs")
 
 
 def build_capture(*, request, response, observed_at, volume_unit_evidence,

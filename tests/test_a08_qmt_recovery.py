@@ -12,6 +12,10 @@ from stockdata.local_daily_snapshot import _timestamp
 
 CAPTURE_ROOT = Path("/Users/cdzhangxueli/.stockdata/a08-qmt-recovery-20260914-01/sealed-input")
 CAPTURE_TREE = "0808e140f3b97e102101eb02eae926bc9abba98db7e21486eefa6d06d0d75762"
+CAPTURE_0915_ROOT = Path(
+    "/Users/cdzhangxueli/.stockdata/a08-qmt-recovery-20260914-01/"
+    "curated-sealed-input-20260915.LQQDzG")
+CAPTURE_0915_TREE = "facea5f1fab254abd4865154b5b0315a2653b66eebdd9ffd6f355e574a67db8d"
 SYMBOLS = ["511010.SH", "518880.SH", "561980.SH"]
 M1_ROOT = Path(
     "/Users/cdzhangxueli/.stockdata/trading-candidate-eod-timeout-fix-20260907/"
@@ -136,3 +140,41 @@ def test_rejects_a08_bytes_with_m1_evidence_profile():
             capture, symbol="511010.SH", start="2025-07-21",
             asof="2026-09-14", adjustment="raw",
             cutoff=_timestamp("2026-09-14T18:00:00+08:00"))
+
+
+def test_loads_exact_0915_single_post_capture_and_replays_once():
+    sealed = qmt.load_sealed_capture_directory(
+        CAPTURE_0915_ROOT, expected_tree_sha256=CAPTURE_0915_TREE,
+        asof="2026-09-15", expected_symbols=SYMBOLS)
+    assert set(sealed) == {(symbol, role) for symbol in SYMBOLS
+                           for role in ("execution", "signal")}
+    for (symbol, role), capture in sealed.items():
+        rows, adjustment = qmt.replay(
+            capture, symbol=symbol, start="2025-07-22", asof="2026-09-15",
+            adjustment="raw" if role == "execution" else "qfq",
+            cutoff=_timestamp("2026-09-15T18:00:00+08:00"))
+        assert adjustment == ("raw" if role == "execution" else "qfq")
+        assert rows[-1]["date"] == "2026-09-15"
+
+
+def test_0915_rejects_wire_ack_count_state_and_scope_tampering(tmp_path):
+    mutations = (
+        ("wire", "attempts/511010.SH-raw-request.json", "20250722", "20250721"),
+        ("ack", "attempts/511010.SH-raw-ack.json", "88e398f4", "bad-id"),
+        ("count", "results.json", '"post_count":1', '"post_count":2'),
+        ("state", "attempts/511010.SH-raw-state.json", "88e398f4", "bad-id"),
+        ("extra", None, None, None),
+    )
+    for name, relative, old, new in mutations:
+        copied = tmp_path / name
+        shutil.copytree(CAPTURE_0915_ROOT, copied)
+        if relative is None:
+            (copied / "unexpected.json").write_text("{}", encoding="utf-8")
+        else:
+            target = copied / relative
+            target.write_text(target.read_text(encoding="utf-8").replace(old, new),
+                              encoding="utf-8")
+        with pytest.raises(ValueError):
+            qmt.load_sealed_capture_directory(
+                copied, expected_tree_sha256=qmt._tree_sha256(copied),
+                asof="2026-09-15", expected_symbols=SYMBOLS)
