@@ -16,6 +16,9 @@ CAPTURE_0915_ROOT = Path(
     "/Users/cdzhangxueli/.stockdata/a08-qmt-recovery-20260914-01/"
     "curated-sealed-input-20260915.LQQDzG")
 CAPTURE_0915_TREE = "facea5f1fab254abd4865154b5b0315a2653b66eebdd9ffd6f355e574a67db8d"
+CAPTURE_0916_ROOT = Path(
+    "/Users/cdzhangxueli/.stockdata/formal-oneprocess-20260916/qmt-curated")
+CAPTURE_0916_TREE = "62ec0a12890ff29feb2244628bc9d95c92c0fef8e85af6692c1cf7c1799bafa7"
 SYMBOLS = ["511010.SH", "518880.SH", "561980.SH"]
 M1_ROOT = Path(
     "/Users/cdzhangxueli/.stockdata/trading-candidate-eod-timeout-fix-20260907/"
@@ -155,6 +158,21 @@ def test_loads_exact_0915_single_post_capture_and_replays_once():
             cutoff=_timestamp("2026-09-15T18:00:00+08:00"))
         assert adjustment == ("raw" if role == "execution" else "qfq")
         assert rows[-1]["date"] == "2026-09-15"
+
+
+def test_loads_exact_0916_single_post_capture_and_replays_once():
+    sealed = qmt.load_sealed_capture_directory(
+        CAPTURE_0916_ROOT, expected_tree_sha256=CAPTURE_0916_TREE,
+        asof="2026-09-16", expected_symbols=SYMBOLS)
+    assert set(sealed) == {(symbol, role) for symbol in SYMBOLS
+                           for role in ("execution", "signal")}
+    for (symbol, role), capture in sealed.items():
+        rows, adjustment = qmt.replay(
+            capture, symbol=symbol, start="2025-07-23", asof="2026-09-16",
+            adjustment="raw" if role == "execution" else "qfq",
+            cutoff=_timestamp("2026-09-16T18:15:00+08:00"))
+        assert adjustment == ("raw" if role == "execution" else "qfq")
+        assert rows[-1]["date"] == "2026-09-16"
 
 
 def test_0915_rejects_wire_ack_count_state_and_scope_tampering(tmp_path):
