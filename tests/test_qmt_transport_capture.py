@@ -274,14 +274,10 @@ def test_client_only_uses_loopback_env_token_and_exact_ack(monkeypatch):
 def test_client_posts_bound_request_then_captures_new_v2_snapshot(monkeypatch):
     client = qmt.QmtTransportCaptureClient(token="test")
     posted = []
-    baseline = {
-        "schema_version": qmt.SCHEMA_VERSION,
-        "generated_at": "2026-08-31T08:00:00+00:00",
-    }
+    calls = []
 
     def fake_json(path, *, method="GET", body=None):
-        if path == "/latest" and not posted:
-            return baseline
+        calls.append((path, method))
         if path == "/request":
             posted.append(body)
             return {
@@ -297,6 +293,7 @@ def test_client_posts_bound_request_then_captures_new_v2_snapshot(monkeypatch):
 
     assert posted == [capture["request"]]
     assert capture["request_id"] == capture["request"]["request_id"]
+    assert calls == [("/request", "POST"), ("/latest", "GET")]
 
 
 def test_client_waits_through_foreign_v2_snapshot(monkeypatch):
@@ -310,10 +307,7 @@ def test_client_waits_through_foreign_v2_snapshot(monkeypatch):
     foreign["request_id"] = foreign_request["request_id"]
     foreign["request_sha256"] = qmt.request_sha256(foreign_request)
     foreign["request"] = foreign_request
-    latest = iter([
-        {"schema_version": qmt.SCHEMA_VERSION, "generated_at": "2026-08-31T08:00:00+00:00"},
-        foreign,
-    ])
+    latest = iter([foreign])
 
     def fake_json(path, *, method="GET", body=None):
         if path == "/request":
@@ -334,6 +328,62 @@ def test_client_waits_through_foreign_v2_snapshot(monkeypatch):
     monkeypatch.setattr(qmt.time, "sleep", lambda _seconds: None)
     capture = client.capture(["600519.SH"], count=2, wait_timeout=1)
     assert capture["request"]["symbols"] == ["600519.SH"]
+
+
+def test_client_waits_through_oversize_and_foreign_snapshots(monkeypatch):
+    client = qmt.QmtTransportCaptureClient(token="test")
+    posted, calls = [], []
+    foreign_request = qmt.build_qmt_transport_request(
+        ["000001.SZ"], count=2, adjustment="raw",
+        request_id="123e4567-e89b-12d3-a456-426614174001",
+    )
+    foreign = _snapshot(request=_request())
+    foreign.update({
+        "request_id": foreign_request["request_id"],
+        "request_sha256": qmt.request_sha256(foreign_request),
+        "request": foreign_request,
+    })
+    latest = iter([
+        qmt._QmtTransportOversize("QMT response exceeds the memory limit"),
+        foreign,
+    ])
+
+    def fake_json(path, *, method="GET", body=None):
+        calls.append((path, method))
+        if path == "/request":
+            posted.append(body)
+            return {"schema_version": qmt.ACK_SCHEMA_VERSION, "ok": True,
+                    "request_id": body["request_id"],
+                    "request_sha256": qmt.request_sha256(body)}
+        value = next(latest, _snapshot(request=posted[0]))
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    monkeypatch.setattr(client, "_json", fake_json)
+    monkeypatch.setattr(qmt.time, "sleep", lambda _seconds: None)
+    capture = client.capture(["600519.SH"], count=2, wait_timeout=1)
+    assert capture["request"] == posted[0]
+    assert calls == [("/request", "POST"), ("/latest", "GET"),
+                     ("/latest", "GET"), ("/latest", "GET")]
+
+
+def test_client_times_out_when_every_poll_response_is_oversize(monkeypatch):
+    client = qmt.QmtTransportCaptureClient(token="test")
+    monotonic = iter([0.0, 0.0, 2.0])
+
+    def fake_json(path, *, method="GET", body=None):
+        if path == "/request":
+            return {"schema_version": qmt.ACK_SCHEMA_VERSION, "ok": True,
+                    "request_id": body["request_id"],
+                    "request_sha256": qmt.request_sha256(body)}
+        raise qmt._QmtTransportOversize("QMT response exceeds the memory limit")
+
+    monkeypatch.setattr(client, "_json", fake_json)
+    monkeypatch.setattr(qmt.time, "monotonic", lambda: next(monotonic))
+    monkeypatch.setattr(qmt.time, "sleep", lambda _seconds: None)
+    with pytest.raises(qmt.QmtTransportTimeout, match="memory limit"):
+        client.capture(["600519.SH"], count=2, wait_timeout=1)
 
 
 def test_rejects_invalid_transport_limits():

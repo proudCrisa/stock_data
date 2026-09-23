@@ -10,6 +10,7 @@ from .authority import load_enrolled_trust_registry_bytes
 from .liquidity_amount_product import (
     _canonical, _day, _hash, _timestamp, admit_liquidity_amounts_authority,
 )
+from .candidate_instrument_authority import verify_candidate_instrument_authority
 from .provider_authority_admission import (
     SOURCE_RECEIPT_SCHEMA, admit_signed_component_authority,
 )
@@ -95,13 +96,14 @@ def build_global_signals_authority_inputs(
 
 
 def _admit(component, inputs, *, panel, registry, cutoffs=None, status=None,
-           current_decision_observation_cutoff=None):
+           current_decision_observation_cutoff=None, trusted_etf_scopes=None):
     return admit_signed_component_authority(
         component=component, artifact_value=inputs["artifact"],
         authority_envelope=inputs["authority_envelope"], expected_panel=panel,
         bound_source_receipts=inputs["source_receipts"], registry=registry,
         decision_cutoff_by_panel=cutoffs, instrument_status_authority=status,
         current_decision_observation_cutoff=current_decision_observation_cutoff,
+        trusted_etf_scopes=trusted_etf_scopes,
     )
 
 
@@ -114,10 +116,15 @@ def verify_main_buy_supplement(
     Trading must separately compare symbols to its requested price universe and
     replay the global risk calculation using its own policy implementation.
     """
-    if not isinstance(payload, dict) or set(payload) != {
+    fixed_fields = {
         "schema_version", "provider_manifest_sha256", "asof", "decision_cutoff",
         "symbols", "registry", "liquidity", "global_signals", "references",
-    } or payload["schema_version"] != SCHEMA_VERSION:
+    }
+    fields = set(payload) if isinstance(payload, dict) else set()
+    dynamic = fields == fixed_fields | {"candidate_instrument_authority"}
+    if not isinstance(payload, dict) or frozenset(fields) not in {frozenset(fixed_fields),
+            frozenset(fixed_fields | {"candidate_instrument_authority"})} \
+            or payload["schema_version"] != SCHEMA_VERSION:
         raise ValueError("main BUY supplement schema is invalid")
     if (payload["provider_manifest_sha256"] != provider_manifest_sha256
             or payload["asof"] != _day(asof)
@@ -132,12 +139,34 @@ def verify_main_buy_supplement(
     registry = load_enrolled_trust_registry_bytes(
         _canonical(payload["registry"]), expected_sha256=expected_registry_sha256,
     )
+    trusted_etf_scopes = None
+    authority_hash = None
+    if dynamic:
+        authority = verify_candidate_instrument_authority(
+            payload["candidate_instrument_authority"],
+            decision_cutoff=payload["decision_cutoff"], registry=registry)
+        profile_symbols = sorted(item["symbol"]
+                                 for item in authority["profile"]["candidates"])
+        if authority["profile"]["asof"] != payload["asof"] \
+                or symbols != profile_symbols:
+            raise ValueError("main BUY symbols differ candidate profile")
+        trusted_etf_scopes = authority["scopes"]
+        authority_hash = authority["authority_sha256"]
+        component_inputs = [payload["liquidity"], payload["global_signals"],
+                            *payload["references"].values()]
+        if any(inputs.get("authority_envelope", {}).get("payload", {}).get(
+                "publisher_key_id") == authority["reviewer_key_id"]
+                for inputs in component_inputs):
+            raise ValueError("candidate instrument review signer must be independent")
     current_panel = [f"{symbol}@{asof}" for symbol in symbols]
     cutoffs = {entry: decision_cutoff for entry in current_panel}
     liquidity = payload["liquidity"]
     if set(liquidity) != {"product", "artifact", "source_receipts", "authority_envelope"}:
         raise ValueError("main BUY liquidity closure is incomplete")
     product = liquidity["product"]
+    if product.get("candidate_instrument_authority") != (
+            payload.get("candidate_instrument_authority")):
+        raise ValueError("main BUY liquidity candidate authority differs")
     if product["instrument_scope"]["codes"] != symbols:
         raise ValueError("main BUY liquidity symbol scope differs")
     liquidity_panel = product["panel"]
@@ -153,6 +182,9 @@ def verify_main_buy_supplement(
             if not all(evidence_ids.intersection(record["source_receipt_ids"])
                        for record in inputs["artifact"]["records"]):
                 raise ValueError("main BUY raw reference evidence is not receipt-bound")
+        if dynamic and inputs.get("source_evidence", {}).get(
+                "candidate_instrument_authority_sha256") != authority_hash:
+            raise ValueError("main BUY reference candidate authority is not bound")
     calendar_panel = sorted(set(liquidity_panel) | set(current_panel))
     calendar = _admit("trading_calendar", references["trading_calendar"],
                       panel=calendar_panel, registry=registry,
@@ -185,7 +217,8 @@ def verify_main_buy_supplement(
     status = _admit("instrument_status", references["instrument_status"],
                     panel=current_panel, registry=registry, cutoffs=cutoffs)
     _admit("market_rules", references["market_rules"], panel=current_panel,
-           registry=registry, cutoffs=cutoffs, status=status)
+           registry=registry, cutoffs=cutoffs, status=status,
+           trusted_etf_scopes=trusted_etf_scopes)
     universe = _admit("universe", references["universe"], panel=current_panel,
                       registry=registry, cutoffs=cutoffs)
     if any(row["is_member"] is not True for row in universe.payload_by_panel.values()):

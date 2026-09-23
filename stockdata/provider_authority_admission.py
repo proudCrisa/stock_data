@@ -171,6 +171,7 @@ def _component_payload(
     payload: object,
     *,
     panel_entry: str | None = None,
+    trusted_etf_scopes: Mapping[str, Mapping[str, object]] | None = None,
 ) -> Mapping[str, object]:
     if not isinstance(payload, Mapping) or not payload:
         raise ValueError(f"{component} record payload must be a non-empty object")
@@ -245,7 +246,9 @@ def _component_payload(
             }:
                 raise ValueError("corporate_actions event_type is invalid")
     elif component == "market_rules":
-        validate_market_rule_payload(payload, panel_entry=panel_entry)
+        validate_market_rule_payload(
+            payload, panel_entry=panel_entry,
+            trusted_etf_scopes=trusted_etf_scopes)
     elif component == "liquidity_amounts":
         if set(payload) != {"amount", "amount_unit"} or payload["amount_unit"] != "CNY":
             raise ValueError("liquidity_amounts requires native CNY amount")
@@ -512,6 +515,7 @@ def admit_signed_component_authority(
     decision_cutoff_by_panel: Mapping[str, str] | None = None,
     instrument_status_authority: AdmittedProviderAuthority | None = None,
     current_decision_observation_cutoff: str | None = None,
+    trusted_etf_scopes: Mapping[str, Mapping[str, object]] | None = None,
 ) -> AdmittedProviderAuthority:
     """Verify semantic coverage and external authority for one signed component."""
 
@@ -579,7 +583,9 @@ def admit_signed_component_authority(
             raise ValueError(f"{component} authority record {index} is incomplete")
         entry = _panel_entry(record["panel_entry"])
         observed_entries.append(entry)
-        payload = _component_payload(component, record["payload"], panel_entry=entry)
+        payload = _component_payload(
+            component, record["payload"], panel_entry=entry,
+            trusted_etf_scopes=trusted_etf_scopes)
         if component == "market_rules":
             if status_payloads is None:
                 raise AssertionError("market rules status dependency was not initialized")
@@ -587,6 +593,7 @@ def admit_signed_component_authority(
                 payload,
                 panel_entry=entry,
                 instrument_status=status_payloads[entry],
+                trusted_etf_scopes=trusted_etf_scopes,
             )
         if (
             _sha256(record["record_sha256"], "record_sha256")
@@ -666,7 +673,8 @@ def admit_signed_component_authority(
     if tuple(observed_entries) != normalized_expected:
         raise ValueError(f"{component} authority records differ exact panel")
     if component == "market_rules":
-        validate_market_rule_regimes(market_rule_payloads)
+        validate_market_rule_regimes(
+            market_rule_payloads, trusted_etf_scopes=trusted_etf_scopes)
     raw = _canonical(dict(artifact_value))
     artifact = ProviderArtifactReference(
         kind=f"stock-data-{component.replace('_', '-')}",

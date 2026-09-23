@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import date, timedelta
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -145,6 +146,123 @@ def test_offline_supplement_admits_real_etf_identity_with_all_signed_inputs(monk
     payload, pin, _ = make_supplement()
     monkeypatch.setattr("pathlib.Path.read_bytes", lambda *args: pytest.fail("hidden filesystem read"))
     assert _verify(payload, pin) == payload
+
+
+def _dynamic_supplement():
+    from stockdata.candidate_instrument_authority import verify_candidate_instrument_authority
+    from stockdata.local_main_buy_publisher import _reference
+    from test_candidate_instrument_authority import candidate_authority
+    from test_liquidity_amount_product import _receipt
+
+    payload, pin, signer = make_supplement()
+    root = Ed25519PrivateKey.from_private_bytes(bytes([1]) * 32)
+    reviewer = Ed25519PrivateKey.from_private_bytes(bytes([3]) * 32)
+    payload["registry"]["signer_enrollments"].append(
+        _enrollment(root, reviewer, roles=["market_rules"]))
+    payload["registry"]["signer_enrollments"].sort(
+        key=lambda row: row["publisher_key_id"])
+    pin = _hash(payload["registry"])
+    from test_candidate_instrument_authority import candidate_profile
+    profile = candidate_profile()
+    profile["asof"] = ASOF
+    for row in profile["candidates"]:
+        row["promoted_asof"] = ASOF
+    profile["source_authorization"]["scan_asof"] = ASOF
+    profile["profile_sha256"] = _hash({key: value for key, value in profile.items()
+                                       if key != "profile_sha256"})
+    authority = candidate_authority(
+        registry_sha=pin, root=root, reviewer=reviewer, profile=profile)
+    verified = verify_candidate_instrument_authority(
+        authority, decision_cutoff=payload["decision_cutoff"])
+    symbols = ["512480.SH", SYMBOL]
+    days = sorted({entry.split("@")[1]
+                   for entry in payload["liquidity"]["product"]["panel"]})
+    dynamic_capture = _receipt("512480.SH", days)
+    dynamic_capture["observed_at"] = "2026-08-31T16:05:00+08:00"
+    captures = [payload["liquidity"]["product"]["source_receipts"][0],
+                dynamic_capture]
+    product = build_liquidity_amounts_product(
+        captures, panel=[(symbol, day) for symbol in symbols for day in days],
+        decision_cutoff=payload["decision_cutoff"], expected_watermark=ASOF,
+        candidate_instrument_authority=authority)
+    payload["liquidity"] = _signed(
+        build_liquidity_authority_inputs(product), registry_sha=pin,
+        root=root, signer=signer)
+    evidence = {"schema_version": "fixture-reviewed-source-evidence/1", "files": [],
+                "candidate_instrument_authority_sha256": authority["authority_sha256"]}
+    references = {}
+    base_refs = payload["references"]
+    for component, inputs in base_refs.items():
+        rows = {row["panel_entry"]: deepcopy(row["payload"])
+                for row in inputs["artifact"]["records"]}
+        for entry, value in list(rows.items()):
+            if not entry.startswith(SYMBOL + "@"):
+                continue
+            dynamic_entry = "512480.SH@" + entry.split("@")[1]
+            dynamic = deepcopy(value)
+            if component == "market_rules":
+                dynamic.update(verified["scopes"]["512480.SH"])
+                dynamic.update(instrument_id="512480.SH",
+                               policy_id="512480-etf-fixture",
+                               source="local-reviewed-official-facts/1",
+                               source_sha256=_hash(evidence))
+            elif component == "universe":
+                dynamic["universe_id"] = profile["profile_sha256"]
+            rows[dynamic_entry] = dynamic
+        if component == "market_rules":
+            for value in rows.values():
+                value["source"] = "local-reviewed-official-facts/1"
+                value["source_sha256"] = _hash(evidence)
+        references[component] = _signed(
+            _reference(component, rows, evidence, "2026-08-28T16:05:00+08:00"),
+            registry_sha=pin, root=root, signer=signer,
+            observed=("2026-07-31T16:05:00+08:00"
+                      if component == "trading_calendar" else
+                      "2026-08-28T16:05:00+08:00"))
+    payload["symbols"] = symbols
+    payload["references"] = references
+    payload["global_signals"] = _signed(
+        build_global_signals_authority_inputs(
+            payload["global_signals"]["snapshot"],
+            panel=[f"{symbol}@{ASOF}" for symbol in symbols],
+            available_at="2026-08-28T16:05:00+08:00"),
+        registry_sha=pin, root=root, signer=signer)
+    payload["candidate_instrument_authority"] = authority
+    return payload, pin
+
+
+def test_dynamic_candidate_supplement_binds_liquidity_and_all_five_references():
+    payload, pin = _dynamic_supplement()
+    assert _verify(payload, pin) == payload
+    assert payload["symbols"] == ["512480.SH", "561980.SH"]
+    assert all(value["source_evidence"]["candidate_instrument_authority_sha256"]
+               == payload["candidate_instrument_authority"]["authority_sha256"]
+               for value in payload["references"].values())
+
+
+def test_dynamic_candidate_supplement_rejects_resealed_unbound_authority():
+    payload, pin = _dynamic_supplement()
+    payload["candidate_instrument_authority"]["instruments"][0][
+        "rule_scope"]["fund_type"] = "OTHER"
+    authority = payload["candidate_instrument_authority"]
+    authority["authority_sha256"] = _hash({key: value for key, value in authority.items()
+                                           if key != "authority_sha256"})
+    with pytest.raises(ValueError, match="candidate instrument"):
+        _verify(payload, pin)
+
+
+def test_dynamic_candidate_review_signer_cannot_sign_product_components():
+    payload, pin = _dynamic_supplement()
+    signer = Ed25519PrivateKey.from_private_bytes(bytes([2]) * 32)
+    authority = payload["candidate_instrument_authority"]
+    envelope = authority["review_envelope"]
+    envelope["payload"]["publisher_key_id"] = _key_id(signer)
+    envelope["signature_base64"] = _b64(
+        signer.sign(_canonical(envelope["payload"])))
+    authority["authority_sha256"] = _hash({
+        key: value for key, value in authority.items() if key != "authority_sha256"})
+    with pytest.raises(ValueError, match="review signer must be independent"):
+        _verify(payload, pin)
 
 
 @pytest.mark.parametrize("mutation", ["pin", "signature", "amount", "calendar_gap", "global", "universe", "manifest", "etf"])

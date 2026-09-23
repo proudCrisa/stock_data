@@ -54,6 +54,10 @@ class QmtTransportTimeout(QmtTransportCaptureError):
     """The producer did not publish the exact requested v2 snapshot in time."""
 
 
+class _QmtTransportOversize(QmtTransportCaptureError):
+    """A bounded poll response was discarded before JSON parsing."""
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -414,7 +418,7 @@ class QmtTransportCaptureClient:
         except (OSError, urllib.error.URLError) as exc:
             raise QmtTransportCaptureError("QMT loopback channel is unavailable") from exc
         if len(raw) > self._max_response_bytes:
-            raise QmtTransportCaptureError("QMT response exceeds the memory limit")
+            raise _QmtTransportOversize("QMT response exceeds the memory limit")
         try:
             payload = json.loads(
                 raw.decode("utf-8"), object_pairs_hook=_duplicate_keys,
@@ -436,11 +440,6 @@ class QmtTransportCaptureClient:
                 or not 0 < float(wait_timeout) <= MAX_WAIT_TIMEOUT_SECONDS \
                 or not 0 < float(poll_interval) <= MAX_POLL_INTERVAL_SECONDS:
             raise QmtTransportCaptureError("poll limits are invalid")
-        baseline = self._json("/latest")
-        if baseline.get("schema_version") != SCHEMA_VERSION:
-            raise QmtTransportCaptureError("QMT v1 snapshot is rejected")
-        baseline_generated_at = baseline.get("generated_at")
-        _timestamp(baseline_generated_at, "baseline_generated_at")
         request = build_qmt_transport_request(
             symbols, count=count, adjustment=adjustment,
         )
@@ -449,11 +448,15 @@ class QmtTransportCaptureClient:
         deadline = time.monotonic() + wait_timeout
         last_reason = "no snapshot received"
         while time.monotonic() < deadline:
-            snapshot = self._json("/latest")
+            try:
+                snapshot = self._json("/latest")
+            except _QmtTransportOversize as exc:
+                last_reason = str(exc)
+                time.sleep(poll_interval)
+                continue
             try:
                 return validate_qmt_transport_snapshot(
                     snapshot, request,
-                    baseline_generated_at=baseline_generated_at,
                 )
             except QmtTransportTimeout as exc:
                 last_reason = str(exc)

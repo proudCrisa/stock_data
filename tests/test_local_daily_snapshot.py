@@ -48,6 +48,33 @@ def _verify(value, anchor):
         expected_symbols=["561980.SH", "000300.SH"], asof="2026-09-04", decision_cutoff=value["decision_cutoff"])
 
 
+def _candidate_profile(*, symbol="512480.SH", asof="2026-09-04"):
+    code = f"{symbol[-2:].lower()}{symbol[:6]}"
+    body = {
+        "schema_version": local.DYNAMIC_PROFILE_SCHEMA,
+        "asof": asof,
+        "decision_authority": False,
+        "purpose": "formal-validation-input",
+        "required_symbols": ["000300.SH", symbol],
+        "benchmark_symbols": ["000300.SH"],
+        "candidates": [{
+            "code": code, "symbol": symbol, "instrument_class": "etf",
+            "promoted_asof": asof,
+            "observation_contract": local.OBSERVATION_CONTRACT,
+            "promotion_rule_version": local.PROMOTION_RULE_VERSION,
+            "promotion_evidence_id": "promotion_" + "1" * 64,
+            "promotion_content_hash": "1" * 64,
+        }],
+        "source_authorization": {
+            "producer": "trading-agent", "code_revision": "2" * 40,
+            "candidate_state_sha256": "3" * 64,
+            "scan_asof": asof, "scan_sha256": "4" * 64,
+            "universe_sha256": "5" * 64,
+        },
+    }
+    return {**body, "profile_sha256": local._hash(body)}
+
+
 def test_signed_local_prices_replay_without_io(snapshot, monkeypatch):
     value, anchor, _ = snapshot
     monkeypatch.setattr("pathlib.Path.read_bytes", lambda *args: pytest.fail("filesystem read during replay"))
@@ -58,6 +85,110 @@ def test_signed_local_prices_replay_without_io(snapshot, monkeypatch):
     assert etf["execution"]["products"][0]["price_identity"]["adjustment_mode"] == "raw"
     assert etf["signal"]["products"][0]["price_identity"]["adjustment_mode"] == "qfq"
     assert etf["signal"]["products"][0]["rows"][0]["volume"] == 100
+
+
+def test_candidate_profile_captures_exact_dynamic_etf_and_binds_snapshot(
+        tmp_path, monkeypatch):
+    anchor = initialize_local_publisher(tmp_path / "publisher")
+    monkeypatch.setattr(local, "_capture", _capture)
+    profile = _candidate_profile()
+    symbols = profile["required_symbols"]
+
+    result = local.capture_local_daily_snapshot(
+        symbols=symbols, asof=profile["asof"],
+        publisher_dir=tmp_path / "publisher",
+        expected_registry_sha256=anchor["registry_sha256"],
+        output_dir=tmp_path / "prices", candidate_profile=profile,
+        expected_candidate_profile_sha256=profile["profile_sha256"])
+
+    value = json.loads((tmp_path / "prices" / "snapshot.json").read_text())
+    assert result["candidate_profile_sha256"] == profile["profile_sha256"]
+    assert value["artifact"]["capture_profile"] == {
+        "profile": local.DYNAMIC_PROFILE,
+        "profile_sha256": profile["profile_sha256"]}
+    assert local.verify_local_daily_snapshot(
+        value, expected_registry_sha256=anchor["registry_sha256"],
+        expected_symbols=symbols, asof=profile["asof"],
+        decision_cutoff=value["decision_cutoff"],
+        expected_candidate_profile_sha256=profile["profile_sha256"]) == value
+
+
+def test_candidate_profile_allows_existing_fixed_holding_in_exact_panel():
+    profile = _candidate_profile()
+    profile["required_symbols"].append("561980.SH")
+    profile["required_symbols"].sort()
+    profile["profile_sha256"] = local._hash({
+        key: value for key, value in profile.items()
+        if key != "profile_sha256"})
+
+    assert local.verify_candidate_profile(
+        profile, expected_sha256=profile["profile_sha256"],
+        symbols=profile["required_symbols"], asof=profile["asof"]) == profile
+
+
+def test_candidate_profile_allows_only_exact_sector_scan_extension():
+    profile = _candidate_profile()
+    symbols = sorted(set(profile["required_symbols"]) | local.SECTOR_SCAN_SYMBOLS)
+
+    assert local.verify_candidate_profile(
+        profile, expected_sha256=profile["profile_sha256"],
+        symbols=symbols, asof=profile["asof"]) == profile
+
+    with pytest.raises(ValueError, match="scope differs"):
+        local.verify_candidate_profile(
+            profile, expected_sha256=profile["profile_sha256"],
+            symbols=symbols[:-1], asof=profile["asof"])
+
+
+def test_candidate_profile_cannot_reclassify_index_as_dynamic_etf():
+    profile = _candidate_profile()
+    profile["required_symbols"] = ["000300.SH"]
+    profile["candidates"][0].update(code="sh000300", symbol="000300.SH")
+    profile["profile_sha256"] = local._hash({
+        key: value for key, value in profile.items()
+        if key != "profile_sha256"})
+
+    with pytest.raises(ValueError, match="exact symbols differ"):
+        local.verify_candidate_profile(
+            profile, expected_sha256=profile["profile_sha256"],
+            symbols=profile["required_symbols"], asof=profile["asof"])
+
+
+@pytest.mark.parametrize("mutation", ["hash", "asof", "rule", "marker",
+                                       "extra_symbol", "missing_benchmark"])
+def test_candidate_profile_rejects_unbound_scope_before_capture(
+        tmp_path, monkeypatch, mutation):
+    profile = _candidate_profile()
+    symbols = list(profile["required_symbols"])
+    expected_hash = profile["profile_sha256"]
+    if mutation == "hash":
+        expected_hash = "f" * 64
+    elif mutation == "asof":
+        profile["asof"] = "2026-09-03"
+    elif mutation == "rule":
+        profile["candidates"][0]["promotion_rule_version"] = "legacy"
+    elif mutation == "marker":
+        profile["candidates"][0]["observation_contract"] = "legacy"
+    elif mutation == "extra_symbol":
+        symbols.append("588730.SH")
+    else:
+        profile["benchmark_symbols"] = []
+    if mutation not in {"hash", "extra_symbol"}:
+        profile["profile_sha256"] = local._hash({
+            key: value for key, value in profile.items()
+            if key != "profile_sha256"})
+        expected_hash = profile["profile_sha256"]
+    calls = []
+    monkeypatch.setattr(local, "_capture", lambda *args: calls.append(args))
+
+    with pytest.raises(ValueError, match="candidate local daily"):
+        local.capture_local_daily_snapshot(
+            symbols=symbols, asof="2026-09-04",
+            publisher_dir=tmp_path / "publisher",
+            expected_registry_sha256="a" * 64,
+            output_dir=tmp_path / "prices", candidate_profile=profile,
+            expected_candidate_profile_sha256=expected_hash)
+    assert calls == []
 
 
 @pytest.mark.parametrize("field", ["rows", "raw", "symbol", "signature", "pin"])

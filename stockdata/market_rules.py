@@ -198,6 +198,7 @@ def validate_market_rule_payload(
     *,
     panel_entry: str | None = None,
     instrument_status: Mapping[str, object] | None = None,
+    trusted_etf_scopes: Mapping[str, Mapping[str, object]] | None = None,
 ) -> Mapping[str, object]:
     """Validate one complete rule regime and its inclusive panel-date coverage."""
 
@@ -216,6 +217,8 @@ def validate_market_rule_payload(
 
     if is_etf:
         scope = ETF_RULE_SCOPES.get(payload["instrument_id"])
+        if scope is None and trusted_etf_scopes is not None:
+            scope = trusted_etf_scopes.get(payload["instrument_id"])
         if scope is None or any(payload[field] != scope[field] for field in
                                 ("fund_type", "classification_source", "rule_source")):
             raise ValueError("market_rules ETF classification lacks approved primary sources")
@@ -340,13 +343,16 @@ def _canonical(payload: Mapping[str, object]) -> bytes:
 
 def validate_market_rule_regimes(
     payloads: list[Mapping[str, object]],
+    *,
+    trusted_etf_scopes: Mapping[str, Mapping[str, object]] | None = None,
 ) -> None:
     """Require unambiguous, gap-free policy identities for each rule scope."""
 
     by_policy: dict[str, bytes] = {}
     unique_payloads: list[Mapping[str, object]] = []
     for payload in payloads:
-        validate_market_rule_payload(payload)
+        validate_market_rule_payload(
+            payload, trusted_etf_scopes=trusted_etf_scopes)
         policy_id = str(payload["policy_id"])
         canonical = _canonical(payload)
         previous_canonical = by_policy.get(policy_id)

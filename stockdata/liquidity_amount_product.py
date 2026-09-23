@@ -62,6 +62,7 @@ def _timestamp(value: str) -> datetime:
 
 def build_liquidity_amounts_product(
     captures, *, panel, decision_cutoff: str, expected_watermark: str,
+    candidate_instrument_authority=None,
 ) -> dict:
     """Build a complete independently receipted native-amount authority candidate."""
     cutoff = _timestamp(decision_cutoff)
@@ -71,7 +72,14 @@ def build_liquidity_amounts_product(
         raise LiquidityAmountProductError("exact panel must be nonempty and unique")
     pairs.sort()
     codes = sorted({code for code, _ in pairs})
-    if any(code not in ETF_SOURCES for code in codes):
+    dynamic_sources = {}
+    if candidate_instrument_authority is not None:
+        from .candidate_instrument_authority import verify_candidate_instrument_authority
+        verified = verify_candidate_instrument_authority(
+            candidate_instrument_authority, decision_cutoff=decision_cutoff)
+        dynamic_sources = {code: scope["classification_source"]
+                           for code, scope in verified["scopes"].items()}
+    if any(code not in ETF_SOURCES and code not in dynamic_sources for code in codes):
         raise LiquidityAmountProductError("ETF identity lacks an approved issuer source")
     for code in codes:
         days = [day for symbol, day in pairs if symbol == code]
@@ -148,13 +156,17 @@ def build_liquidity_amounts_product(
         "amount_unit": "CNY", "liquidity_identity": deepcopy(IDENTITY),
         "instrument_scope": {"instrument_type": "ETF", "codes": codes,
                              "minimum_observations_per_code": 20},
-        "instrument_sources": {code: ETF_SOURCES[code] for code in codes},
+        "instrument_sources": {code: ETF_SOURCES.get(code, dynamic_sources.get(code))
+                               for code in codes},
         "panel": [f"{code}@{day}" for code, day in pairs],
         "decision_cutoff": decision_cutoff,
         "finality": {"status": "decision_watermark_bound", "watermark": watermark},
         "records": [amounts[pair] for pair in pairs],
         "source_receipts": [receipts[key] for key in sorted(receipts)],
     }
+    if candidate_instrument_authority is not None:
+        product["candidate_instrument_authority"] = deepcopy(
+            candidate_instrument_authority)
     return {**product, "product_sha256": _hash(product)}
 
 
@@ -175,6 +187,7 @@ def verify_liquidity_amounts_product(
         product["source_receipts"], panel=panel,
         decision_cutoff=decision_cutoff or product["decision_cutoff"],
         expected_watermark=expected_watermark or product["finality"]["watermark"],
+        candidate_instrument_authority=product.get("candidate_instrument_authority"),
     )
     if product != rebuilt:
         raise LiquidityAmountProductError("native amount product does not replay receipts")

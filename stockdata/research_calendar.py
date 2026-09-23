@@ -63,6 +63,37 @@ def _iso_timestamp(value: object, field: str) -> str:
     return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
+def canonical_receipt_observed_at(value: object) -> str:
+    """Normalize a capture timestamp when materializing a derived receipt."""
+
+    if not isinstance(value, str):
+        raise ResearchCalendarError("receipt observed_at must be timezone-aware")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ResearchCalendarError(
+            "receipt observed_at must be timezone-aware"
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ResearchCalendarError("receipt observed_at must be timezone-aware")
+    return parsed.isoformat()
+
+
+def materialize_calendar_authority_timing(
+    component_receipt: Mapping[str, object],
+    records: Iterable[Mapping[str, object]],
+    *,
+    source_observed_at: object,
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    """Use one canonical capture instant for a derived calendar receipt and records."""
+
+    observed_at = canonical_receipt_observed_at(source_observed_at)
+    return (
+        {**component_receipt, "observed_at": observed_at},
+        [{**record, "available_at": observed_at} for record in records],
+    )
+
+
 def _expected_dates(start: str, end: str) -> list[str]:
     first = date.fromisoformat(start)
     last = date.fromisoformat(end)
@@ -222,6 +253,8 @@ __all__ = [
     "SCHEMA_VERSION",
     "ResearchCalendarError",
     "build_calendar_artifact",
+    "canonical_receipt_observed_at",
     "fetch_baostock_trade_calendar",
+    "materialize_calendar_authority_timing",
     "verify_calendar_artifact",
 ]
